@@ -3,12 +3,12 @@
 > **Discover. Govern. Optimize.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/badge/version-0.1-brightgreen.svg)](https://github.com/jahmed-cloud/ARG/releases)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110-009688.svg)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://reactjs.org)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg)](https://www.docker.com)
-[![Docker Hub](https://img.shields.io/badge/Docker_Hub-jahmed22-2496ED.svg)](https://hub.docker.com/repositories/jahmed22)
-[![GitHub Actions](https://img.shields.io/badge/CI-GitHub_Actions-2088FF.svg)](https://github.com/features/actions)
+[![Docker](https://img.shields.io/badge/Docker-multi--arch-2496ED.svg)](https://www.docker.com)
+[![Docker Hub](https://img.shields.io/badge/Docker_Hub-jahmed22-2496ED.svg)](https://hub.docker.com/u/jahmed22)
 
 **Azure Resource Guardian** is a self-hosted, Docker-based, open-source Azure governance platform that gives organizations a single-pane-of-glass view across their entire Azure estate.
 
@@ -114,6 +114,46 @@
 - Board-level reports
 - Technical CSV/Excel/JSON exports
 - Compliance reports
+
+---
+
+## 🐳 Docker Hub Images
+
+**ARG 0.1** is published to Docker Hub as multi-arch images (`linux/amd64` + `linux/arm64`):
+
+| Image | Tags |
+|-------|------|
+| `jahmed22/azure-resource-guardian-backend` | `0.1`, `latest` |
+| `jahmed22/azure-resource-guardian-worker` | `0.1`, `latest` |
+| `jahmed22/azure-resource-guardian-frontend` | `0.1`, `latest` |
+
+### Run directly from Docker Hub (no source code needed)
+
+```bash
+# Download just the compose file and .env template
+curl -O https://raw.githubusercontent.com/jahmed-cloud/ARG/main/docker-compose.hub.yml
+curl -O https://raw.githubusercontent.com/jahmed-cloud/ARG/main/.env.example
+
+# Configure
+cp .env.example .env
+nano .env   # set POSTGRES_PASSWORD, SECRET_KEY, ENCRYPTION_KEY, ADMIN_PASSWORD
+
+# Start
+docker compose -f docker-compose.hub.yml up -d
+
+# Create first admin user (once)
+docker compose -f docker-compose.hub.yml exec backend python -m scripts.seed_admin
+
+# UI → http://localhost:3000
+```
+
+### Pull a specific version
+
+```bash
+docker pull jahmed22/azure-resource-guardian-backend:0.1
+docker pull jahmed22/azure-resource-guardian-worker:0.1
+docker pull jahmed22/azure-resource-guardian-frontend:0.1
+```
 
 ---
 
@@ -330,4 +370,3 @@ This same information is also available in-app under **Settings → About**.
 ---
 
 *Built for Azure engineers who want real visibility into their cloud estate without paying for another SaaS subscription.*
-# ARG

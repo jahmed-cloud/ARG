@@ -1,0 +1,127 @@
+# Azure Resource Guardian — Docker Hub compose file
+# ==================================================
+# Use this file to run ARG directly from pre-built Docker Hub images
+# without needing the source code or Node/Python installed locally.
+#
+# Quick start:
+#   curl -O https://raw.githubusercontent.com/jahmed-cloud/ARG/main/docker-compose.hub.yml
+#   curl -O https://raw.githubusercontent.com/jahmed-cloud/ARG/main/.env.example
+#   cp .env.example .env
+#   nano .env   # set POSTGRES_PASSWORD, SECRET_KEY, ENCRYPTION_KEY, ADMIN_PASSWORD
+#   docker compose -f docker-compose.hub.yml up -d
+#   docker compose -f docker-compose.hub.yml exec backend python -m scripts.seed_admin
+#
+# To upgrade to a new release:
+#   docker compose -f docker-compose.hub.yml pull
+#   docker compose -f docker-compose.hub.yml up -d
+
+x-arg-image: &arg-image
+  image: jahmed22/azure-resource-guardian
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-arg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-arg}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arg}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arg-network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arg-network
+
+  backend:
+    image: jahmed22/azure-resource-guardian-backend:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - arg-network
+
+  worker:
+    image: jahmed22/azure-resource-guardian-worker:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks:
+      - arg-network
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+
+  beat:
+    image: jahmed22/azure-resource-guardian-worker:latest
+    restart: unless-stopped
+    command: celery -A workers.scan_worker beat --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - arg-network
+
+  frontend:
+    image: jahmed22/azure-resource-guardian-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - arg-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  arg-network:
+    driver: bridge

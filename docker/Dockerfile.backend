@@ -25,7 +25,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 # ---------------------------------------------------------------------------
 
@@ -51,8 +51,9 @@ COPY scanners/ ./scanners/
 COPY scripts/ ./scripts/
 COPY workers/ ./workers/
 COPY alembic.ini ./
+COPY docker/entrypoint.sh /entrypoint.sh
 
-RUN chown -R arg:arg /app
+RUN chmod +x /entrypoint.sh && chown -R arg:arg /app
 USER arg
 
 EXPOSE 8000
@@ -60,6 +61,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/api/v1/health/live || exit 1
 
-# Run migrations then start the app. Using a shell form so $PORT (if set
-# by the platform, e.g. some PaaS providers) is respected, falling back to 8000.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${UVICORN_WORKERS:-4}"]
+ENTRYPOINT ["/entrypoint.sh"]

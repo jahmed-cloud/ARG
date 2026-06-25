@@ -1,50 +1,60 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Azure Resource Guardian — Multi-arch Docker Hub build & push
+# Azure Resource Guardian — Docker Hub build & push
 # =============================================================================
 #
-# Builds linux/amd64 + linux/arm64 images for backend, worker, and frontend,
-# tags them as both 0.1 and latest, and pushes to Docker Hub.
+# Builds and pushes backend, worker, and frontend images to Docker Hub.
+# Default: linux/amd64 only (fast — ~5 min).
+# Optional: add --arm to also build linux/arm64 (slow — ~60 min, uses QEMU).
 #
 # Prerequisites:
-#   1. docker login                          # authenticate to Docker Hub
-#   2. docker buildx ls                      # confirm a multi-arch builder exists
-#   3. docker buildx create --use --name arg-builder --driver docker-container
-#      (only needed once — creates a BuildKit builder that supports multi-arch)
+#   1. docker login
+#   2. docker buildx create --use --name arg-builder --driver docker-container --bootstrap
+#      (one-time setup — only needed for --arm builds)
 #
 # Usage:
-#   chmod +x build-push.sh
-#   ./build-push.sh            # build + push all three images
-#   ./build-push.sh --no-push  # build locally only (for testing)
+#   ./build-push.sh              # amd64 only, push to Docker Hub
+#   ./build-push.sh --arm        # amd64 + arm64 (multi-arch), push
+#   ./build-push.sh --no-push    # amd64 only, build locally (no push)
+#   ./build-push.sh --arm --no-push  # multi-arch, local only
 #
 # Images pushed:
-#   jahmed22/azure-resource-guardian-backend:0.1
-#   jahmed22/azure-resource-guardian-backend:latest
-#   jahmed22/azure-resource-guardian-worker:0.1
-#   jahmed22/azure-resource-guardian-worker:latest
-#   jahmed22/azure-resource-guardian-frontend:0.1
-#   jahmed22/azure-resource-guardian-frontend:latest
+#   jahmed22/azure-resource-guardian-backend:0.1   + :latest
+#   jahmed22/azure-resource-guardian-worker:0.1    + :latest
+#   jahmed22/azure-resource-guardian-frontend:0.1  + :latest
 #
 # =============================================================================
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Configuration — edit these if the version or Hub namespace ever change
+# Configuration
 # ---------------------------------------------------------------------------
 REGISTRY="jahmed22"
-APP_NAME="azure-resource-guardian"   # Docker Hub repo prefix
+APP_NAME="azure-resource-guardian"
 VERSION="0.1"
-PLATFORMS="linux/amd64,linux/arm64"
 BUILDER_NAME="arg-builder"
 
 # ---------------------------------------------------------------------------
-# Flags
+# Parse flags
 # ---------------------------------------------------------------------------
 PUSH=true
-if [[ "${1:-}" == "--no-push" ]]; then
-  PUSH=false
-  echo "ℹ️  --no-push: images will be built but not pushed to Docker Hub"
+MULTI_ARCH=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-push)  PUSH=false ;;
+    --arm)      MULTI_ARCH=true ;;
+    --help|-h)
+      sed -n '3,20p' "$0" | sed 's/^# \?//'
+      exit 0 ;;
+  esac
+done
+
+if [[ "${MULTI_ARCH}" == true ]]; then
+  PLATFORMS="linux/amd64,linux/arm64"
+else
+  PLATFORMS="linux/amd64"
 fi
 
 # ---------------------------------------------------------------------------
@@ -57,11 +67,11 @@ ok()   { echo -e "${GREEN}✓ $*${RESET}"; }
 warn() { echo -e "${YELLOW}⚠ $*${RESET}"; }
 
 # ---------------------------------------------------------------------------
-# Ensure we're in the project root (the directory containing this script)
+# Ensure we're in the project root
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
-log "Azure Resource Guardian — Docker Hub multi-arch build"
+log "Azure Resource Guardian — Docker Hub build"
 echo "  Registry  : ${REGISTRY}"
 echo "  Version   : ${VERSION}"
 echo "  Platforms : ${PLATFORMS}"
@@ -69,54 +79,65 @@ echo "  Push      : ${PUSH}"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Ensure a multi-arch BuildKit builder is active
+# For multi-arch (--arm) we need a BuildKit container builder.
+# For amd64-only the default docker driver is sufficient and faster.
 # ---------------------------------------------------------------------------
-if ! docker buildx inspect "${BUILDER_NAME}" &>/dev/null; then
-  log "Creating BuildKit multi-arch builder '${BUILDER_NAME}'..."
-  docker buildx create \
-    --name "${BUILDER_NAME}" \
-    --driver docker-container \
-    --driver-opt network=host \
-    --bootstrap
-  ok "Builder created"
+if [[ "${MULTI_ARCH}" == true ]]; then
+  if ! docker buildx inspect "${BUILDER_NAME}" &>/dev/null; then
+    log "Creating multi-arch BuildKit builder '${BUILDER_NAME}'..."
+    docker buildx create \
+      --name "${BUILDER_NAME}" \
+      --driver docker-container \
+      --driver-opt network=host \
+      --bootstrap
+    ok "Builder created"
+  fi
+  docker buildx use "${BUILDER_NAME}"
+  log "Multi-arch build enabled (amd64 + arm64) — expect ~60 min"
 else
-  log "Using existing builder '${BUILDER_NAME}'"
+  log "Building amd64 only — use --arm flag to also build arm64"
 fi
 
-docker buildx use "${BUILDER_NAME}"
-
 # ---------------------------------------------------------------------------
-# Helper — build (and optionally push) a single image
+# Helper — build and optionally push a single image
 # ---------------------------------------------------------------------------
 build_image() {
-  local service="$1"       # backend | worker | frontend
-  local dockerfile="$2"    # docker/Dockerfile.backend etc.
-  local repo="${REGISTRY}/${APP_NAME}-${service}"
-  local tags="-t ${repo}:${VERSION} -t ${repo}:latest"
+  local service="$1"
+  local dockerfile="$2"
   local extra_args="${3:-}"
+  local repo="${REGISTRY}/${APP_NAME}-${service}"
 
   log "Building ${service} → ${repo}:${VERSION} + :latest"
 
-  local push_flag=""
-  if [[ "${PUSH}" == true ]]; then
-    push_flag="--push"
+  if [[ "${MULTI_ARCH}" == true ]]; then
+    # Multi-arch requires buildx + --push (cannot load multi-arch locally)
+    local push_flag="--push"
+    if [[ "${PUSH}" == false ]]; then
+      warn "  --arm + --no-push: will build but not push (images won't be loadable locally)"
+    fi
+    # shellcheck disable=SC2086
+    docker buildx build \
+      --platform "${PLATFORMS}" \
+      -t "${repo}:${VERSION}" \
+      -t "${repo}:latest" \
+      --file "${dockerfile}" \
+      --progress=plain \
+      ${push_flag} \
+      ${extra_args} \
+      .
   else
-    # Without --push, buildx loads into local docker daemon (amd64 only)
-    push_flag="--load"
-    # Multi-arch --load isn't supported; fall back to current arch for local test
-    PLATFORMS_OVERRIDE="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
-    warn "  Local load — building ${PLATFORMS_OVERRIDE} only (multi-arch requires --push)"
-    extra_args="${extra_args} --platform ${PLATFORMS_OVERRIDE}"
+    # amd64-only: plain docker build is faster and loads into local daemon
+    docker build \
+      -t "${repo}:${VERSION}" \
+      -t "${repo}:latest" \
+      --file "${dockerfile}" \
+      ${extra_args} \
+      .
+    if [[ "${PUSH}" == true ]]; then
+      docker push "${repo}:${VERSION}"
+      docker push "${repo}:latest"
+    fi
   fi
-
-  # shellcheck disable=SC2086
-  docker buildx build \
-    --platform "${PLATFORMS}" \
-    ${tags} \
-    --file "${dockerfile}" \
-    ${push_flag} \
-    ${extra_args} \
-    .
 
   ok "${service} done"
 }

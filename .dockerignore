@@ -1,0 +1,58 @@
+# Azure Resource Guardian — .dockerignore
+# =========================================
+# Files excluded from the Docker build context.
+# Smaller context = faster builds and no accidental secret leakage.
+
+# Secrets — never send to the daemon
+.env
+.env.*
+*.key
+*.pem
+
+# Git
+.git/
+.gitignore
+
+# Node / Frontend build artifacts (frontend Dockerfile COPYs frontend/ directly)
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs / non-runtime files (don't need these in the image)
+README.md
+ROADMAP.md
+CONTRIBUTING.md
+LICENSE
+Makefile
+build-push.sh
+docker-compose*.yml
+*.md
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Logs
+*.log
+logs/

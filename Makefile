@@ -23,11 +23,14 @@ HUB_FILE     := docker-compose.hub.yml
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build all images locally (current arch only)
+build: ## Build amd64 image locally (no push)
 	./build-push.sh --no-push
 
-push: ## Build multi-arch images and push to Docker Hub (requires docker login)
+push: ## Build amd64 images and push to Docker Hub (requires docker login)
 	./build-push.sh
+
+push-multiarch: ## Build amd64 + arm64 images and push (slow ~60 min, requires docker login)
+	./build-push.sh --arm
 
 up: ## Start the full stack using locally built images
 	docker compose -f $(COMPOSE_FILE) up -d --build

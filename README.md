@@ -141,10 +141,9 @@ nano .env   # set POSTGRES_PASSWORD, SECRET_KEY, ENCRYPTION_KEY, ADMIN_PASSWORD
 # Start
 docker compose -f docker-compose.hub.yml up -d
 
-# Create first admin user (once)
-docker compose -f docker-compose.hub.yml exec backend python -m scripts.seed_admin
-
 # UI → http://localhost:3000
+# Log in with the ADMIN_EMAIL / ADMIN_PASSWORD you set in .env
+# The admin account is created automatically on first startup — no manual command needed.
 ```
 
 ### Pull a specific version
@@ -236,19 +235,14 @@ docker compose ps
 docker compose logs -f backend   # watch startup logs; Ctrl+C to stop tailing
 ```
 
-### 4. Create the initial admin user
-
-```bash
-docker compose exec backend python -m scripts.seed_admin
-```
-
-This is idempotent — safe to re-run; it does nothing if the admin user already exists.
-
-### 5. Access the dashboard
+### 4. Access the dashboard
 
 ```
 http://localhost:3000
 ```
+
+Log in with the `ADMIN_EMAIL` and `ADMIN_PASSWORD` you set in `.env`.
+The admin account is **created automatically on first startup** — no manual command needed.
 
 Log in with the `ADMIN_USERNAME` / `ADMIN_PASSWORD` you set in `.env`. Change the password immediately if you left it at a placeholder value.
 

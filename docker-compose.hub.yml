@@ -9,7 +9,10 @@
 #   cp .env.example .env
 #   nano .env   # set POSTGRES_PASSWORD, SECRET_KEY, ENCRYPTION_KEY, ADMIN_PASSWORD
 #   docker compose -f docker-compose.hub.yml up -d
-#   docker compose -f docker-compose.hub.yml exec backend python -m scripts.seed_admin
+#
+# The backend automatically runs migrations and creates the admin user on
+# first boot — no separate seed command needed. Log in at http://localhost:3000
+# with the ADMIN_EMAIL and ADMIN_PASSWORD you set in .env.
 #
 # To upgrade to a new release:
 #   docker compose -f docker-compose.hub.yml pull

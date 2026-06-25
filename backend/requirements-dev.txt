@@ -1,0 +1,18 @@
+# Azure Resource Guardian - Development & Testing Dependencies
+# ================================================================
+# Install in addition to requirements.txt for local development:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# Deliberately NOT installed in production Docker images (Dockerfile.backend
+# / Dockerfile.worker only install requirements.txt) to keep the runtime
+# image smaller and avoid shipping test/lint tooling into production.
+
+# Testing
+pytest==8.2.0
+pytest-asyncio==0.23.7
+pytest-cov==5.0.0
+factory-boy==3.3.0        # Test fixtures
+
+# Code Quality
+ruff==0.4.4                # Linting
+mypy==1.10.0                # Type checking

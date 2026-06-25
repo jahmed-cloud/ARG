@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Azure Resource Guardian — Backend (FastAPI) image
+# ---------------------------------------------------------------------------
+# Multi-stage build:
+#   1. "builder" installs dependencies into a venv so the final image
+#      doesn't carry build tools (gcc, headers) — smaller attack surface
+#      and smaller image size (~200MB savings typical for this stack).
+#   2. "runtime" copies just the venv + app code.
+# ---------------------------------------------------------------------------
+
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# System deps needed only to build Python wheels (psycopg2, cryptography, etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ---------------------------------------------------------------------------
+
+FROM python:3.12-slim AS runtime
+
+# Runtime-only system deps (psycopg2 needs libpq at runtime too)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash arg
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+# Copy application code — backend (includes migrations/), scanners (shared with workers)
+COPY backend/ ./backend/
+COPY scanners/ ./scanners/
+COPY scripts/ ./scripts/
+COPY workers/ ./workers/
+COPY alembic.ini ./
+
+RUN chown -R arg:arg /app
+USER arg
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8000/api/v1/health/live || exit 1
+
+# Run migrations then start the app. Using a shell form so $PORT (if set
+# by the platform, e.g. some PaaS providers) is respected, falling back to 8000.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${UVICORN_WORKERS:-4}"]

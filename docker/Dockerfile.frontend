@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Azure Resource Guardian — Frontend (React/Vite) image
+# ---------------------------------------------------------------------------
+# Stage 1 builds the static bundle with Node.
+# Stage 2 serves it with nginx — a Node process has no business running
+# in production just to serve static files; nginx is faster and smaller.
+# ---------------------------------------------------------------------------
+
+FROM node:20-alpine AS builder
+
+WORKDIR /build
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci || npm install
+
+COPY frontend/ ./
+
+# VITE_API_URL is baked into the JS bundle at build time since Vite env
+# vars are resolved at build, not runtime. Override via build-arg if the
+# API lives somewhere other than the default same-origin /api/v1 path.
+ARG VITE_API_URL=/api/v1
+ENV VITE_API_URL=$VITE_API_URL
+
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+
+FROM nginx:1.27-alpine AS runtime
+
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /build/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q --spider http://localhost/ || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

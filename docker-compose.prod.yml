@@ -1,0 +1,71 @@
+# Production overlay for docker-compose.yml
+# ===========================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences from base compose file:
+#   - Postgres and Redis ports are NOT published to the host (internal only)
+#   - Resource limits set on every service to prevent noisy-neighbor issues
+#   - Backend runs with more workers; worker replicas increased
+#   - Restart policy hardened to "always" (vs "unless-stopped") for prod resilience
+
+services:
+  postgres:
+    ports: []  # remove host port mapping — only reachable inside arg-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  redis:
+    ports: []
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  backend:
+    restart: always
+    environment:
+      UVICORN_WORKERS: "8"
+      ENVIRONMENT: production
+      LOG_LEVEL: warning
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  worker:
+    restart: always
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: warning
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          cpus: "1"
+          memory: 768M
+
+  beat:
+    restart: always
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: warning
+
+  frontend:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M

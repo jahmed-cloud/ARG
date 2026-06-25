@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Azure Resource Guardian — Worker (Celery) image
+# ---------------------------------------------------------------------------
+# Shares the same dependency set as the backend image (workers import
+# scanner modules and SQLAlchemy models directly), but the entrypoint
+# differs: no uvicorn, no migrations (the backend container owns those).
+# ---------------------------------------------------------------------------
+
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ---------------------------------------------------------------------------
+
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash arg
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+COPY backend/ ./backend/
+COPY scanners/ ./scanners/
+COPY workers/ ./workers/
+
+RUN chown -R arg:arg /app
+USER arg
+
+# No EXPOSE — workers don't serve HTTP traffic.
+# WORKER_MODE env var picked by entrypoint script choice in docker-compose:
+#   "worker" -> celery worker
+#   "beat"   -> celery beat scheduler
+# Default to worker mode; docker-compose overrides the command for the beat service.
+#
+# -Q explicitly lists every queue task_routes (see workers/scan_worker.py)
+# sends tasks to. Without it, Celery workers ONLY consume the default
+# "celery" queue — any task routed to a named queue (scans, scanners,
+# reports) would be published to Redis successfully but never picked up
+# by any worker, leaving the job stuck in PENDING forever with no error.
+CMD ["celery", "-A", "workers.scan_worker", "worker", "--loglevel=info", "--concurrency=4", "-Q", "celery,scans,scanners,reports"]

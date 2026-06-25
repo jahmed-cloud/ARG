@@ -330,3 +330,4 @@ This same information is also available in-app under **Settings → About**.
 ---
 
 *Built for Azure engineers who want real visibility into their cloud estate without paying for another SaaS subscription.*
+# ARG

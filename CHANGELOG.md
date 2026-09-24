@@ -35,8 +35,10 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Older scanners' Resource Graph queries now follow skip tokens. Before, results stopped at 1,000 rows, or at
   100 for the snapshot, deallocated-VM and VMSS scanners, so large subscriptions were silently under-reported.
+
+### Changed (inventory)
 - The subscription-analysis inventory is built from paginated Resource Graph, with creation dates merged from ARM
-  per resource group. The subscription-wide ARM list stopped at 2,000 resources.
+  per resource group, rather than from one subscription-wide ARM list.
 
 ### Security
 - The local portal binds to loopback only, checks Host and Origin, uses HttpOnly/SameSite=Strict sessions and a strict

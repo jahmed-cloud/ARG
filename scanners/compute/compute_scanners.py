@@ -168,16 +168,9 @@ class UnattachedDiskScanner(BaseScanner):
             # Return mock data for testing when no real client
             return self._mock_data()
 
-        from azure.mgmt.resourcegraph import ResourceGraphClient
-        from azure.mgmt.resourcegraph.models import QueryRequest
+        from scanners.base.azure_api import query_resource_graph
 
-        request = QueryRequest(
-            subscriptions=[context.subscription_id],
-            query=query,
-            options={"resultFormat": "objectArray", "$top": 1000}
-        )
-        response = context.resource_graph_client.resources(request)
-        return response.data or []
+        return await query_resource_graph(context, query) or []
 
     def _calculate_age_days(self, created_str: str) -> int:
         if not created_str:
@@ -303,12 +296,9 @@ class OldSnapshotScanner(BaseScanner):
     async def _run_arg_query(self, context: ScanContext, query: str) -> List[Dict]:
         if context.resource_graph_client is None:
             return []
-        from azure.mgmt.resourcegraph.models import QueryRequest
-        request = QueryRequest(
-            subscriptions=[context.subscription_id],
-            query=query,
-        )
-        return context.resource_graph_client.resources(request).data or []
+        from scanners.base.azure_api import query_resource_graph
+
+        return await query_resource_graph(context, query) or []
 
     def _calculate_age_days(self, created_str: str) -> int:
         if not created_str:
@@ -424,9 +414,9 @@ class DeallocatedVMScanner(BaseScanner):
     async def _run_arg_query(self, context: ScanContext, query: str) -> List[Dict]:
         if context.resource_graph_client is None:
             return []
-        from azure.mgmt.resourcegraph.models import QueryRequest
-        request = QueryRequest(subscriptions=[context.subscription_id], query=query)
-        return context.resource_graph_client.resources(request).data or []
+        from scanners.base.azure_api import query_resource_graph
+
+        return await query_resource_graph(context, query) or []
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +500,6 @@ class IdleVMSSScanner(BaseScanner):
     async def _run_arg_query(self, context: ScanContext, query: str) -> List[Dict]:
         if context.resource_graph_client is None:
             return []
-        from azure.mgmt.resourcegraph.models import QueryRequest
-        request = QueryRequest(subscriptions=[context.subscription_id], query=query)
-        return context.resource_graph_client.resources(request).data or []
+        from scanners.base.azure_api import query_resource_graph
+
+        return await query_resource_graph(context, query) or []

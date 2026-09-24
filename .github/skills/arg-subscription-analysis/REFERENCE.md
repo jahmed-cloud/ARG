@@ -47,7 +47,8 @@ Finding record fields in `findings.json`: `ref`, `finding_type`, `title`, `descr
 | Symptom | Cause / fix |
 |---|---|
 | `ERR_CONNECTION_REFUSED` on `http://127.0.0.1:8765` | Portal not running. Start `scripts\Start-LocalPortal.ps1` and keep that terminal open |
-| "Azure CLI is not signed in" | `az login`, then re-run or click Refresh in the portal |
+| "Azure CLI is not signed in" / `AADSTS70043` (Conditional Access sign-in frequency) | `az login` again, then re-run or click Refresh in the portal |
+| Large subscription takes 15-20+ min | Expected (per-resource metrics, diagnostic settings, Cost Management throttling). Watch progress in the portal's job table |
 | Subscription missing from the list | Other tenant (`az login --tenant <id>`) or disabled |
 | Cost sections empty, 403 in warnings | Missing Cost Management Reader |
 | Defender sections empty | Missing Security Reader |

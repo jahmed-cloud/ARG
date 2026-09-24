@@ -360,7 +360,7 @@ def _inventory(m: Model) -> str:
         if topics:
             lines += [f"_{topics} Event Grid system topic(s) omitted._", ""]
         lines.append(md_table(["Type", "Name", "Location", "SKU", "Kind", "Created"], [
-            [(r.get("type") or "").replace("Microsoft.", ""), f"`{r.get('name')}`", r.get("location"),
+            [re.sub(r"(?i)^microsoft\.", "", r.get("type") or ""), f"`{r.get('name')}`", r.get("location"),
              " / ".join(str(x) for x in ((r.get("sku") or {}).get("name"), (r.get("sku") or {}).get("tier")) if x),
              r.get("kind"), (r.get("createdTime") or "")[:10]]
             for r in sorted(items, key=lambda r: ((r.get("type") or "").lower(), r.get("name") or ""))

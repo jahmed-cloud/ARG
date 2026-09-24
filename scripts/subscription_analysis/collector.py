@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from scanners.base.azure_api import ArmClient, get_resource_costs, run_cost_query
+from scanners.base.azure_api import ArmClient, get_resource_costs, query_resource_graph, run_cost_query
 from scanners.base.base_scanner import ScanContext, ScannerRegistry
 
 from scripts.subscription_analysis.knowledge import classify
@@ -134,11 +134,48 @@ async def run_scanners(context: ScanContext, names: Optional[List[str]], config:
         data.warnings.extend(f"{cls.scanner_name}: {w}" for w in output.warnings)
 
 
-async def collect_inventory(arm: ArmClient, data: AnalysisData) -> None:
+INVENTORY_QUERY = """
+Resources
+| project id, name, type, location, kind, sku, tags, resourceGroup, managedBy
+"""
+CREATED_TIME_CONCURRENCY = 8
+
+
+async def collect_inventory(context: ScanContext, arm: ArmClient, data: AnalysisData) -> None:
+    """
+    Resource list from Resource Graph (paginated, authoritative count), enriched
+    with createdTime/changedTime from ARM listed per resource group. The
+    subscription-wide ARM list is not used: it can stop paging early on large
+    subscriptions.
+    """
     sub = data.subscription["id"]
-    data.resources = await arm.get_all(f"/subscriptions/{sub}/resources", "2021-04-01",
-                                       {"$expand": "createdTime,changedTime"})
     data.resource_groups = await arm.get_all(f"/subscriptions/{sub}/resourcegroups", "2021-04-01")
+    rows = await query_resource_graph(context, INVENTORY_QUERY)
+    if rows is None:  # no Resource Graph client: fall back to ARM
+        data.resources = await arm.get_all(f"/subscriptions/{sub}/resources", "2021-04-01",
+                                           {"$expand": "createdTime,changedTime"})
+        return
+
+    times: Dict[str, Dict[str, Any]] = {}
+    gate = asyncio.Semaphore(CREATED_TIME_CONCURRENCY)
+
+    async def fetch(rg_name: str) -> None:
+        async with gate:
+            try:
+                items = await arm.get_all(f"/subscriptions/{sub}/resourceGroups/{rg_name}/resources", "2021-04-01",
+                                          {"$expand": "createdTime,changedTime"})
+            except Exception as exc:
+                data.warnings.append(f"inventory: creation dates unavailable for resource group {rg_name}: {exc}")
+                return
+            for item in items:
+                times[(item.get("id") or "").lower()] = item
+
+    await asyncio.gather(*(fetch(g["name"]) for g in data.resource_groups if g.get("name")))
+    for row in rows:
+        extra = times.get((row.get("id") or "").lower()) or {}
+        row["createdTime"] = extra.get("createdTime")
+        row["changedTime"] = extra.get("changedTime")
+    data.resources = rows
 
 
 async def collect_costs(context: ScanContext, data: AnalysisData, months: int = 12, days: int = 30) -> None:
@@ -210,7 +247,7 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
         context = build_context(credential, arm, sub)
         logger.info("Collecting inventory for %s (%s)", sub["name"], sub["id"])
         progress("Collecting resource inventory", 1, total)
-        await collect_inventory(arm, data)
+        await collect_inventory(context, arm, data)
         if include_cost:
             progress("Querying Cost Management (throttled API, can take a minute)", 2, total)
             logger.info("Querying Cost Management")

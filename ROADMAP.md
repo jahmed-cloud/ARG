@@ -9,14 +9,15 @@ This reflects what's actually planned, based on known gaps in the current build 
 - **Resource Visualizer.** A graph view showing relationships between Azure resources (VNet → subnet → NIC → VM, storage account → private endpoint, etc.), not just a flat findings list. Mentioned in the UI as a nav item; not yet built.
 - **Per-tenant Graph permission verification.** Right now "Graph Access" in Settings is a single on/off toggle the admin sets manually after granting consent in Azure AD. There's no in-app way to verify which of the five required permissions are actually granted — a partial-consent tenant will silently behave like a no-consent one with a generic 403, rather than telling you exactly which permission is missing.
 - **CI/CD pipeline.** `.github/workflows/` doesn't exist yet — no automated test run, build check, or image publish on push.
-- **Test suite.** `tests/unit/`, `tests/integration/`, `tests/e2e/` are empty placeholders. All verification so far has been manual (`docker compose up --build` + live API calls during development), which doesn't scale and won't catch regressions automatically.
+- **Test suite.** `tests/unit/` now covers the posture scanners (mock mode + detection helpers) and the subscription analysis report generator (`make test`). `tests/integration/` and `tests/e2e/` are still missing, and the original scanners/API have no tests yet.
+- **Surface subscription analysis in the UI.** The `scripts.subscription_analysis` CLI renders a full 01–05 markdown review from scanner findings; the same renderer could back a "Subscription review" report type in `backend/services/report_service.py`.
 
 ## Planned, not yet started
 
 - **Scheduled report delivery.** `workers/report_worker.py` for periodic report generation (e.g. weekly governance summary emailed to stakeholders) isn't implemented — reports are currently on-demand only.
 - **Webhook delivery on scan completion.** The webhook *registration* API exists (`backend/api/routes/webhooks.py`), but nothing actually fires a webhook when a scan finishes. Today it's a configured-but-inert feature.
 - **One-click automated remediation.** Currently `FEATURE_AUTO_REMEDIATION=false` by default and intentionally — the Remediation page generates scripts/checklists for a human to review and run, it doesn't execute anything against Azure itself. Turning this on safely needs a real approval workflow, not just a flag flip.
-- **Microsoft Defender for Cloud integration.** `azure-mgmt-security` is already a dependency but no scanner uses it yet — Defender's own recommendations aren't pulled in alongside ARG's own findings.
+- **Microsoft Defender for Cloud integration (deeper).** Defender plan coverage, secure score and unhealthy High-severity assessments are now imported through Resource Graph (`securityresources`). Still missing: regulatory-compliance standards, attack paths, and de-duplication between Defender recommendations and ARG's own findings on the same resource.
 - **Per-permission Graph consent UI.** Show exactly which of `User.Read.All` / `AuditLog.Read.All` / `Reports.Read.All` / `RoleManagement.Read.Directory` / `Application.Read.All` Azure AD actually granted, rather than a single boolean.
 - **Multi-tenant Service Principal validation.** A "Test Connection" button when registering a tenant, so a typo'd Tenant ID or bad credential is caught at registration time instead of surfacing as a cryptic auth error on the next scan.
 

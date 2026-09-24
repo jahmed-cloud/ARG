@@ -70,15 +70,22 @@
 
 ### 💀 Orphan Detection (15+ scanners)
 - Unattached managed disks, old snapshots, deallocated VMs
-- Unused public IPs, orphaned NICs, empty load balancers
-- Unused storage accounts, orphaned backups
-- Idle SQL databases, underutilized flexible servers
+- Unused public IPs, public IPs held by VM-less NICs, orphaned NICs and NSGs, empty load balancers
+- Unused storage accounts (verified against 7-day transaction metrics), orphaned backups
+- Idle SQL databases, idle Cosmos DB accounts, idle IoT Hubs, empty resource groups
+- DDoS Network Protection plans that protect no VNet or public IP
+- Private Link DNS zones with no endpoints
 
 ### 💰 Cost Optimization
 - Azure Cost Management integration
 - Per-resource monthly/annual savings estimates
 - Top 10 cost-saving opportunities dashboard
 - Cost trend analysis
+- Previous-generation App Service plans (Premium v2 → v3) and CPU-saturated plans
+- Hyperscale databases on the legacy storage meter
+- Azure OpenAI / Foundry spend without an AI gateway, and AI account sprawl
+- Storage account sprawl and transaction hotspots
+- Budgets exceeded month after month, and Advisor reservation / savings-plan opportunities
 
 ### 🆔 Entra ID Hygiene
 - Stale/unused applications and service principals
@@ -94,13 +101,23 @@
 - CAF alignment scoring
 - Zero Trust alignment scoring
 - Governance Score (0–100)
+- Environment tag vs name mismatches (e.g. a `-Test` database tagged `prod`) and tag-key typos
+- Production and non-production sharing one App Service plan; app and data tiers split across regions
+- Log Analytics daily caps that silently drop data, App Insights linked to deleted workspaces, missing Service Health alerts
+- Many unrelated workloads sharing one subscription (landing-zone gap)
 
 ### 🔒 Security
 - Public storage accounts, SQL servers, Key Vaults
-- Disabled Defender plans
+- Disabled Defender plans, low secure score, and imported Defender for Cloud recommendations
 - Missing backup configurations
 - Expired certificates
-- Missing diagnostic settings
+- Missing diagnostic settings (verified per resource in live scans)
+- RDP/SSH open to the Internet, VM public IPs next to Bastion, end-of-support OS images
+- SQL "Allow Azure services" / ad-hoc single-IP firewall rules, Entra-only auth disabled
+- Storage shared-key access and open networks; Key Vault access-policy model, soft delete, purge protection
+- Azure OpenAI / AI Services key authentication and open networks
+- Web apps allowing HTTP, EOL runtimes (.NET, Node, Python, PHP), weak TLS, no managed identity
+- Excess subscription Owners, standing User Access Administrator, privileged service principals
 - Security Score (0–100)
 
 ### 🌊 Terraform Drift Detection
@@ -114,6 +131,32 @@
 - Board-level reports
 - Technical CSV/Excel/JSON exports
 - Compliance reports
+
+### 🧭 Subscription Analysis Report (CLI)
+Run every scanner against one subscription — no Docker, database or Celery needed — and get a
+structured FinOps / architecture review as markdown:
+
+```bash
+pip install -r backend/requirements.txt
+az login
+python -m scripts.subscription_analysis --subscription "<subscription-id-or-name>"
+# optional: --output ./reports/my-sub  --auth default  --scanners a,b  --config thresholds.json  --skip-cost
+```
+
+```
+reports/<subscription-name>/
+├── README.md                    # executive summary, headline savings, top risks, action list
+├── 01-current-findings/         # baseline, workloads, architecture diagram, resource inventory
+├── 02-gap-analysis/             # gaps by area (structural, security, operations, performance, FinOps)
+├── 03-cost-drivers/             # 12-month trend, service/RG/resource breakdown, savings register
+├── 04-architectural-critique/   # inferred evolution, decision-by-decision critique, target, roadmap
+└── 05-deep-dive/                # per-area technical detail + raw JSON evidence
+```
+
+The identity needs **Reader**, **Cost Management Reader** and **Security Reader** on the subscription.
+Savings estimates are calculated in USD (list prices or actual `CostUSD`) and shown in the billing
+currency at the subscription's implied exchange rate. Generated reports contain resource IDs and
+principal IDs — `reports/` is git-ignored.
 
 ---
 
@@ -266,6 +309,7 @@ docker compose down -v       # stop containers AND delete all data (Postgres/Red
 | Entra ID Hygiene | Global Reader (Graph API) |
 | Policy Compliance | Reader |
 | Security | Security Reader |
+| Metrics, diagnostic settings, SQL firewall rules, site config (posture scanners) | Reader |
 
 These are **Azure AD / Azure RBAC roles** assigned to the Service Principal you register in ARG's Settings page — separate from the Linux/Docker permissions discussed above. To create the Service Principal and assign Reader access:
 
@@ -285,17 +329,19 @@ arg/
 ├── backend/           # FastAPI + Python 3.12
 ├── workers/           # Celery worker definitions
 ├── scanners/          # Plugin-based scanner framework
-│   ├── base/          # BaseScanner abstract class
-│   ├── compute/       # VM, disk, snapshot scanners
-│   ├── network/       # IP, NIC, LB scanners
+│   ├── base/          # BaseScanner, PostureScanner, shared Azure API helpers
+│   ├── compute/       # VM, disk, snapshot, App Service scanners
+│   ├── network/       # IP, NIC, LB, NSG, DDoS, DNS scanners
 │   ├── storage/       # Storage account scanners
+│   ├── database/      # SQL, Hyperscale, Cosmos DB scanners
+│   ├── cost/          # IoT, AI spend, commitment-discount scanners
 │   ├── identity/      # Entra ID scanners
-│   ├── governance/    # Tags, naming, policy scanners
-│   ├── security/      # Security posture scanners
+│   ├── governance/    # Tags, naming, policy, observability, budget scanners
+│   ├── security/      # Security posture, Defender, RBAC scanners
 │   └── terraform/     # Drift detection scanners
 ├── reports/           # Report generation engine
 ├── docs/              # Documentation
-├── scripts/           # Utility scripts
+├── scripts/           # Utility scripts (incl. subscription_analysis CLI)
 ├── docker/            # Dockerfiles
 ├── helm/              # Helm charts for Kubernetes
 ├── terraform/         # Infrastructure as Code
@@ -317,7 +363,8 @@ cd frontend
 npm install
 npm run dev
 
-# Run all tests
+# Run all tests (unit tests run offline against the scanners' mock data)
+pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 make test
 ```
 

@@ -36,11 +36,18 @@ logger = logging.getLogger(__name__)
 # Add new scanner modules here when they're created; forgetting this step
 # is the most common reason a new scanner silently never runs.
 from scanners.compute import compute_scanners  # noqa: F401
+from scanners.compute import compute_posture_scanners  # noqa: F401
 from scanners.identity import identity_scanners  # noqa: F401
 from scanners.network import network_scanners  # noqa: F401
+from scanners.network import network_posture_scanners  # noqa: F401
 from scanners.storage import storage_scanners  # noqa: F401
+from scanners.storage import storage_posture_scanners  # noqa: F401
 from scanners.governance import governance_scanners  # noqa: F401
+from scanners.governance import governance_posture_scanners  # noqa: F401
 from scanners.security import security_scanners  # noqa: F401
+from scanners.security import security_posture_scanners  # noqa: F401
+from scanners.database import database_scanners  # noqa: F401
+from scanners.cost import cost_scanners  # noqa: F401
 from scanners.terraform import terraform_scanners  # noqa: F401
 
 
@@ -455,6 +462,11 @@ def _build_scan_context(subscription_id: str, tenant: any, job_id: str) -> any:
             context.cost_management_client = CostManagementClient(credential)
         except Exception:
             logger.warning("Cost Management client not available")
+
+        # ARM REST client for posture scanners (metrics, diagnostic settings,
+        # firewall rules, site config, Cost Management query, budgets).
+        from scanners.base.azure_api import ArmClient
+        context.arm_client = ArmClient(credential)
 
         # Add Graph client if available
         try:

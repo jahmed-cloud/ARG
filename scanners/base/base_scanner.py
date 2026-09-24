@@ -4,7 +4,7 @@ Azure Resource Guardian - Base Scanner Framework
 All scanners inherit from BaseScanner.
 
 Design philosophy:
-- Scanners are stateless — they receive credentials and return findings
+- Scanners are stateless - they receive credentials and return findings
 - Each scanner is independently deployable and testable
 - The framework handles retry logic, timing, and error wrapping
 - Scanners declare their requirements (Graph API, Cost API, etc.)
@@ -75,7 +75,7 @@ class SeverityLevel(str, Enum):
 class ScannerFinding:
     """
     A single finding produced by a scanner.
-    Immutable after creation — scanners should not mutate findings.
+    Immutable after creation - scanners should not mutate findings.
     """
     finding_type:   str
     title:          str
@@ -105,7 +105,7 @@ class ScannerFinding:
     # Financial
     estimated_monthly_savings_usd: Optional[float] = None
 
-    # Evidence — scanner-specific raw data for audit trail
+    # Evidence - scanner-specific raw data for audit trail
     evidence: Dict[str, Any] = field(default_factory=dict)
 
     # Compliance mappings
@@ -133,7 +133,7 @@ class ScanContext:
     management_client:        Any = None
     cost_management_client:   Any = None
     graph_client:             Any = None
-    # scanners.base.azure_api.ArmClient — ARM REST (metrics, diagnostic
+    # scanners.base.azure_api.ArmClient - ARM REST (metrics, diagnostic
     # settings, firewall rules, Cost Management query, budgets). None means
     # "no live Azure access": ARM-dependent scanners fall back to mock data.
     arm_client:               Any = None
@@ -179,7 +179,7 @@ class ScanOutput:
 @dataclass
 class ScannerMetadata:
     """
-    Declarative metadata about a scanner — used for registration and display.
+    Declarative metadata about a scanner - used for registration and display.
     """
     scanner_name:      str
     display_name:      str
@@ -241,7 +241,7 @@ class BaseScanner(ABC):
         3. Create ScannerFinding objects for violations
         4. Return ScanOutput with all findings
 
-        Do NOT raise exceptions for individual resource failures —
+        Do NOT raise exceptions for individual resource failures -
         log warnings and continue. Only raise for complete scan failures.
         """
         ...
@@ -290,7 +290,7 @@ class BaseScanner(ABC):
             )
             elapsed = time.perf_counter() - start_time
             self.logger.info(
-                f"Scanner {self.scanner_name} completed in {elapsed:.1f}s — "
+                f"Scanner {self.scanner_name} completed in {elapsed:.1f}s - "
                 f"{output.finding_count} findings across {output.resources_scanned} resources"
             )
             return output
@@ -474,7 +474,7 @@ def register_scanner(cls: Type[BaseScanner]) -> Type[BaseScanner]:
     return cls
 
 
-# Finding types that represent a genuinely orphaned/unused resource —
+# Finding types that represent a genuinely orphaned/unused resource -
 # used to set/clear ResourceInventory.is_orphaned (see
 # workers/scan_worker.py _persist_finding, which sets it, and
 # backend/api/routes/findings.py update_finding_status, which clears it

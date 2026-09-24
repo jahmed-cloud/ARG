@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m scripts.local_portal",
                                 description="Local web portal for ARG subscription analysis reports.")
-    p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1 — local only)")
+    p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1 - local only)")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--reports-dir", default=str(REPO_ROOT / "reports"),
                    help="Folder holding <subscription>/ report folders (default: <ARG repo>/reports)")
@@ -76,7 +76,7 @@ def main(argv=None) -> int:
     if status["signed_in"]:
         print(f"  Azure CLI    : {status['account']} (tenant {status['tenant_id']})")
     else:
-        print(f"  Azure CLI    : NOT SIGNED IN — {status['error']}")
+        print(f"  Azure CLI    : NOT SIGNED IN - {status['error']}")
     print("  Stop with Ctrl+C")
 
     if not args.no_browser:

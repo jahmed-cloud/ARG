@@ -2,14 +2,14 @@
 Azure Resource Guardian - Governance, Observability & FinOps Posture Scanners
 ==============================================================================
 Scanners in this module:
-1. EnvironmentTagMismatchScanner   — Name says dev/test, tag says prod (or the reverse)
-2. TagKeyTypoScanner               — Tag keys one or two edits away from a standard key
-3. SubscriptionWorkloadSprawlScanner — Many unrelated workloads sharing one subscription
-4. LogAnalyticsScanner             — Tiny daily caps that silently drop data; workspace sprawl
-5. AppInsightsWorkspaceScanner     — App Insights linked to deleted workspaces, or classic mode
-6. ServiceHealthAlertScanner       — No Service Health activity-log alert for the subscription
-7. EmptyResourceGroupScanner       — Resource groups with no resources
-8. BudgetScanner                   — Missing budget, or budget exceeded month after month
+1. EnvironmentTagMismatchScanner   - Name says dev/test, tag says prod (or the reverse)
+2. TagKeyTypoScanner               - Tag keys one or two edits away from a standard key
+3. SubscriptionWorkloadSprawlScanner - Many unrelated workloads sharing one subscription
+4. LogAnalyticsScanner             - Tiny daily caps that silently drop data; workspace sprawl
+5. AppInsightsWorkspaceScanner     - App Insights linked to deleted workspaces, or classic mode
+6. ServiceHealthAlertScanner       - No Service Health activity-log alert for the subscription
+7. EmptyResourceGroupScanner       - Resource groups with no resources
+8. BudgetScanner                   - Missing budget, or budget exceeded month after month
 """
 
 import sys
@@ -197,22 +197,22 @@ class SubscriptionWorkloadSprawlScanner(PostureScanner):
     severity = SeverityLevel.LOW
 
     MAX_WORKLOADS = 2
+    # Project-level keys win over component-level keys: 'application' values such as
+    # "APPtimizeClient" / "APPtimizeAnalytics" are parts of one project, not separate workloads.
+    WORKLOAD_KEY_PRIORITY = ("projectname", "project", "workload", "application", "app")
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
         Resources
-        | where isnotnull(tags)
-        | mv-expand bagexpansion=array tag = tags
-        | extend key = tolower(tostring(tag[0])), value = tolower(trim(' ', tostring(tag[1])))
-        | where key in ('projectname', 'project', 'application', 'workload', 'app')
-        | summarize resources = count() by value
+        | where isnotnull(tags) and array_length(bag_keys(tags)) > 0
+        | project tags
         """
         try:
             rows = await self.arg(context, query)
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
-        workloads = sorted({r["value"] for r in rows if r.get("value")})
+        workloads = sorted({w for w in (self.workload_of(r.get("tags") or {}) for r in rows) if w})
         limit = int(self.setting("max_workloads_per_subscription", self.MAX_WORKLOADS))
         if len(workloads) <= limit:
             return ScanOutput(resources_scanned=len(rows))
@@ -220,7 +220,8 @@ class SubscriptionWorkloadSprawlScanner(PostureScanner):
             context,
             finding_type="subscription_multiple_workloads",
             title=f"{len(workloads)} workloads share one subscription",
-            description=("Workload tags show unrelated workloads in one subscription: " + ", ".join(workloads)
+            description=("Workload tags (projectName/project, else workload/application) show unrelated workloads "
+                         "in one subscription: " + ", ".join(workloads)
                          + ". They share RBAC, budget, policy exemptions and quota, so none can be governed or "
                          "charged back on its own."),
             remediation_steps=("Move each workload (and prod vs non-prod) into its own landing-zone subscription "
@@ -230,8 +231,22 @@ class SubscriptionWorkloadSprawlScanner(PostureScanner):
         )
         return ScanOutput(findings=[finding], resources_scanned=len(rows))
 
+    @classmethod
+    def workload_of(cls, tags: Dict[str, Any]) -> Optional[str]:
+        lowered = {str(k).lower(): str(v).strip().lower() for k, v in tags.items() if v not in (None, "")}
+        for key in cls.WORKLOAD_KEY_PRIORITY:
+            if lowered.get(key):
+                return lowered[key]
+        return None
+
     def _mock_data(self) -> List[Dict[str, Any]]:
-        return [{"value": v, "resources": 10} for v in ("apptimize", "machine-management", "bot", "twincat coagent")]
+        return [
+            {"tags": {"projectName": "APPtimize", "Application": "APPtimizeClient"}},
+            {"tags": {"projectName": "APPtimize", "Application": "APPtimizeAnalytics"}},
+            {"tags": {"projectName": "machine-management"}},
+            {"tags": {"Application": "BOT"}},
+            {"tags": {"projectName": "TwinCAT CoAgent "}},
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +288,8 @@ class LogAnalyticsScanner(PostureScanner):
                 finding_type="log_analytics_restrictive_daily_cap",
                 title=f"Daily cap {cap * 1024:,.0f} MB: {ws['name']}",
                 description=(f"Log Analytics workspace '{ws['name']}' stops ingesting after {cap} GB/day "
-                             f"(~{cap * 1024:,.0f} MB). Everything sent after the cap — App Insights telemetry, VM "
-                             f"and audit logs — is dropped, typically during incidents when volume spikes."),
+                             f"(~{cap * 1024:,.0f} MB). Everything sent after the cap - App Insights telemetry, VM "
+                             f"and audit logs - is dropped, typically during incidents when volume spikes."),
                 resource_type="microsoft.operationalinsights/workspaces",
                 remediation_steps=("Raise or remove the cap, add an alert on the '_LogOperation' cap event, and use "
                                    "Basic/Auxiliary table plans or DCR filtering to control cost instead."),
@@ -545,7 +560,7 @@ class BudgetScanner(PostureScanner):
                     f"Monthly budget '{b.get('name')}' is {amount:,.0f} {currency}; actual cost exceeded it in "
                     f"{len(over)} of the {len(eligible)} full months since it applies (peak {peak:,.0f} {currency}, "
                     f"{peak / amount:.0%} of budget). "
-                    + ("Alerts reach only action groups — no owner e-mail or role is notified. "
+                    + ("Alerts reach only action groups - no owner e-mail or role is notified. "
                        if not owner_contacts else "Owners are notified, yet spend stays above budget. ")
                     + (f"{len(budgets)} budgets exist on this subscription; overlapping budgets dilute ownership."
                        if len(budgets) > 1 else "")

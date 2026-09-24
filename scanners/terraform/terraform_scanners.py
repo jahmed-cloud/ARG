@@ -3,8 +3,8 @@ Azure Resource Guardian - Terraform Drift Scanner
 ====================================================
 Compares live Azure resource inventory against an uploaded Terraform
 state file to identify:
-  1. Resources in Azure NOT in Terraform (unmanaged — shadow IT)
-  2. Resources in Terraform NOT in Azure (missing — drift or failed destroy)
+  1. Resources in Azure NOT in Terraform (unmanaged - shadow IT)
+  2. Resources in Terraform NOT in Azure (missing - drift or failed destroy)
 
 Why drift detection matters:
   - Unmanaged resources accumulate quietly and bypass change control.
@@ -14,7 +14,7 @@ Why drift detection matters:
 Terraform state is uploaded via the API and stored in the
 terraform_states table as JSON (TerraformState.resources). The worker
 is responsible for loading that JSON and attaching it to the
-ScanContext as `context.terraform_state` before invoking this scanner —
+ScanContext as `context.terraform_state` before invoking this scanner -
 the scanner itself never touches the database directly, consistent
 with every other scanner in this package.
 """
@@ -34,7 +34,7 @@ from scanners.base.base_scanner import (
     register_scanner,
 )
 
-# Resource types skipped in drift detection — auto-managed by Azure itself,
+# Resource types skipped in drift detection - auto-managed by Azure itself,
 # never expected to appear in a Terraform state file.
 SKIP_DRIFT_TYPES = {
     "microsoft.compute/virtualmachines/extensions",
@@ -45,7 +45,7 @@ SKIP_DRIFT_TYPES = {
 
 # Best-effort Azure resource type -> Terraform resource type mapping,
 # used only to generate a plausible `terraform import` command for
-# unmanaged resources. Not exhaustive — operators should verify the
+# unmanaged resources. Not exhaustive - operators should verify the
 # correct resource type for anything not in this map.
 TF_TYPE_MAP = {
     "microsoft.compute/virtualmachines": "azurerm_linux_virtual_machine",
@@ -70,7 +70,7 @@ class TerraformDriftScanner(BaseScanner):
     uploaded Terraform state file) rather than purely on the Resource
     Graph. If no state has been imported for the subscription being
     scanned, this scanner returns zero findings with a warning rather
-    than raising — there's nothing to compare against yet.
+    than raising - there's nothing to compare against yet.
     """
 
     scanner_name = "terraform_drift_scanner"
@@ -83,7 +83,7 @@ class TerraformDriftScanner(BaseScanner):
         tf_state = getattr(context, "terraform_state", None)
         if not tf_state:
             return ScanOutput(
-                warnings=["No Terraform state imported for this subscription — skipping drift check."]
+                warnings=["No Terraform state imported for this subscription - skipping drift check."]
             )
 
         query = """

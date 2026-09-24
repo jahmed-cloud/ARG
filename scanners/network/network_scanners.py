@@ -4,10 +4,10 @@ Azure Resource Guardian - Network Scanners
 Detects orphaned and wasteful network resources.
 
 Scanners in this module:
-1. UnusedPublicIPScanner          — Public IPs not attached to any resource
-2. OrphanedNICScanner              — Network interfaces not attached to any VM
-3. EmptyLoadBalancerScanner        — Load balancers with no backend pool members
-4. EmptyApplicationGatewayScanner  — App Gateways with no backend pool members
+1. UnusedPublicIPScanner          - Public IPs not attached to any resource
+2. OrphanedNICScanner              - Network interfaces not attached to any VM
+3. EmptyLoadBalancerScanner        - Load balancers with no backend pool members
+4. EmptyApplicationGatewayScanner  - App Gateways with no backend pool members
 
 Network orphans are particularly costly because Standard SKU resources
 (public IPs, load balancers, app gateways) bill continuously regardless

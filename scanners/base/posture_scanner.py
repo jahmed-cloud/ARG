@@ -24,7 +24,7 @@ SUBSCRIPTION_RESOURCE_GROUP = "(subscription)"
 
 
 class PostureScanner(BaseScanner):
-    """Abstract helper base — subclasses still implement scan()."""
+    """Abstract helper base - subclasses still implement scan()."""
 
     async def arg(self, context: ScanContext, query: str, *, tenant_scope: bool = False) -> List[Dict[str, Any]]:
         rows = await query_resource_graph(context, query, tenant_scope=tenant_scope)

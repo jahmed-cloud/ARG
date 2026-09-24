@@ -16,7 +16,7 @@ ARM_SCOPE = "https://management.azure.com/.default"
 
 
 def token_claims(token: str) -> Dict[str, Any]:
-    """Decode (without verifying) the payload of a JWT access token — display purposes only."""
+    """Decode (without verifying) the payload of a JWT access token - display purposes only."""
     try:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
@@ -82,7 +82,7 @@ class AzureCliSession:
             return self._credential
 
     def status(self, refresh: bool = False) -> Dict[str, Any]:
-        """{'signed_in', 'account', 'display_name', 'tenant_id', 'error'} — cached for a few minutes."""
+        """{'signed_in', 'account', 'display_name', 'tenant_id', 'error'} - cached for a few minutes."""
         with self._lock:
             fresh = time.time() - self._checked_at < self.STATUS_TTL_SECONDS
             if self._status and fresh and not refresh:

@@ -17,20 +17,20 @@ AREAS = [
 STRUCTURAL, SECURITY, OPERATIONAL, PERFORMANCE, FINOPS = AREAS
 
 DEEP_DIVE_FOLDERS = {
-    "networking": "Networking — VNets, NICs, public IPs, NSGs, DDoS, Bastion, DNS",
-    "compute-appservice": "Compute & App Service — VMs, plans, sites, runtime configuration",
-    "data-sql-storage": "Data platform — SQL, storage accounts, Cosmos DB",
-    "ai-foundry": "AI — Foundry / Azure OpenAI accounts, deployments, spend",
-    "security-identity": "Security & identity — Defender, RBAC, Key Vault, Entra ID",
-    "observability-operations": "Observability, operations & governance — logs, alerts, tags, naming",
-    "cost-finops": "Cost & FinOps — budgets, commitments, idle services",
+    "networking": "Networking - VNets, NICs, public IPs, NSGs, DDoS, Bastion, DNS",
+    "compute-appservice": "Compute & App Service - VMs, plans, sites, runtime configuration",
+    "data-sql-storage": "Data platform - SQL, storage accounts, Cosmos DB",
+    "ai-foundry": "AI - Foundry / Azure OpenAI accounts, deployments, spend",
+    "security-identity": "Security & identity - Defender, RBAC, Key Vault, Entra ID",
+    "observability-operations": "Observability, operations & governance - logs, alerts, tags, naming",
+    "cost-finops": "Cost & FinOps - budgets, commitments, idle services",
 }
 
 WAVE_NO_REGRET, WAVE_OPTIMISE, WAVE_STRUCTURAL = 1, 2, 3
 WAVE_NAMES = {
-    WAVE_NO_REGRET: "Wave 1 — No-regret cleanup",
-    WAVE_OPTIMISE: "Wave 2 — Optimisation",
-    WAVE_STRUCTURAL: "Wave 3 — Structural",
+    WAVE_NO_REGRET: "Wave 1 - No-regret cleanup",
+    WAVE_OPTIMISE: "Wave 2 - Optimisation",
+    WAVE_STRUCTURAL: "Wave 3 - Structural",
 }
 
 
@@ -82,6 +82,7 @@ FINDING_CLASSIFICATION: Dict[str, Classification] = {
     "sql_entra_admin_missing": Classification(SECURITY, "data-sql-storage", WAVE_NO_REGRET),
     "sql_hyperscale_legacy_storage_pricing": Classification(FINOPS, "data-sql-storage", WAVE_OPTIMISE, "database"),
     "idle_sql_database": Classification(FINOPS, "data-sql-storage", WAVE_NO_REGRET),
+    "sql_database_underutilized": Classification(FINOPS, "data-sql-storage", WAVE_OPTIMISE, "database"),
     "sql_database_cpu_saturated": Classification(PERFORMANCE, "data-sql-storage", WAVE_OPTIMISE, "database"),
     "cross_region_app_data_tier": Classification(STRUCTURAL, "data-sql-storage", WAVE_STRUCTURAL, "crossregion"),
     "cosmos_public_network_access": Classification(SECURITY, "data-sql-storage", WAVE_OPTIMISE),

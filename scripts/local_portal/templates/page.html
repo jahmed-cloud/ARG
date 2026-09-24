@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ title }} — ARG Local Portal{% endblock %}
+{% block title %}{{ title }} - ARG Local Portal{% endblock %}
 {% block main_class %}with-sidebar{% endblock %}
 {% block content %}
 <aside class="sidebar">
@@ -16,6 +16,14 @@
   <nav class="crumbs">
     {% for c in crumbs %}<a href="{{ c.href }}">{{ c.label }}</a>{% if not loop.last %} / {% endif %}{% endfor %}
   </nav>
+  {% if folder %}
+  <div class="doc-toolbar" data-folder="{{ folder }}">
+    <button type="button" class="secondary export-pdf" data-detail="summary" title="Executive summary, findings, gap analysis, cost, critique">Export PDF (summary)</button>
+    <button type="button" class="secondary export-pdf" data-detail="full" title="Everything, including inventory and every deep-dive page">Export PDF (full)</button>
+    <a class="small" href="/print/{{ folder }}?detail=summary" target="_blank" rel="noopener">Print view</a>
+    <span class="muted small export-status" aria-live="polite"></span>
+  </div>
+  {% endif %}
   {% if html is not none %}
     <div class="markdown">{{ html|safe }}</div>
   {% elif json is not none %}

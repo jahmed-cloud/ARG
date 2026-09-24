@@ -1,4 +1,4 @@
-"""Entry point for `python -m scripts.subscription_analysis` — see scripts/subscription_analysis/cli.py."""
+"""Entry point for `python -m scripts.subscription_analysis` - see scripts/subscription_analysis/cli.py."""
 
 import sys
 from pathlib import Path

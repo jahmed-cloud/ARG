@@ -67,3 +67,4 @@ progress { width: 220px; }
 .markdown blockquote { border-left: 4px solid var(--border); margin: 12px 0; padding: 4px 14px; color: var(--muted); }
 .markdown details { margin: 8px 0; }
 .mermaid { background: #fff; text-align: center; margin: 12px 0; }
+.doc-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }

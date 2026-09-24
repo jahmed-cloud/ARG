@@ -2,7 +2,7 @@
 python -m scripts.subscription_analysis --subscription <id-or-name> [options]
 python -m scripts.subscription_analysis --all [options]
 
-Authentication reuses your Azure CLI session — run `az login` in a terminal
+Authentication reuses your Azure CLI session - run `az login` in a terminal
 first (no service principal needed). --auth default switches to
 DefaultAzureCredential (env vars / managed identity) for automation.
 
@@ -45,6 +45,10 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--scanners", help="Comma-separated scanner names to run (default: all)")
     p.add_argument("--config", help="JSON file with scanner configuration overrides (thresholds, required_tags, ...)")
     p.add_argument("--skip-cost", action="store_true", help="Skip Cost Management datasets")
+    p.add_argument("--pdf", nargs="?", const="summary", choices=["summary", "full"],
+                   help="Also export report-<detail>.pdf via headless Edge/Chrome (default detail: summary)")
+    p.add_argument("--pdf-only", action="store_true",
+                   help="Only (re)export the PDF of existing report folders; no Azure calls")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -74,6 +78,15 @@ def analyse_one(credential, subscription: str, reports_dir: Path, output: Path =
     return data, model, target
 
 
+def export_report_pdf(target: Path, detail: str) -> None:
+    from scripts.subscription_analysis.export import PdfExportError, export_pdf
+
+    try:
+        print(f"  PDF: {export_pdf(target, detail).resolve()}")
+    except PdfExportError as exc:
+        print(f"  PDF not created: {exc}", file=sys.stderr)
+
+
 def main(argv=None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
@@ -83,8 +96,23 @@ def main(argv=None) -> int:
 
     import asyncio
 
-    credential = make_credential(args.auth, args.tenant)
     reports_dir = Path(args.reports_dir)
+    if args.pdf_only:
+        from scripts.subscription_analysis.report import read_summaries
+
+        wanted = {s.lower() for s in (args.subscription or [])}
+        folders = [s["folder"] for s in read_summaries(reports_dir)
+                   if args.all or s["folder"].lower() in wanted
+                   or (s.get("subscription") or {}).get("id", "").lower() in wanted
+                   or ((s.get("subscription") or {}).get("name") or "").lower() in wanted]
+        if not folders:
+            raise SystemExit(f"No matching report folders in {reports_dir}.")
+        for folder in folders:
+            print(folder)
+            export_report_pdf(reports_dir / folder, args.pdf or "summary")
+        return 0
+
+    credential = make_credential(args.auth, args.tenant)
     if args.all:
         targets = [s["id"] for s in asyncio.run(list_subscriptions(credential)) if s.get("state") == "Enabled"]
         print(f"Analysing {len(targets)} enabled subscription(s)")
@@ -112,7 +140,9 @@ def main(argv=None) -> int:
         print(f"  estimated monthly savings: wave 1 {model.savings_label(waves[1])} | "
               f"wave 2 {model.savings_label(waves[2])}")
         if data.warnings:
-            print(f"  {len(data.warnings)} collection warning(s) — see 05-deep-dive/README.md")
+            print(f"  {len(data.warnings)} collection warning(s) - see 05-deep-dive/README.md")
+        if args.pdf:
+            export_report_pdf(target, args.pdf)
 
     if not args.output:
         print(f"Index: {write_index(reports_dir).resolve()}")

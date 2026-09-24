@@ -1,6 +1,6 @@
 """
 Tests for the local portal: portal login, origin/host guards, analysis job
-flow, report browsing and safe markdown rendering. Azure is faked — the
+flow, report browsing and safe markdown rendering. Azure is faked - the
 portal only ever talks to Azure through the az-login credential.
 """
 
@@ -187,3 +187,31 @@ def test_cli_rejects_output_with_multiple_subscriptions():
 
     with pytest.raises(SystemExit):
         main(["--all", "--output", "x"])
+
+
+def test_pdf_export_endpoint_print_view_and_pdf_download(client, tmp_path, monkeypatch):
+    import scripts.subscription_analysis.export as export
+
+    _login(client)
+    r = client.post("/api/analyze", json={"subscription_ids": [SUB["id"]]}, headers=ORIGIN)
+    for _ in range(50):
+        if client.get("/api/state").json()["jobs"][0]["status"] == "completed":
+            break
+        time.sleep(0.05)
+
+    def fake_export(target, detail):
+        pdf = Path(target) / f"report-{detail}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        return pdf
+
+    monkeypatch.setattr(export, "export_pdf", fake_export)
+    r = client.post("/api/export-pdf", json={"folder": "sub-demo", "detail": "summary"}, headers=ORIGIN)
+    assert r.status_code == 200 and r.json()["url"] == "/reports/sub-demo/report-summary.pdf"
+    pdf = client.get("/reports/sub-demo/report-summary.pdf")
+    assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf"
+    assert "PDF (summary)" in client.get("/").text
+    page = client.get("/reports/sub-demo/README.md")
+    assert "Export PDF (summary)" in page.text
+    assert client.get("/print/sub-demo?detail=full").status_code == 200
+    assert client.post("/api/export-pdf", json={"folder": "..", "detail": "summary"}, headers=ORIGIN).status_code == 400
+    assert client.get("/print/nope").status_code == 404

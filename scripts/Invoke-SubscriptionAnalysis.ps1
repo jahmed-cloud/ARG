@@ -25,9 +25,13 @@
 .PARAMETER SkipCost
     Skip the Cost Management datasets (faster; cost sections stay empty).
 
+.PARAMETER Pdf
+    Also export a PDF of each report: 'summary' (executive pages) or 'full' (everything).
+    Uses the locally installed Microsoft Edge or Google Chrome in headless mode.
+
 .EXAMPLE
     az login
-    C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'pp-buehler_insights_leybold_optics'
+    C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'pp-buehler_insights_leybold_optics' -Pdf summary
 
 .EXAMPLE
     .\scripts\Invoke-SubscriptionAnalysis.ps1 -All -ReportsPath 'D:\arg-reports'
@@ -51,7 +55,11 @@ param(
     [string] $TenantId,
 
     [Parameter()]
-    [switch] $SkipCost
+    [switch] $SkipCost,
+
+    [Parameter()]
+    [ValidateSet('summary', 'full')]
+    [string] $Pdf
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +83,9 @@ if ($TenantId) {
 }
 if ($SkipCost) {
     $analysisArguments += '--skip-cost'
+}
+if ($Pdf) {
+    $analysisArguments += @('--pdf', $Pdf)
 }
 
 Push-Location -Path $repositoryRoot

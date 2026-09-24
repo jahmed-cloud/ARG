@@ -4,10 +4,10 @@ Azure Resource Guardian - Compute Scanners
 Detects orphaned and wasteful compute resources.
 
 Scanners in this module:
-1. UnattachedDiskScanner    — Managed disks with no VM attached
-2. OldSnapshotScanner       — Disk snapshots older than threshold
-3. DeallocatedVMScanner     — VMs stopped/deallocated (still billing for disk/IP)
-4. IdleVMSSScanner          — VM Scale Sets with 0 instances
+1. UnattachedDiskScanner    - Managed disks with no VM attached
+2. OldSnapshotScanner       - Disk snapshots older than threshold
+3. DeallocatedVMScanner     - VMs stopped/deallocated (still billing for disk/IP)
+4. IdleVMSSScanner          - VM Scale Sets with 0 instances
 """
 
 import sys
@@ -64,7 +64,7 @@ class UnattachedDiskScanner(BaseScanner):
         findings = []
 
         # Azure Resource Graph query for unattached disks
-        # Using KQL — the ARG query language
+        # Using KQL - the ARG query language
         query = """
         Resources
         | where type == 'microsoft.compute/disks'

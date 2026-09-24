@@ -11,13 +11,13 @@ These scanners use the Microsoft Graph API and require specific permissions:
 - AuditLog.Read.All (for sign-in data)
 
 Scanners:
-1. StaleGuestUserScanner       — Guests who never signed in
-2. DormantUserScanner          — Users inactive > threshold days
-3. MFANotEnabledScanner        — Users without MFA
-4. PermanentGlobalAdminScanner — Permanent (non-PIM) Global Admins
-5. ExpiredAppCredentialScanner — Apps with expired certs/secrets
-6. UnusedServicePrincipalScanner — Service principals with no recent activity
-7. UnusedManagedIdentityScanner  — Managed identities never used
+1. StaleGuestUserScanner       - Guests who never signed in
+2. DormantUserScanner          - Users inactive > threshold days
+3. MFANotEnabledScanner        - Users without MFA
+4. PermanentGlobalAdminScanner - Permanent (non-PIM) Global Admins
+5. ExpiredAppCredentialScanner - Apps with expired certs/secrets
+6. UnusedServicePrincipalScanner - Service principals with no recent activity
+7. UnusedManagedIdentityScanner  - Managed identities never used
 """
 
 from datetime import datetime, timedelta, timezone
@@ -69,7 +69,7 @@ class StaleGuestUserScanner(BaseScanner):
             if "RequestFromNonPremiumTenantOrB2CTenant" in error_str or "premium license" in error_str.lower():
                 # Real, documented Microsoft Graph restriction, not a bug:
                 # the signInActivity property requires Azure AD Premium
-                # P1/P2 licensing — see Microsoft's "List users" docs.
+                # P1/P2 licensing - see Microsoft's "List users" docs.
                 return ScanOutput(warnings=[
                     "Stale guest check skipped: this tenant does not have an Azure AD Premium "
                     "P1/P2 license, which Microsoft Graph requires to read sign-in activity. "
@@ -130,7 +130,7 @@ class StaleGuestUserScanner(BaseScanner):
         Uses the signInActivity property (requires AuditLog.Read.All).
 
         IMPORTANT: signInActivity cannot be combined with other filterable
-        properties (like userType) in the same $filter — Microsoft Graph
+        properties (like userType) in the same $filter - Microsoft Graph
         rejects that combination with a 400 "Filter not supported" error.
         It also has no supported way to filter for signInActivity being
         null/absent at all (only eq/ne/not/ge/le on its own, and "ne null"
@@ -168,7 +168,7 @@ class StaleGuestUserScanner(BaseScanner):
         ]
 
         # The SDK returns typed objects with snake_case attributes
-        # (user.id, user.user_principal_name), not dicts — normalize to
+        # (user.id, user.user_principal_name), not dicts - normalize to
         # the camelCase dict shape the rest of this scanner expects
         # (and that _mock_guests() already returns), so downstream code
         # works identically for real and mock data.
@@ -251,7 +251,7 @@ class DormantUserScanner(BaseScanner):
                 # Real, documented Microsoft Graph restriction, not a bug:
                 # the signInActivity property (used here to determine last
                 # sign-in date) requires Azure AD Premium P1/P2 licensing
-                # and AuditLog.Read.All — see Microsoft's "List users" docs.
+                # and AuditLog.Read.All - see Microsoft's "List users" docs.
                 # No permission grant or code change can work around this.
                 return ScanOutput(warnings=[
                     "Dormant user check skipped: this tenant does not have an Azure AD Premium "
@@ -324,7 +324,7 @@ class DormantUserScanner(BaseScanner):
     async def _get_dormant_users(self, context: ScanContext, cutoff: datetime) -> List[Dict]:
         """
         IMPORTANT: signInActivity cannot be combined with other filterable
-        properties (userType, accountEnabled) in the same $filter —
+        properties (userType, accountEnabled) in the same $filter -
         Microsoft Graph rejects that combination with a 400 "Filter not
         supported" error. So we filter on userType/accountEnabled only
         and evaluate the sign-in cutoff client-side in Python below.
@@ -354,13 +354,13 @@ class DormantUserScanner(BaseScanner):
             activity = getattr(u, "sign_in_activity", None)
             last_signin_dt = getattr(activity, "last_sign_in_date_time", None) if activity else None
             # Treat "never signed in" the same as "signed in before cutoff"
-            # for dormancy purposes — both mean the account hasn't been
+            # for dormancy purposes - both mean the account hasn't been
             # used recently, which is the property this scanner flags.
             if last_signin_dt is None or last_signin_dt <= cutoff:
                 dormant.append(u)
 
         # The SDK returns typed objects with snake_case attributes, not
-        # dicts — normalize to the camelCase shape the rest of this
+        # dicts - normalize to the camelCase shape the rest of this
         # scanner (and _mock_dormant()) already expects.
         #
         # NOTE on is_privileged: this is intentionally always False here.
@@ -368,7 +368,7 @@ class DormantUserScanner(BaseScanner):
         # membership data would require either a second Graph round-trip
         # per user or sharing state between scanners, neither of which
         # this scanner does today. A dormant user who also holds a
-        # privileged role will still be reported — just without the
+        # privileged role will still be reported - just without the
         # elevated CRITICAL severity is_privileged=True would otherwise
         # trigger below.
         return [
@@ -448,7 +448,7 @@ class MFANotEnabledScanner(BaseScanner):
                 # restriction, not a bug: the authenticationMethods
                 # userRegistrationDetails report requires Azure AD
                 # Premium P1 or P2 licensing on the tenant. No
-                # permission grant or code change can work around this —
+                # permission grant or code change can work around this -
                 # it's enforced server-side by Microsoft based on the
                 # tenant's actual license SKU.
                 return ScanOutput(warnings=[
@@ -471,7 +471,7 @@ class MFANotEnabledScanner(BaseScanner):
                 title=f"MFA not enabled: {display_name}",
                 description=(
                     f"User '{display_name}' ({upn}) has no MFA method registered. "
-                    + ("⚠️ This user has ADMIN ROLES — CRITICAL risk. " if is_admin else "")
+                    + ("⚠️ This user has ADMIN ROLES - CRITICAL risk. " if is_admin else "")
                     + "Accounts without MFA are vulnerable to password spray and phishing attacks."
                 ),
                 object_id=user_id,

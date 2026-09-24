@@ -4,7 +4,7 @@ Markdown → HTML for the local portal.
 Reports embed values that come from Azure (resource names, tag values), so
 raw HTML in markdown is neutralised: every '<' outside code is escaped, and
 only the tags the report generator itself emits (<details>, <summary>,
-<br/>) survive — swapped for placeholders during rendering so the markdown
+<br/>) survive - swapped for placeholders during rendering so the markdown
 inside a <details> block (e.g. a fenced JSON block) is still rendered.
 """
 

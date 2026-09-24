@@ -2,12 +2,12 @@
 Azure Resource Guardian - Database Scanners
 ============================================
 Scanners in this module:
-1. SqlFirewallScanner                  — 'Allow Azure services', wide ranges, ad-hoc single-IP rules
-2. SqlEntraAuthScanner                 — Entra-only auth disabled / admin is an individual / no admin
-3. SqlHyperscaleLegacyPricingScanner   — Hyperscale DBs billed on the pre-Dec-2023 storage meter
-4. SqlDatabaseUtilizationScanner       — Idle databases and CPU-saturated databases
-5. CrossRegionAppDataScanner           — Web apps and their SQL server in different regions
-6. CosmosDbScanner                     — Public Cosmos DB accounts and idle accounts
+1. SqlFirewallScanner                  - 'Allow Azure services', wide ranges, ad-hoc single-IP rules
+2. SqlEntraAuthScanner                 - Entra-only auth disabled / admin is an individual / no admin
+3. SqlHyperscaleLegacyPricingScanner   - Hyperscale DBs billed on the pre-Dec-2023 storage meter
+4. SqlDatabaseUtilizationScanner       - Idle databases and CPU-saturated databases
+5. CrossRegionAppDataScanner           - Web apps and their SQL server in different regions
+6. CosmosDbScanner                     - Public Cosmos DB accounts and idle accounts
 """
 
 import sys
@@ -18,7 +18,7 @@ import ipaddress
 import re
 from typing import Any, Dict, List
 
-from scanners.base.azure_api import cost_for, get_resource_costs, get_retail_price
+from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, cached_metrics, cost_for, get_resource_costs, get_retail_price
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -94,11 +94,12 @@ class SqlFirewallScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            for srv in servers:
+            async def _enrich(srv):
                 try:
                     srv["firewall_rules"] = await context.arm_client.get_all(f"{srv['id']}/firewallRules", "2021-11-01")
                 except Exception as exc:
                     warnings.append(f"Firewall rules unavailable for {srv['name']}: {exc}")
+            await gather_limited(servers, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         findings = []
         for srv in servers:
@@ -237,7 +238,7 @@ class SqlEntraAuthScanner(PostureScanner):
             elif (srv.get("admin_type") or "").lower() == "user":
                 findings.append(self.resource_finding(
                     srv, finding_type="sql_entra_admin_individual_user", title=f"Entra admin is a single user: {name}",
-                    description=(f"SQL server '{name}' uses an individual user ({srv.get('admin_login')}) as Entra admin — "
+                    description=(f"SQL server '{name}' uses an individual user ({srv.get('admin_login')}) as Entra admin - "
                                  f"admin access is lost or orphaned when that person changes role or leaves."),
                     resource_type="microsoft.sql/servers", severity=SeverityLevel.LOW,
                     remediation_steps="Replace the user with an Entra security group of DBAs.",
@@ -340,7 +341,7 @@ class SqlHyperscaleLegacyPricingScanner(PostureScanner):
                 resource_type="microsoft.sql/servers/databases",
                 remediation_steps=(
                     "1. Confirm with Microsoft/CSP how this database can move to current Hyperscale pricing.\n"
-                    "2. Independently, archive cold data (partition by date, export to ADLS Parquet) — every GB "
+                    "2. Independently, archive cold data (partition by date, export to ADLS Parquet) - every GB "
                     "removed is billed at the legacy rate today.\n"
                     "3. After rightsizing, consider reserved capacity for the vCores."
                 ),
@@ -369,7 +370,12 @@ class SqlHyperscaleLegacyPricingScanner(PostureScanner):
 
 @register_scanner
 class SqlDatabaseUtilizationScanner(PostureScanner):
-    """30-day CPU/DTU per database (live mode): zero activity -> idle, peaks at 100% -> saturated."""
+    """
+    30-day CPU/DTU and successful connections per database (live mode):
+    - idle: CPU/DTU never above 1% AND no successful connections -> nobody uses it (saving = its cost);
+    - under-utilised: CPU/DTU never above 1% but it has connections -> in use, oversized;
+    - saturated: peaks >= 95% with a sustained average >= 10%.
+    """
 
     scanner_name = "sql_database_utilization_scanner"
     display_name = "SQL Database Utilization"
@@ -396,17 +402,23 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
         warnings = []
         if self.is_live(context) and dbs:
             costs = await get_resource_costs(context)
-            for db in dbs:
+            async def _enrich(db):
                 dtu = (db.get("sku_tier") or "").lower() in ("basic", "standard", "premium")
                 metric = "dtu_consumption_percent" if dtu else "cpu_percent"
                 try:
-                    m = await context.arm_client.metrics_summary(db["id"], [metric])
+                    m = await cached_metrics(context, db["id"], [metric], aggregation="Average,Maximum")
                     db["util_avg"] = (m.get(metric) or {}).get("average")
                     db["util_max"] = (m.get(metric) or {}).get("maximum")
                     db["metric"] = metric
                 except Exception as exc:
                     warnings.append(f"Metrics unavailable for {db['name']}: {exc}")
+                try:
+                    c = await cached_metrics(context, db["id"], ["connection_successful"], aggregation="Total")
+                    db["connections_30d"] = (c.get("connection_successful") or {}).get("total") or 0.0
+                except Exception as exc:
+                    warnings.append(f"Connection metric unavailable for {db['name']}: {exc}")
                 db["cost_usd_30d"] = (cost_for(costs, db["id"]) or {}).get("cost_usd")
+            await gather_limited(dbs, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         findings = []
         for db in dbs:
@@ -414,16 +426,34 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
             if peak is None:
                 continue
             label = f"{db.get('sku_name')}/{db.get('capacity')}"
-            if peak < 1.0:
+            connections = db.get("connections_30d")
+            evidence = {"metric": db.get("metric"), "max_30d": peak, "avg_30d": avg,
+                        "successful_connections_30d": connections}
+            if peak < 1.0 and not connections:
+                basis = ("no successful connections" if connections == 0
+                         else "connection metric unavailable, CPU only")
                 findings.append(self.resource_finding(
                     db, finding_type="idle_sql_database", title=f"Idle database: {db['name']}",
-                    description=(f"Database '{db['name']}' ({label}) peaked at {peak:.1f}% {db.get('metric')} over "
-                                 f"30 days — no meaningful workload."),
+                    description=(f"Database '{db['name']}' ({label}) peaked at {peak:.1f}% {db.get('metric')} with "
+                                 f"{basis} over 30 days - nobody is using it."),
                     resource_type="microsoft.sql/servers/databases", severity=SeverityLevel.LOW,
                     remediation_steps="Confirm with the owner; export a BACPAC and delete, or move to serverless with auto-pause.",
                     azure_cli_script=f"az sql db delete --ids {db['id']} --yes",
-                    evidence={"metric": db.get("metric"), "max_30d": peak, "avg_30d": avg},
+                    evidence=evidence,
                     estimated_monthly_savings_usd=round(db["cost_usd_30d"], 2) if db.get("cost_usd_30d") else None,
+                ))
+            elif peak < 1.0:
+                findings.append(self.resource_finding(
+                    db, finding_type="sql_database_underutilized", title=f"Under-utilised database: {db['name']}",
+                    description=(f"Database '{db['name']}' ({label}) is in use ({connections:,.0f} successful connections "
+                                 f"in 30 days) but never exceeded {peak:.1f}% {db.get('metric')} - it is sized far above "
+                                 f"its workload."),
+                    resource_type="microsoft.sql/servers/databases", severity=SeverityLevel.LOW,
+                    remediation_steps=("Move to a smaller tier, serverless with auto-pause, or into an elastic pool "
+                                       "with other small databases."),
+                    azure_cli_script=f"az sql db update --ids {db['id']} --service-objective <smaller-objective>",
+                    evidence=evidence,
+                    estimated_monthly_savings_usd=None,
                 ))
             elif peak >= float(self.setting("saturated_max", self.SATURATED_MAX)) and (avg or 0) >= float(
                     self.setting("saturated_min_avg", self.SATURATED_MIN_AVG)):
@@ -436,7 +466,7 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
                     remediation_steps=("Review Query Store top consumers, move reporting to a read replica, and "
                                        "schedule maintenance jobs off-peak before scaling up."),
                     azure_cli_script=f"az sql db show --ids {db['id']} --query \"{{sku:sku, readScale:readScale}}\"",
-                    evidence={"metric": db.get("metric"), "max_30d": peak, "avg_30d": avg},
+                    evidence=evidence,
                     estimated_monthly_savings_usd=0.0,
                 ))
         return ScanOutput(findings=findings, resources_scanned=len(dbs), warnings=warnings)
@@ -448,10 +478,13 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
         return [
             {**common, "id": f"{base}/db-analysis", "name": "sql-app-1/db-analysis", "sku_name": "Standard",
              "sku_tier": "Standard", "capacity": 10, "metric": "dtu_consumption_percent",
-             "util_avg": 0.0, "util_max": 0.0, "cost_usd_30d": 14.7},
+             "util_avg": 0.0, "util_max": 0.0, "connections_30d": 0.0, "cost_usd_30d": 14.7},
+            {**common, "id": f"{base}/db-reports", "name": "sql-app-1/db-reports", "sku_name": "Standard",
+             "sku_tier": "Standard", "capacity": 50, "metric": "dtu_consumption_percent",
+             "util_avg": 0.1, "util_max": 0.6, "connections_30d": 1240.0, "cost_usd_30d": 73.6},
             {**common, "id": f"{base}/db-hs-1", "name": "sql-app-1/db-hs-1", "sku_name": "HS_Gen5",
              "sku_tier": "Hyperscale", "capacity": 4, "metric": "cpu_percent",
-             "util_avg": 40.1, "util_max": 100.0, "cost_usd_30d": 1580.0},
+             "util_avg": 40.1, "util_max": 100.0, "connections_30d": 90000.0, "cost_usd_30d": 1580.0},
         ]
 
 
@@ -552,12 +585,13 @@ class CosmosDbScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            for acc in accounts:
+            async def _enrich(acc):
                 try:
                     m = await context.arm_client.metrics_summary(acc["id"], ["TotalRequests"], aggregation="Count,Total")
                     acc["requests_30d"] = (m.get("TotalRequests") or {}).get("total") or 0.0
                 except Exception as exc:
                     warnings.append(f"Metrics unavailable for {acc['name']}: {exc}")
+            await gather_limited(accounts, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         findings = []
         for acc in accounts:

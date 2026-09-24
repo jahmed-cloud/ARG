@@ -2,7 +2,7 @@
 Markdown report renderer for the subscription analysis CLI.
 
 Everything here is derived from AnalysisData (inventory, cost datasets and
-scanner findings) — no hand-written numbers — so the same report can be
+scanner findings) - no hand-written numbers - so the same report can be
 regenerated for any subscription.
 """
 
@@ -132,7 +132,7 @@ class Model:
 
     def savings_label(self, usd: Optional[float]) -> str:
         if not usd:
-            return "—"
+            return "-"
         billing = self.to_billing(usd)
         if billing is not None and self.currency != "USD":
             return f"{money(billing, self.currency)} (USD {usd:,.0f})"
@@ -167,7 +167,7 @@ def render_readme(m: Model) -> str:
     first, last = (m.month_keys[0], m.month_keys[-1]) if m.month_keys else (None, None)
 
     lines = [
-        f"# Subscription Analysis — `{sub['name']}`", "",
+        f"# Subscription Analysis - `{sub['name']}`", "",
         "[← All subscriptions](../README.md)", "",
         md_table(["Property", "Value"], [
             ["Subscription ID", f"`{sub['id']}`"],
@@ -190,9 +190,9 @@ def render_readme(m: Model) -> str:
     if budget_amount:
         over = sum(1 for k in m.month_keys if m.months[k] > budget_amount)
         label = " / ".join(money(a) for a in amounts) + f" {cur}/month"
-        lines.append(f"- **Budget{'s' if len(amounts) > 1 else ''}:** {label} — "
+        lines.append(f"- **Budget{'s' if len(amounts) > 1 else ''}:** {label} - "
                      f"{'the largest ' if len(amounts) > 1 else ''}exceeded in {over} of {len(m.month_keys)} months.")
-    lines.append(f"- **Findings:** {len(m.findings)} — " + ", ".join(
+    lines.append(f"- **Findings:** {len(m.findings)} - " + ", ".join(
         f"{sev_counts.get(s, 0)} {s}" for s in SEVERITIES if sev_counts.get(s)) + ".")
     lines += ["", "**Why it costs this much (last 30 days, by service):**", "",
               md_table(["#", "Service", f"{cur}", "Share"],
@@ -210,7 +210,7 @@ def render_readme(m: Model) -> str:
         lines.append("")
     if risks:
         lines += ["**Top risks (security, operations, resilience):**", ""]
-        lines += [f"- {SEV_LABEL[f['severity']]} — **{f['title']}** ({f['ref']})" for f in risks]
+        lines += [f"- {SEV_LABEL[f['severity']]} - **{f['title']}** ({f['ref']})" for f in risks]
         lines.append("")
     lines += [
         "## Report Structure", "",
@@ -246,7 +246,7 @@ def render_current_findings(m: Model) -> Tuple[str, str]:
         workloads[m.workload_of(r)].append(r)
     secure = next((f for f in m.findings if f["finding_type"] == "low_secure_score"), None)
 
-    lines = ["# 01 — Current Findings & Overview", "", "[← Back to summary](../README.md) · "
+    lines = ["# 01 - Current Findings & Overview", "", "[← Back to summary](../README.md) · "
              "Inventory: [resource-inventory.md](./resource-inventory.md)", "", "## 1. Baseline at a Glance", ""]
     lines.append(md_table(["Metric", "Value"], [
         ["Resource groups", len(m.data.resource_groups)],
@@ -370,7 +370,7 @@ def _inventory(m: Model) -> str:
 
 
 def render_gap_analysis(m: Model) -> str:
-    lines = ["# 02 — Gap Analysis", "", "[← Back to summary](../README.md)", "",
+    lines = ["# 02 - Gap Analysis", "", "[← Back to summary](../README.md)", "",
              "Severity: **Critical** = exploitable exposure or major waste, act now; **High** = material risk/cost, "
              "within 30 days; **Medium** = best-practice gap, within the quarter; **Low** = hygiene.", "",
              "## Summary Matrix", "", _area_matrix(m), ""]
@@ -380,7 +380,7 @@ def render_gap_analysis(m: Model) -> str:
             continue
         lines += [f"## {area}", ""]
         lines.append(md_table(["Ref", "Severity", "Gap", "Resource", "Recommendation"], [
-            [f["ref"], SEV_LABEL[f["severity"]], f"**{f['title']}** — {f['description']}",
+            [f["ref"], SEV_LABEL[f["severity"]], f"**{f['title']}** - {f['description']}",
              short_id(f.get("resource_id"), m.sub["id"]),
              (f.get("remediation_steps") or "").split("\n")[0]]
             for f in items
@@ -394,7 +394,7 @@ def render_cost_drivers(m: Model) -> Tuple[str, str]:
     amounts = sorted((float((b.get("properties") or {}).get("amount") or 0) for b in (m.data.cost.get("budgets") or [])
                       if ((b.get("properties") or {}).get("timeGrain") or "").lower() == "monthly"), reverse=True)
     amount = amounts[0] if amounts else 0.0
-    lines = ["# 03 — Cost Drivers", "", "[← Back to summary](../README.md) · Itemised actions: "
+    lines = ["# 03 - Cost Drivers", "", "[← Back to summary](../README.md) · Itemised actions: "
              "[savings-register.md](./savings-register.md)", "",
              f"Source: Cost Management Query API (ActualCost, {cur}). Raw data: "
              "[05-deep-dive/raw/cost](../05-deep-dive/raw/cost).", ""]
@@ -410,7 +410,7 @@ def render_cost_drivers(m: Model) -> Tuple[str, str]:
                                 key=lambda x: -abs(x[1]))
                 if deltas and abs(deltas[0][1]) >= 0.1 * (m.months[prev] or 1):
                     top_move = f"{deltas[0][0]} {deltas[0][1]:+,.0f}"
-            rows.append([k, money(v, "", 0), pct(v, amount) if amount else "—", top_move])
+            rows.append([k, money(v, "", 0), pct(v, amount) if amount else "-", top_move])
             prev = k
         rows.append(["**12-month total**", f"**{money(m.total_12m)}**", "", ""])
         lines.append(md_table(["Month", cur, "vs budget" + (f" ({amount:,.0f})" if amount else ""), "Largest change"],
@@ -443,12 +443,12 @@ def render_cost_drivers(m: Model) -> Tuple[str, str]:
         for i, (rid, e) in enumerate(m.top_resources[:15], 1)
     ], ["---:", "---", "---", "---:"]))
 
-    lines += ["", "## 5. Why the Subscription Costs This Much — Inefficiencies", ""]
+    lines += ["", "## 5. Why the Subscription Costs This Much - Inefficiencies", ""]
     costly = [f for f in m.findings if f.get("estimated_monthly_savings_usd")]
     costly.sort(key=lambda f: -(f.get("estimated_monthly_savings_usd") or 0))
     if costly:
         lines.append(md_table(["Ref", "Inefficiency", "Est. saving / month", "Wave"], [
-            [f["ref"], f"**{f['title']}** — {f['description']}", m.savings_label(f["estimated_monthly_savings_usd"]),
+            [f["ref"], f"**{f['title']}** - {f['description']}", m.savings_label(f["estimated_monthly_savings_usd"]),
              f["wave"]] for f in costly
         ]))
     else:
@@ -468,7 +468,7 @@ def render_cost_drivers(m: Model) -> Tuple[str, str]:
 
 def render_savings_register(m: Model) -> str:
     lines = ["# Savings Register", "", "[← Back to Cost Drivers](./README.md)", "",
-             "Commands are **for review only** — none were executed by the analysis. Run them after owner sign-off.", ""]
+             "Commands are **for review only** - none were executed by the analysis. Run them after owner sign-off.", ""]
     waves = m.savings_by_wave()
     for wave in (WAVE_NO_REGRET, WAVE_OPTIMISE, WAVE_STRUCTURAL):
         items = [f for f in m.findings if f["wave"] == wave]
@@ -479,7 +479,7 @@ def render_savings_register(m: Model) -> str:
         lines.append(md_table(["Ref", "Action", "Resource", "Severity", "Monthly impact"], [
             [f["ref"], f["title"], short_id(f.get("resource_id"), m.sub["id"]), SEV_LABEL[f["severity"]],
              m.savings_label(f.get("estimated_monthly_savings_usd"))] for f in items
-        ] + [["", f"**Total {WAVE_NAMES[wave].split(' — ')[0].lower()}**", "", "", f"**{m.savings_label(waves[wave])}**"]]))
+        ] + [["", f"**Total {WAVE_NAMES[wave].split(' - ')[0].lower()}**", "", "", f"**{m.savings_label(waves[wave])}**"]]))
         scripted = [f for f in items if f.get("azure_cli_script") and f.get("estimated_monthly_savings_usd")][:15]
         if scripted:
             lines += ["", "```bash"]
@@ -492,7 +492,7 @@ def render_savings_register(m: Model) -> str:
 
 def render_critique(m: Model) -> str:
     res = m.data.resources
-    lines = ["# 04 — Architectural Critique", "", "[← Back to summary](../README.md)", "",
+    lines = ["# 04 - Architectural Critique", "", "[← Back to summary](../README.md)", "",
              "> **How \"why\" is determined:** rationale is **inferred** from creation dates, SKUs, tags and naming. "
              "Treat it as a hypothesis to confirm with the workload owners.", "", "## 1. How the Estate Evolved (inferred)", ""]
     by_year: Dict[str, Counter] = defaultdict(Counter)
@@ -521,7 +521,7 @@ def render_critique(m: Model) -> str:
     for n, (key, items) in enumerate(ordered, 1):
         c = CRITIQUES[key]
         saving = sum(f.get("estimated_monthly_savings_usd") or 0 for f in items)
-        lines += [f"### Decision {n} — {c.title}", "",
+        lines += [f"### Decision {n} - {c.title}", "",
                   f"- **What was found:** {len(items)} finding(s)"
                   + (f", {m.savings_label(saving)} per month at stake" if saving else "") + ":"]
         lines += [f"  - {SEV_LABEL[f['severity']]} {f['title']} ({f['ref']})" for f in items[:8]]
@@ -547,13 +547,13 @@ def render_critique(m: Model) -> str:
                   ["After waves 1 + 2 (estimate)", money(m.total_30 - (m.to_billing(waves[1] + waves[2]) or 0))],
               ], ["---", "---:"]), "", "## 4. Roadmap", ""]
     lines.append(md_table(["Phase", "Scope", "Findings", "Exit criteria"], [
-        ["0 — Stop the bleeding (2 weeks)", WAVE_NAMES[1], sum(1 for f in m.findings if f["wave"] == 1),
+        ["0 - Stop the bleeding (2 weeks)", WAVE_NAMES[1], sum(1 for f in m.findings if f["wave"] == 1),
          "All critical findings closed; wave-1 savings realised"],
-        ["1 — Separate & govern (1–2 months)", WAVE_NAMES[2], sum(1 for f in m.findings if f["wave"] == 2),
+        ["1 - Separate & govern (1-2 months)", WAVE_NAMES[2], sum(1 for f in m.findings if f["wave"] == 2),
          "Prod/non-prod separated; AI spend attributable; budgets per workload"],
-        ["2 — Re-platform (3–6 months)", WAVE_NAMES[3], sum(1 for f in m.findings if f["wave"] == 3),
+        ["2 - Re-platform (3-6 months)", WAVE_NAMES[3], sum(1 for f in m.findings if f["wave"] == 3),
          "Landing-zone subscriptions via IaC; private data path"],
-        ["3 — Commit", "Reservations / savings plan", sum(1 for f in m.findings if f["finding_type"] == "commitment_discount_opportunity"),
+        ["3 - Commit", "Reservations / savings plan", sum(1 for f in m.findings if f["finding_type"] == "commitment_discount_opportunity"),
          "Commitment coverage of the stabilised baseline"],
     ]))
     return "\n".join(lines)
@@ -566,8 +566,8 @@ def render_deep_dives(m: Model) -> Dict[str, str]:
         items = [f for f in m.findings if f["folder"] == folder]
         sev = Counter(f["severity"] for f in items)
         index_rows.append([f"[{folder}](./{folder}/README.md)", title, len(items),
-                           ", ".join(f"{sev[s]} {s}" for s in SEVERITIES if sev.get(s)) or "—"])
-        lines = [f"# Deep Dive — {title}", "", "[← Deep-dive index](../README.md)", ""]
+                           ", ".join(f"{sev[s]} {s}" for s in SEVERITIES if sev.get(s)) or "-"])
+        lines = [f"# Deep Dive - {title}", "", "[← Deep-dive index](../README.md)", ""]
         if not items:
             lines.append("No findings in this area.")
             pages[folder] = "\n".join(lines)
@@ -579,7 +579,7 @@ def render_deep_dives(m: Model) -> Dict[str, str]:
         ]))
         lines.append("")
         for f in items:
-            lines += [f"## {f['ref']}", "", f"**{f['title']}** — {SEV_LABEL[f['severity']]} · `{f['finding_type']}` · "
+            lines += [f"## {f['ref']}", "", f"**{f['title']}** - {SEV_LABEL[f['severity']]} · `{f['finding_type']}` · "
                       f"scanner `{f['scanner']}`", "", f.get("description") or "", "",
                       f"- Resource: `{f.get('resource_id')}`"]
             for label, key in (("CAF", "caf_control"), ("CIS", "cis_control"), ("NIST", "nist_control")):
@@ -592,13 +592,13 @@ def render_deep_dives(m: Model) -> Dict[str, str]:
             if f.get("evidence"):
                 evidence = json.dumps(f["evidence"], indent=2, default=str)
                 if len(evidence) > 3000:
-                    evidence = evidence[:3000] + "\n… (truncated — see raw/findings.json)"
+                    evidence = evidence[:3000] + "\n… (truncated - see raw/findings.json)"
                 lines += ["", "<details><summary>Evidence</summary>", "", "```json", evidence, "```", "", "</details>"]
             lines.append("")
         pages[folder] = "\n".join(lines)
 
     runs = m.data.scanner_runs
-    index = ["# 05 — Deep-Dive Details", "", "[← Back to summary](../README.md)", "",
+    index = ["# 05 - Deep-Dive Details", "", "[← Back to summary](../README.md)", "",
              md_table(["Sub-folder", "Scope", "Findings", "By severity"], index_rows, ["---", "---", "---:", "---"]), "",
              "## Raw Evidence (`raw/`)", "",
              md_table(["File", "Content"], [
@@ -613,7 +613,7 @@ def render_deep_dives(m: Model) -> Dict[str, str]:
                  [r["scanner"], r["status"], r.get("resources_scanned", ""), r["findings"],
                   len(r.get("warnings") or []) or ""] for r in runs
              ], ["---", "---", "---:", "---:", "---:"]), "",
-             "> The raw files contain resource IDs, IP addresses and principal IDs — treat them as internal. "
+             "> The raw files contain resource IDs, IP addresses and principal IDs - treat them as internal. "
              "No secrets, keys or connection strings are collected."]
     if m.data.warnings:
         index += ["", "## Collection Warnings", ""] + [f"- {w}" for w in m.data.warnings[:50]]
@@ -664,7 +664,8 @@ def write_report(data: AnalysisData, output: Path) -> Model:
 
 SUMMARY_FILE = "summary.json"
 GENERATED_ENTRIES = ("README.md", SUMMARY_FILE, "01-current-findings", "02-gap-analysis", "03-cost-drivers",
-                     "04-architectural-critique", "05-deep-dive")
+                     "04-architectural-critique", "05-deep-dive",
+                     "report-summary.html", "report-summary.pdf", "report-full.html", "report-full.pdf")
 
 
 def report_folder_name(subscription: Dict[str, Any]) -> str:
@@ -721,7 +722,7 @@ def read_summaries(reports_dir: Path) -> List[Dict[str, Any]]:
 
 
 def write_index(reports_dir: Path) -> Path:
-    """reports/README.md — one row per analysed subscription, linking into its folder."""
+    """reports/README.md - one row per analysed subscription, linking into its folder."""
     rows = []
     for s in read_summaries(reports_dir):
         sev = s.get("findings_by_severity") or {}

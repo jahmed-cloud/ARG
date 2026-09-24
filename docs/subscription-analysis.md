@@ -1,4 +1,4 @@
-# Subscription Analysis — User Guide
+# Subscription Analysis - User Guide
 
 Run every ARG scanner against your Azure subscriptions **from your own workstation**, with your own
 `az login` session. There's no Docker, database or service principal. You get a FinOps and architecture review per

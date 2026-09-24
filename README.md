@@ -132,31 +132,63 @@
 - Technical CSV/Excel/JSON exports
 - Compliance reports
 
-### 🧭 Subscription Analysis Report (CLI)
-Run every scanner against one subscription — no Docker, database or Celery needed — and get a
-structured FinOps / architecture review as markdown:
+### 🧭 Subscription Analysis Report (CLI + local portal)
+Run every scanner against your subscriptions from your own workstation — **no Docker, database or
+service principal needed**. Azure access reuses your **`az login`** session (your own account).
 
 ```bash
-pip install -r backend/requirements.txt
+az login                                                   # once, in a terminal
+python -m venv .venv-local && .venv-local/bin/pip install -r requirements-local.txt
+# Windows: py -m venv .venv-local; .venv-local\Scripts\pip install -r requirements-local.txt
+```
+
+**Command line** — one folder per subscription, plus an index:
+
+```bash
+python -m scripts.subscription_analysis --subscription "<subscription-id-or-name>"   # repeatable
+python -m scripts.subscription_analysis --all                                        # every enabled subscription
+# options: --reports-dir ./reports  --tenant <id>  --scanners a,b  --config thresholds.json  --skip-cost
+```
+
+**Local portal** — the same analysis from a browser on `http://127.0.0.1:8765`:
+
+```powershell
 az login
-python -m scripts.subscription_analysis --subscription "<subscription-id-or-name>"
-# optional: --output ./reports/my-sub  --auth default  --scanners a,b  --config thresholds.json  --skip-cost
+.\scripts\Start-LocalPortal.ps1          # Windows: creates .venv-local, installs deps, starts the portal
+./scripts/start-local-portal.sh          # Linux/macOS
+python -m scripts.local_portal           # or directly (after pip install -r requirements-local.txt)
 ```
 
+- **Portal login** is a simple local username/password that only protects the portal:
+  `ARG_PORTAL_USER` (default `admin`) / `ARG_PORTAL_PASSWORD`. If no password is set, a one-time
+  password is printed in the terminal at start-up. The portal never signs in to Azure itself.
+- It shows which account the `az login` session uses, lists the subscriptions that account can see,
+  lets you **Analyze** one or several (progress shown live), and renders every report page (markdown,
+  mermaid diagrams, JSON evidence) in the browser. To switch account or tenant, run `az login` again
+  and click **Refresh**.
+- It listens on localhost only, checks the Host/Origin headers, and neutralises HTML in rendered
+  reports.
+
+Both write the same layout:
+
 ```
-reports/<subscription-name>/
-├── README.md                    # executive summary, headline savings, top risks, action list
-├── 01-current-findings/         # baseline, workloads, architecture diagram, resource inventory
-├── 02-gap-analysis/             # gaps by area (structural, security, operations, performance, FinOps)
-├── 03-cost-drivers/             # 12-month trend, service/RG/resource breakdown, savings register
-├── 04-architectural-critique/   # inferred evolution, decision-by-decision critique, target, roadmap
-└── 05-deep-dive/                # per-area technical detail + raw JSON evidence
+reports/
+├── README.md                        # index: one row per analysed subscription
+└── <subscription-name>/
+    ├── README.md                    # executive summary, headline savings, top risks, action list
+    ├── summary.json                 # machine-readable totals (used by the index/portal)
+    ├── 01-current-findings/         # baseline, workloads, architecture diagram, resource inventory
+    ├── 02-gap-analysis/             # gaps by area (structural, security, operations, performance, FinOps)
+    ├── 03-cost-drivers/             # 12-month trend, service/RG/resource breakdown, savings register
+    ├── 04-architectural-critique/   # inferred evolution, decision-by-decision critique, target, roadmap
+    └── 05-deep-dive/                # per-area technical detail + raw JSON evidence
 ```
 
-The identity needs **Reader**, **Cost Management Reader** and **Security Reader** on the subscription.
+Your account needs **Reader**, **Cost Management Reader** and **Security Reader** on each subscription.
 Savings estimates are calculated in USD (list prices or actual `CostUSD`) and shown in the billing
-currency at the subscription's implied exchange rate. Generated reports contain resource IDs and
-principal IDs — `reports/` is git-ignored.
+currency at the subscription's implied exchange rate. Re-running a subscription replaces its folder.
+Reports contain resource IDs and principal IDs — `reports/` is git-ignored. Entra ID (Graph) scanners
+are skipped in this mode.
 
 ---
 
@@ -341,7 +373,7 @@ arg/
 │   └── terraform/     # Drift detection scanners
 ├── reports/           # Report generation engine
 ├── docs/              # Documentation
-├── scripts/           # Utility scripts (incl. subscription_analysis CLI)
+├── scripts/           # Utility scripts (subscription_analysis CLI, local_portal, Start-LocalPortal.ps1)
 ├── docker/            # Dockerfiles
 ├── helm/              # Helm charts for Kubernetes
 ├── terraform/         # Infrastructure as Code

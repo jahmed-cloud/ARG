@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}ARG Local Portal{% endblock %}</title>
+  <link rel="stylesheet" href="/static/portal.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">🛡️ ARG <span>Local Portal</span></a>
+    <nav>
+      <a href="/">Subscriptions</a>
+      <a href="/reports/README.md">Reports</a>
+    </nav>
+    {% block user %}{% endblock %}
+  </header>
+  <main class="{% block main_class %}{% endblock %}">
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

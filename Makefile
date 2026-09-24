@@ -18,7 +18,7 @@ VERSION      := 0.1
 COMPOSE_FILE := docker-compose.yml
 HUB_FILE     := docker-compose.hub.yml
 
-.PHONY: build push up down logs seed migrate clean pull help test analyze
+.PHONY: build push up down logs seed migrate clean pull help test analyze analyze-all portal
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -76,5 +76,11 @@ snapshot: ## Manually trigger a score snapshot (populates the Score Trend chart)
 test: ## Run unit tests locally (needs backend/requirements.txt + requirements-dev.txt)
 	python -m pytest tests -q
 
-analyze: ## Subscription analysis report: make analyze SUB=<subscription-id-or-name>
+analyze: ## Subscription analysis report: make analyze SUB=<subscription-id-or-name>  (uses az login)
 	python -m scripts.subscription_analysis --subscription "$(SUB)"
+
+analyze-all: ## Analyse every enabled subscription visible to az login -> reports/<subscription>/
+	python -m scripts.subscription_analysis --all
+
+portal: ## Local portal on http://127.0.0.1:8765 (uses az login; pip install -r requirements-local.txt)
+	python -m scripts.local_portal

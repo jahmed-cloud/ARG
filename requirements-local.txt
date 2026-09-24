@@ -1,0 +1,22 @@
+# Azure Resource Guardian - local tools (subscription analysis CLI + local portal)
+# ================================================================================
+# Minimal set for running on your workstation with `az login` — no Docker,
+# Postgres, Redis or service principal needed:
+#   python -m venv .venv-local
+#   .venv-local/bin/pip install -r requirements-local.txt      (Linux/macOS)
+#   .venv-local\Scripts\pip install -r requirements-local.txt  (Windows)
+#
+# The Azure CLI (az) must be installed and signed in separately.
+
+# Azure access (reuses the az login session)
+azure-identity==1.16.0
+azure-mgmt-resourcegraph==8.0.0
+six==1.16.0                 # needed by azure-mgmt-resourcegraph 8.x
+httpx==0.27.0
+
+# Local portal
+fastapi==0.111.0
+uvicorn==0.29.0
+jinja2==3.1.4
+python-multipart==0.0.9
+markdown==3.6

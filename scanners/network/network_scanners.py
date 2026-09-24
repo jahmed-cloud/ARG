@@ -129,15 +129,9 @@ class UnusedPublicIPScanner(BaseScanner):
         if context.resource_graph_client is None:
             return self._mock_data()
 
-        from azure.mgmt.resourcegraph.models import QueryRequest
+        from scanners.base.azure_api import query_resource_graph
 
-        request = QueryRequest(
-            subscriptions=[context.subscription_id],
-            query=query,
-            options={"resultFormat": "objectArray", "$top": 1000},
-        )
-        response = context.resource_graph_client.resources(request)
-        return response.data or []
+        return await query_resource_graph(context, query) or []
 
     def _mock_data(self) -> List[Dict]:
         return [
@@ -235,15 +229,9 @@ class OrphanedNICScanner(BaseScanner):
         if context.resource_graph_client is None:
             return self._mock_data()
 
-        from azure.mgmt.resourcegraph.models import QueryRequest
+        from scanners.base.azure_api import query_resource_graph
 
-        request = QueryRequest(
-            subscriptions=[context.subscription_id],
-            query=query,
-            options={"resultFormat": "objectArray", "$top": 1000},
-        )
-        response = context.resource_graph_client.resources(request)
-        return response.data or []
+        return await query_resource_graph(context, query) or []
 
     def _mock_data(self) -> List[Dict]:
         return [
@@ -363,15 +351,9 @@ class EmptyLoadBalancerScanner(BaseScanner):
         if context.resource_graph_client is None:
             return self._mock_data()
 
-        from azure.mgmt.resourcegraph.models import QueryRequest
+        from scanners.base.azure_api import query_resource_graph
 
-        request = QueryRequest(
-            subscriptions=[context.subscription_id],
-            query=query,
-            options={"resultFormat": "objectArray", "$top": 1000},
-        )
-        response = context.resource_graph_client.resources(request)
-        return response.data or []
+        return await query_resource_graph(context, query) or []
 
     def _mock_data(self) -> List[Dict]:
         return [
@@ -481,15 +463,9 @@ class EmptyApplicationGatewayScanner(BaseScanner):
         if context.resource_graph_client is None:
             return self._mock_data()
 
-        from azure.mgmt.resourcegraph.models import QueryRequest
+        from scanners.base.azure_api import query_resource_graph
 
-        request = QueryRequest(
-            subscriptions=[context.subscription_id],
-            query=query,
-            options={"resultFormat": "objectArray", "$top": 1000},
-        )
-        response = context.resource_graph_client.resources(request)
-        return response.data or []
+        return await query_resource_graph(context, query) or []
 
     def _mock_data(self) -> List[Dict]:
         return [

@@ -25,14 +25,31 @@ npm install
 npm run dev
 ```
 
+### Without Docker (scanners, subscription analysis, local portal)
+
+Run these from the repository root. They use your own `az login`; no service principal is needed:
+
+```bash
+python -m venv .venv-local
+.venv-local/bin/pip install -r requirements-local.txt -r backend/requirements-dev.txt   # Windows: .venv-local\Scripts\pip
+make test                                              # offline unit tests (tests/unit)
+az login
+python -m scripts.subscription_analysis -s <subscription-id-or-name>   # writes reports/<subscription>/
+python -m scripts.local_portal                                         # http://127.0.0.1:8765
+```
+
+See [docs/subscription-analysis.md](docs/subscription-analysis.md) for the full guide.
+
 ## Making changes
 
 - **Test against a real `docker compose up --build`**, not just `python -m py_compile` or a TypeScript build. Import-level checks miss real runtime bugs (wrong env var names, missing Docker `COPY` lines, SQLAlchemy `passive_deletes` gaps, Graph SDK version mismatches — all real bugs found this way during development, not by static checks).
 - **Adding a scanner?** Follow the existing pattern in `scanners/`:
-  - Subclass `BaseScanner`, set `scanner_name`, `category`, `severity`
+  - Subclass `BaseScanner`, or `PostureScanner` (`scanners/base/posture_scanner.py`) for paginated Resource Graph, live-mode checks and subscription-level findings. Set `scanner_name`, `category`, `severity`
   - Register with `@register_scanner`
-  - Implement `scan()` to return a `ScanOutput`
-  - Provide a `_mock_*()` fallback so the scanner is testable without live Azure credentials (`context.resource_graph_client is None` / `context.graph_client is None` checks)
+  - Implement `scan()` to return a `ScanOutput`. Emit **at most one finding per (resource, finding_type)**, because the worker upserts on that pair. Put per-rule and per-item details in `evidence`
+  - Provide a `_mock_*()` fallback so the scanner is testable without live Azure credentials (`context.resource_graph_client is None` / `context.graph_client is None` checks). Do ARM, metric or cost enrichment only when `context.arm_client` is set, and use the helpers in `scanners/base/azure_api.py` (`cached_metrics`, `get_resource_costs`, `get_retail_price`) rather than building SDK clients
+  - New module? Add it to the import list in `workers/scan_worker.py` **and** `SCANNER_MODULES` in `scripts/subscription_analysis/collector.py`
+  - Classify each new finding type in `scripts/subscription_analysis/knowledge.py` (gap area, deep-dive folder, savings wave, critique), add a case to `tests/unit/test_posture_scanners.py`, and regenerate [docs/scanner-catalog.md](docs/scanner-catalog.md)
   - If it calls Microsoft Graph, double-check the query against [Graph's actual filter support](https://learn.microsoft.com/en-us/graph/api/resources/signinactivity) — several existing scanners had to be fixed for filter combinations Graph silently rejects.
 - **Touching the database schema?** Generate a real Alembic migration (`alembic revision --autogenerate -m "description"`) and actually run `alembic upgrade head` against a real Postgres instance to confirm it applies cleanly — don't hand-write migration files.
 - **Frontend changes** should run through `npm run build` (the real TypeScript compiler + Vite build), not just look right in dev mode.

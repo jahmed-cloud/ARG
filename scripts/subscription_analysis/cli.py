@@ -17,7 +17,8 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.subscription_analysis.collector import list_subscriptions, run  # noqa: E402
 from scripts.subscription_analysis.report import (  # noqa: E402
@@ -35,7 +36,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
     target.add_argument("--subscription", "-s", action="append",
                         help="Subscription ID or display name (repeatable)")
     target.add_argument("--all", action="store_true", help="Analyse every enabled subscription the account can see")
-    p.add_argument("--reports-dir", default="reports", help="Root folder for per-subscription reports (default: ./reports)")
+    p.add_argument("--reports-dir", default=str(REPO_ROOT / "reports"),
+                   help="Root folder for per-subscription reports (default: <ARG repo>/reports)")
     p.add_argument("--output", "-o", help="Exact output folder (single subscription only; overrides --reports-dir)")
     p.add_argument("--auth", choices=["cli", "default"], default="cli",
                    help="cli = reuse `az login` (default); default = DefaultAzureCredential")

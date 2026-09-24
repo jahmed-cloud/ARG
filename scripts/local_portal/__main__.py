@@ -15,7 +15,8 @@ import threading
 import webbrowser
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -23,7 +24,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
                                 description="Local web portal for ARG subscription analysis reports.")
     p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1 — local only)")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--reports-dir", default="reports", help="Folder holding reports/<subscription>/ (default: ./reports)")
+    p.add_argument("--reports-dir", default=str(REPO_ROOT / "reports"),
+                   help="Folder holding <subscription>/ report folders (default: <ARG repo>/reports)")
     p.add_argument("--tenant", help="Tenant ID of the az login session to use (optional)")
     p.add_argument("--workers", type=int, default=2, help="Subscriptions analysed in parallel (default: 2)")
     p.add_argument("--no-browser", action="store_true", help="Do not open the browser automatically")

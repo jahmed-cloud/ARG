@@ -1,5 +1,5 @@
 """
-Subscription analysis CLI — runs every ARG scanner against one subscription
+Subscription analysis CLI - runs every ARG scanner against one subscription
 without the database/Celery stack and writes a structured markdown report:
 
     python -m scripts.subscription_analysis --subscription <id-or-name> [--output DIR]

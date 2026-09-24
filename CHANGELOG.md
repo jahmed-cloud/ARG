@@ -12,7 +12,7 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   Management with `CostUSD`, 429 retry), a per-scan cost and metric cache, Defender plan lookup, and Retail Prices.
 - `PostureScanner` base class and shared environment-naming helpers.
 - **Subscription analysis CLI** (`python -m scripts.subscription_analysis`). Uses your `az login`, supports
-  `--subscription` (repeatable) and `--all`, and writes `reports/<subscription>/` (README, summary.json, 01–05) plus a
+  `--subscription` (repeatable) and `--all`, and writes `reports/<subscription>/` (README, summary.json, 01-05) plus a
   `reports/README.md` index.
 - **Local portal** (`python -m scripts.local_portal`, `http://127.0.0.1:8765`). Simple local login, uses the az login
   session, runs analyses with live progress, and renders the markdown reports.

@@ -1,4 +1,4 @@
-# PRD — Subscription Analysis (local CLI & portal)
+# PRD - Subscription Analysis (local CLI & portal)
 
 Status: implemented (branch `feature/subscription-analysis-parity`). User guide: [subscription-analysis.md](./subscription-analysis.md).
 

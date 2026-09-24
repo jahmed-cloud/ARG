@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/print.css">
+</head>
+<body>
+  <div class="noprint">
+    <button type="button" id="print-now">Print / Save as PDF</button>
+    <a href="/">Back to portal</a>
+  </div>
+  {{ body|safe }}
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script src="/static/portal.js"></script>
+</body>
+</html>

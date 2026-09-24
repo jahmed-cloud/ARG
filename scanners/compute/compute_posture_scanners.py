@@ -2,14 +2,14 @@
 Azure Resource Guardian - Compute & App Service Posture Scanners
 =================================================================
 Scanners in this module:
-1. UnsupportedOSImageScanner           — VMs built from end-of-support OS images
-2. ManagedDiskNetworkAccessScanner     — Disks exportable from any network
-3. AppServicePlanGenerationScanner     — Premium v2 plans (no reservations, older CPUs)
+1. UnsupportedOSImageScanner           - VMs built from end-of-support OS images
+2. ManagedDiskNetworkAccessScanner     - Disks exportable from any network
+3. AppServicePlanGenerationScanner     - Premium v2 plans (no reservations, older CPUs)
                                           and single-instance production plans
-4. AppServicePlanUtilizationScanner    — Plans running hot (CPU saturation)
-5. AppServiceMixedEnvironmentScanner   — Production and non-production on one plan
-6. WebAppHttpsAndIdentityScanner       — HTTP allowed / no managed identity
-7. WebAppConfigurationScanner          — EOL runtime stack, TLS, FTP, health check, 32-bit worker
+4. AppServicePlanUtilizationScanner    - Plans running hot (CPU saturation)
+5. AppServiceMixedEnvironmentScanner   - Production and non-production on one plan
+6. WebAppHttpsAndIdentityScanner       - HTTP allowed / no managed identity
+7. WebAppConfigurationScanner          - EOL runtime stack, TLS, FTP, health check, 32-bit worker
 
 Metric- and config-based checks run only when an ArmClient is injected
 (live mode); mock rows carry the enriched values for offline testing.
@@ -23,7 +23,7 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from scanners.base.azure_api import HOURS_PER_MONTH, get_retail_price
+from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, HOURS_PER_MONTH, get_retail_price
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -45,7 +45,7 @@ def _as_date(value: Any) -> date:
 # 1. End-of-support OS images
 # ---------------------------------------------------------------------------
 
-# (offer regex, sku regex, end-of-support date, label) — matched case-insensitively
+# (offer regex, sku regex, end-of-support date, label) - matched case-insensitively
 # against storageProfile.imageReference. Dates are vendor end-of-support
 # (no security updates without paid ESU).
 OS_END_OF_SUPPORT: List[Tuple[str, str, str, str]] = [
@@ -116,7 +116,7 @@ class UnsupportedOSImageScanner(PostureScanner):
                 finding_type="vm_unsupported_os",
                 title=f"End-of-support OS ({label}): {vm['name']}",
                 description=(
-                    f"VM '{vm['name']}' ({vm.get('vm_size')}) runs {vm.get('offer')}/{vm.get('sku')} — "
+                    f"VM '{vm['name']}' ({vm.get('vm_size')}) runs {vm.get('offer')}/{vm.get('sku')} - "
                     f"{label} reached end of support on {eos.isoformat()} and no longer receives "
                     f"security updates. Power state: {vm.get('power_state') or 'unknown'}."
                 ),
@@ -316,7 +316,7 @@ class AppServicePlanGenerationScanner(PostureScanner):
                     title=f"Single-instance Premium plan: {plan['name']}",
                     description=(
                         f"App Service plan '{plan['name']}' ({sku}) hosts {plan.get('sites')} app(s) on one "
-                        f"instance without zone redundancy — platform upgrades and instance failures cause "
+                        f"instance without zone redundancy - platform upgrades and instance failures cause "
                         f"downtime for every app on it."
                     ),
                     resource_type="microsoft.web/serverfarms",
@@ -370,7 +370,7 @@ class AppServicePlanUtilizationScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            for plan in plans:
+            async def _enrich(plan):
                 try:
                     m = await context.arm_client.metrics_summary(plan["id"], ["CpuPercentage", "MemoryPercentage"])
                     plan["cpu_avg"] = (m.get("CpuPercentage") or {}).get("average")
@@ -378,6 +378,7 @@ class AppServicePlanUtilizationScanner(PostureScanner):
                     plan["mem_avg"] = (m.get("MemoryPercentage") or {}).get("average")
                 except Exception as exc:
                     warnings.append(f"Metrics unavailable for {plan['name']}: {exc}")
+            await gather_limited(plans, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         avg_limit = float(self.setting("cpu_avg_threshold", self.AVG_CPU_THRESHOLD))
         max_limit = float(self.setting("cpu_max_threshold", self.MAX_CPU_THRESHOLD))
@@ -684,12 +685,13 @@ class WebAppConfigurationScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            for s in sites:
+            async def _enrich(s):
                 try:
                     payload = await context.arm_client.get(f"{s['id']}/config/web", "2023-12-01")
                     s["config"] = payload.get("properties") or {}
                 except Exception as exc:
                     warnings.append(f"config/web unavailable for {s['name']}: {exc}")
+            await gather_limited(sites, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         as_of = _as_date(self.setting("as_of", date.today()))
         findings = []
@@ -711,7 +713,7 @@ class WebAppConfigurationScanner(PostureScanner):
                         title=f"{label} {'end of support' if past else 'nearing end of support'}: {name}",
                         description=(
                             f"Web app '{name}' runs {stack} ({label}), "
-                            + (f"out of support since {eos_date.isoformat()} — no security patches."
+                            + (f"out of support since {eos_date.isoformat()} - no security patches."
                                if past else f"which reaches end of support on {eos_date.isoformat()}.")
                         ),
                         resource_type="microsoft.web/sites",

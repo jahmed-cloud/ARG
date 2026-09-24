@@ -1,4 +1,4 @@
-# ARG Subscription Analysis — Reference
+# ARG Subscription Analysis - Reference
 
 ## Commands
 

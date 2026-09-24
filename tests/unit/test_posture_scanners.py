@@ -55,7 +55,7 @@ EXPECTED = {
     "sql_firewall_scanner": {"sql_firewall_allow_all_azure_services", "sql_firewall_individual_ip_rules"},
     "sql_entra_auth_scanner": {"sql_entra_only_auth_disabled", "sql_entra_admin_individual_user"},
     "sql_hyperscale_legacy_pricing_scanner": {"sql_hyperscale_legacy_storage_pricing"},
-    "sql_database_utilization_scanner": {"idle_sql_database", "sql_database_cpu_saturated"},
+    "sql_database_utilization_scanner": {"idle_sql_database", "sql_database_underutilized", "sql_database_cpu_saturated"},
     "cross_region_app_data_scanner": {"cross_region_app_data_tier"},
     "cosmos_db_scanner": {"cosmos_public_network_access", "idle_cosmos_db"},
     "storage_access_hardening_scanner": {"storage_shared_key_access_enabled", "storage_public_network_access",

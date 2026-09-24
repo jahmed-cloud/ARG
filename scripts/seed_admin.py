@@ -2,7 +2,7 @@
 Seed (or update) the super_admin user for Azure Resource Guardian.
 
 Called automatically on every container start by docker/entrypoint.sh.
-Safe to run repeatedly — idempotent:
+Safe to run repeatedly - idempotent:
   - If no admin exists: creates one from ADMIN_EMAIL/USERNAME/PASSWORD in .env
   - If admin already exists: updates the password from .env so changing
     ADMIN_PASSWORD and restarting the container always takes effect.
@@ -38,7 +38,7 @@ async def seed_admin() -> None:
         existing = result.scalar_one_or_none()
 
         if existing:
-            # Always sync password from .env — so changing ADMIN_PASSWORD
+            # Always sync password from .env - so changing ADMIN_PASSWORD
             # and restarting the container takes effect immediately without
             # needing to manually reset the password in the database.
             new_hash = hash_password(settings.ADMIN_PASSWORD.get_secret_value())
@@ -47,7 +47,7 @@ async def seed_admin() -> None:
                 await db.commit()
                 print(f"Updated admin password for '{settings.ADMIN_EMAIL}' from .env")
             else:
-                print(f"Admin user '{settings.ADMIN_EMAIL}' already exists — no changes.")
+                print(f"Admin user '{settings.ADMIN_EMAIL}' already exists - no changes.")
         else:
             admin = User(
                 email=settings.ADMIN_EMAIL,

@@ -1,4 +1,4 @@
-# Azure Resource Guardian — Makefile
+# Azure Resource Guardian - Makefile
 # ====================================
 # Convenience targets for local development and Docker Hub publishing.
 #

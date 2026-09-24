@@ -4,13 +4,13 @@ Azure Resource Guardian - Storage Scanners
 Detects orphaned and potentially unused storage resources.
 
 Scanners in this module:
-1. UnusedStorageAccountScanner — Storage accounts with no apparent activity
-2. OrphanedBackupVaultScanner  — Recovery Services Vaults with no protected items
+1. UnusedStorageAccountScanner - Storage accounts with no apparent activity
+2. OrphanedBackupVaultScanner  - Recovery Services Vaults with no protected items
 
 Note: True transaction-level "unused" detection requires Azure Monitor
 Storage Insights metrics, which are not queryable from Resource Graph.
 When an ArmClient is available (live scans) UnusedStorageAccountScanner
-reads the 7-day Transactions / UsedCapacity metrics and only reports
+reads the 30-day Transactions / latest UsedCapacity metrics and only reports
 genuinely idle accounts; without it, it falls back to flagging candidates
 for manual verification rather than claiming certainty.
 """
@@ -21,7 +21,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from typing import Any, Dict, List, Optional
 
-from scanners.base.azure_api import cached_metrics, cost_for, get_resource_costs
+from scanners.base.azure_api import (
+    DEFAULT_ARM_CONCURRENCY,
+    cached_metrics,
+    cost_for,
+    gather_limited,
+    get_resource_costs,
+)
 from scanners.base.base_scanner import (
     BaseScanner,
     ScanContext,
@@ -41,7 +47,7 @@ class UnusedStorageAccountScanner(BaseScanner):
     """
     Flags storage accounts that appear unused based on Resource Graph
     metadata alone (kind, public access settings). This is a coarse
-    first-pass filter — analysts should verify with Storage Insights
+    first-pass filter - analysts should verify with Storage Insights
     transaction metrics before deletion.
     """
 
@@ -53,7 +59,7 @@ class UnusedStorageAccountScanner(BaseScanner):
     requires_cost = True
 
     BASE_MONTHLY_COST = 0.50  # Minimal cost just for the account existing
-    IDLE_TRANSACTIONS_7D = 50  # Platform housekeeping alone produces a few dozen per week
+    IDLE_TRANSACTIONS_30D = 200  # Platform housekeeping alone produces ~4 data-plane requests/day
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
@@ -73,8 +79,14 @@ class UnusedStorageAccountScanner(BaseScanner):
 
         live = getattr(context, "arm_client", None) is not None
         costs = await get_resource_costs(context) if live and resources else None
-        idle_limit = float(self.config.get("idle_transactions_7d", self.IDLE_TRANSACTIONS_7D))
+        idle_limit = float(self.config.get("idle_transactions_30d", self.IDLE_TRANSACTIONS_30D))
         warnings: List[str] = []
+        activities: Dict[str, Optional[Dict[str, Any]]] = {}
+        if live:
+            async def fetch(sa: Dict[str, Any]) -> None:
+                activities[sa["id"]] = await self._activity(context, sa["id"], warnings)
+
+            await gather_limited(resources, fetch, self.config.get("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         findings = []
         for sa in resources:
@@ -82,11 +94,9 @@ class UnusedStorageAccountScanner(BaseScanner):
             if tags.get("arg-ignore") or tags.get("arg-reserved"):
                 continue
 
-            activity: Optional[Dict[str, Any]] = None
-            if live:
-                activity = await self._activity(context, sa["id"], warnings)
-                if activity is not None and activity["transactions_7d"] > idle_limit:
-                    continue
+            activity: Optional[Dict[str, Any]] = activities.get(sa["id"])
+            if activity is not None and activity["transactions_30d"] > idle_limit:
+                continue
 
             is_blob_only = (sa.get("kind") or "").lower() == "blobstorage"
             severity = SeverityLevel.HIGH if is_blob_only else SeverityLevel.MEDIUM
@@ -96,8 +106,8 @@ class UnusedStorageAccountScanner(BaseScanner):
                 title = f"Idle storage account: {sa['name']}"
                 description = (
                     f"Storage account '{sa['name']}' (kind: {sa.get('kind', 'Unknown')}, "
-                    f"SKU: {sa.get('sku_name', 'Unknown')}) served {activity['transactions_7d']:,.0f} "
-                    f"transactions in the last 7 days and holds {activity['used_capacity_gb']:,.2f} GB. "
+                    f"SKU: {sa.get('sku_name', 'Unknown')}) served {activity['transactions_30d']:,.0f} "
+                    f"data-plane transactions in the last 30 days and holds {activity['used_capacity_gb']:,.2f} GB. "
                     f"Per-account charges (e.g. Defender for Storage) keep accruing while it sits idle."
                 )
                 actual = cost_for(costs, sa["id"]) or {}
@@ -107,7 +117,7 @@ class UnusedStorageAccountScanner(BaseScanner):
                 description = (
                     f"Storage account '{sa['name']}' (kind: {sa.get('kind', 'Unknown')}, "
                     f"SKU: {sa.get('sku_name', 'Unknown')}) could not be confirmed as actively "
-                    f"used from Resource Graph metadata alone — verify with Storage Insights "
+                    f"used from Resource Graph metadata alone - verify with Storage Insights "
                     f"transaction metrics before taking action."
                 )
                 saving = self.BASE_MONTHLY_COST
@@ -159,16 +169,16 @@ class UnusedStorageAccountScanner(BaseScanner):
         return ScanOutput(findings=findings, resources_scanned=len(resources), warnings=warnings)
 
     async def _activity(self, context: ScanContext, resource_id: str, warnings: List[str]) -> Optional[Dict[str, Any]]:
-        """7-day transaction total and latest used capacity; None if metrics are unavailable."""
+        """30-day transaction total and latest used capacity; None if metrics are unavailable."""
         try:
-            tx = await cached_metrics(context, resource_id, ["Transactions"], days=7, interval="PT12H", aggregation="Total")
+            tx = await cached_metrics(context, resource_id, ["Transactions"], days=30, interval="P1D", aggregation="Total")
             cap = await cached_metrics(context, resource_id, ["UsedCapacity"], days=7, interval="PT12H", aggregation="Average")
         except Exception as exc:
             warnings.append(f"Storage metrics unavailable for {resource_id.split('/')[-1]}: {exc}")
             return None
         used = (cap.get("UsedCapacity") or {}).get("latest_average") or 0.0
         return {
-            "transactions_7d": (tx.get("Transactions") or {}).get("total") or 0.0,
+            "transactions_30d": (tx.get("Transactions") or {}).get("total") or 0.0,
             "used_capacity_gb": round(used / 1024 ** 3, 2),
         }
 
@@ -207,7 +217,7 @@ class OrphanedBackupVaultScanner(BaseScanner):
     Flags Recovery Services Vaults that may have no protected items.
 
     Resource Graph cannot directly enumerate backup items inside a vault,
-    so this scanner raises an advisory finding for every vault — analysts
+    so this scanner raises an advisory finding for every vault - analysts
     confirm emptiness via the Backup Items blade before deletion.
     """
 
@@ -232,14 +242,31 @@ class OrphanedBackupVaultScanner(BaseScanner):
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
+        # Live scans count protected items per vault; a vault with items is in use, not orphaned.
+        protected: Dict[str, Optional[int]] = {}
+        warnings: List[str] = []
+        arm = getattr(context, "arm_client", None)
+        if arm is not None:
+            for vault in resources:
+                try:
+                    items = await arm.get_all(f"{vault['id']}/backupProtectedItems", "2023-04-01")
+                    protected[vault["id"]] = len(items)
+                except Exception as exc:
+                    warnings.append(f"Backup items unavailable for {vault['name']}: {exc}")
+
         findings = []
         for vault in resources:
+            count = protected.get(vault["id"])
+            if count:
+                continue
+            verified = count == 0
             findings.append(self.make_finding(
                 finding_type="orphaned_backup_vault",
-                title=f"Verify backup items: {vault['name']}",
+                title=f"{'Empty vault' if verified else 'Verify backup items'}: {vault['name']}",
                 description=(
-                    f"Recovery Services Vault '{vault['name']}' may have no protected items. "
-                    f"Verify in the Azure Portal under Backup Items. "
+                    f"Recovery Services Vault '{vault['name']}' "
+                    f"{'has no protected items' if verified else 'may have no protected items'}. "
+                    f"{'' if verified else 'Verify in the Azure Portal under Backup Items. '}"
                     f"Redundancy: {vault.get('redundancy', 'Unknown')}."
                 ),
                 resource_id=vault["id"],
@@ -265,11 +292,12 @@ class OrphanedBackupVaultScanner(BaseScanner):
                 evidence={
                     "redundancy": vault.get("redundancy"),
                     "provisioning_state": vault.get("provisioning_state"),
+                    "protected_items": count,
                 },
                 estimated_monthly_savings_usd=0.0,
             ))
 
-        return ScanOutput(findings=findings, resources_scanned=len(resources))
+        return ScanOutput(findings=findings, resources_scanned=len(resources), warnings=warnings)
 
     async def _run_arg_query(self, context: ScanContext, query: str) -> List[Dict]:
         if context.resource_graph_client is None:

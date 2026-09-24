@@ -23,6 +23,7 @@ ScanContext still holds.
 
 import asyncio
 import logging
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
@@ -51,7 +52,7 @@ async def query_resource_graph(
     """
     Run a Resource Graph query with skip-token pagination.
 
-    tenant_scope=True queries every subscription the credential can see —
+    tenant_scope=True queries every subscription the credential can see -
     used to decide whether a referenced resource (e.g. a Log Analytics
     workspace linked from App Insights) exists anywhere, not just here.
     """
@@ -97,15 +98,17 @@ class ArmClient:
         self._http = httpx.Client(base_url=ARM_ENDPOINT, timeout=timeout)
         self._token: Optional[str] = None
         self._token_expires_on: float = 0.0
+        self._token_lock = threading.Lock()
 
     # -- plumbing ---------------------------------------------------------
 
     def _bearer(self) -> str:
-        if not self._token or time.time() > self._token_expires_on - 300:
-            token = self._credential.get_token(ARM_SCOPE)
-            self._token = token.token
-            self._token_expires_on = float(token.expires_on)
-        return self._token
+        with self._token_lock:
+            if not self._token or time.time() > self._token_expires_on - 300:
+                token = self._credential.get_token(ARM_SCOPE)
+                self._token = token.token
+                self._token_expires_on = float(token.expires_on)
+            return self._token
 
     @staticmethod
     def _retry_after_seconds(headers: Any) -> float:
@@ -127,7 +130,7 @@ class ArmClient:
             response = self._http.request(method, url, params=params, json=json, headers=headers)
             if response.status_code in self.RETRY_STATUS and attempt < self._max_retries:
                 wait = min(self._retry_after_seconds(response.headers), 120.0)
-                logger.warning("ARM %s %s returned %s — retrying in %.0fs", method, url, response.status_code, wait)
+                logger.warning("ARM %s %s returned %s - retrying in %.0fs", method, url, response.status_code, wait)
                 time.sleep(wait)
                 attempt += 1
                 continue
@@ -250,7 +253,7 @@ async def run_cost_query(context: Any, start: date, end: date, grouping: List[Di
                          granularity: str = "None") -> Optional[List[Dict[str, Any]]]:
     """
     Cost query that asks for CostUSD alongside the billing-currency Cost.
-    Some agreement types reject CostUSD — retry once without it.
+    Some agreement types reject CostUSD - retry once without it.
     """
     arm = getattr(context, "arm_client", None)
     if arm is None:
@@ -364,6 +367,23 @@ async def get_retail_price(context: Any, odata_filter: str, *, fallback: Optiona
 # ---------------------------------------------------------------------------
 # Small shared utilities
 # ---------------------------------------------------------------------------
+
+DEFAULT_ARM_CONCURRENCY = 8
+
+
+async def gather_limited(items: Iterable[Any], fn, limit: int = DEFAULT_ARM_CONCURRENCY) -> List[Any]:
+    """
+    Run `await fn(item)` for every item with at most `limit` in flight. Used for
+    per-resource ARM calls (metrics, diagnostic settings, config) that dominate
+    scan time on large subscriptions. Results keep the input order.
+    """
+    gate = asyncio.Semaphore(max(1, int(limit)))
+
+    async def run(item: Any) -> Any:
+        async with gate:
+            return await fn(item)
+
+    return list(await asyncio.gather(*(run(i) for i in items)))
 
 def rid_segment(resource_id: Optional[str], after: str) -> Optional[str]:
     """Return the path segment following `after` (case-insensitive) in an ARM ID."""

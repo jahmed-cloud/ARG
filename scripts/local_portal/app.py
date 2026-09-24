@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -129,7 +129,18 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         return cache["subscriptions"]
 
     def summaries_by_id() -> Dict[str, Dict[str, Any]]:
-        return {(s.get("subscription") or {}).get("id", "").lower(): s for s in read_summaries(reports_dir)}
+        result = {}
+        for s in read_summaries(reports_dir):
+            s["pdf"] = [d for d in ("summary", "full") if (reports_dir / s["folder"] / f"report-{d}.pdf").is_file()]
+            result[(s.get("subscription") or {}).get("id", "").lower()] = s
+        return result
+
+    def report_folder(folder: str) -> Optional[Path]:
+        """A direct child of reports_dir that holds a generated report (summary.json)."""
+        target = resolve_report_path(folder)
+        if target is None or target.parent != reports_dir or not (target / "summary.json").is_file():
+            return None
+        return target
 
     async def state() -> Dict[str, Any]:
         return {"azure": await asyncio.to_thread(azure.status), "jobs": [j.to_dict() for j in jobs.list()],
@@ -154,6 +165,11 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
                     "label": p.relative_to(root).as_posix()}
                    for p in sorted(root.rglob("*.md"))]
         return {"title": rel.parts[0], "entries": entries}
+
+    def folder_of(target: Path) -> Optional[str]:
+        """Subscription report folder a page belongs to (drives the PDF/print toolbar)."""
+        parts = target.relative_to(reports_dir).parts
+        return parts[0] if len(parts) > 1 and report_folder(parts[0]) is not None else None
 
     def breadcrumbs(target: Path) -> List[Dict[str, str]]:
         crumbs = [{"href": "/reports/README.md", "label": "reports"}]
@@ -222,6 +238,38 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
 
     # -- report browser ------------------------------------------------------------
 
+    @app.post("/api/export-pdf")
+    async def api_export_pdf(request: Request):
+        from scripts.subscription_analysis.export import DETAILS, PdfExportError, export_pdf
+
+        body = await request.json()
+        detail = body.get("detail") or "summary"
+        target = report_folder(str(body.get("folder") or ""))
+        if target is None or detail not in DETAILS:
+            return JSONResponse({"detail": "Unknown report folder or detail level"}, status_code=400)
+        try:
+            pdf = await asyncio.to_thread(export_pdf, target, detail)
+        except PdfExportError as exc:
+            return JSONResponse({"detail": str(exc), "print_url": f"/print/{target.name}?detail={detail}"},
+                                status_code=500)
+        return {"url": f"/reports/{target.name}/{pdf.name}"}
+
+    @app.get("/print.css")
+    async def print_css():
+        from scripts.subscription_analysis.export import PRINT_CSS
+
+        return Response(PRINT_CSS, media_type="text/css")
+
+    @app.get("/print/{folder}", response_class=HTMLResponse)
+    async def print_view(request: Request, folder: str, detail: str = "summary"):
+        from scripts.subscription_analysis.export import DETAILS, build_print_body
+
+        target = report_folder(folder)
+        if target is None or detail not in DETAILS:
+            return HTMLResponse("Not found", status_code=404)
+        title, body = await asyncio.to_thread(build_print_body, target, detail)
+        return templates.TemplateResponse(request, "print.html", {"title": title, "body": body})
+
     @app.get("/reports")
     async def reports_root():
         return RedirectResponse("/reports/README.md", status_code=303)
@@ -244,13 +292,16 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
                        for p in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))]
             return templates.TemplateResponse(request, "page.html", {
                 "title": target.name, "html": None, "listing": listing, "json": None,
-                "crumbs": breadcrumbs(target), "sidebar": sidebar(target)})
+                "crumbs": breadcrumbs(target), "sidebar": sidebar(target), "folder": folder_of(target)})
         suffix = target.suffix.lower()
         if suffix == ".md":
             html = render_markdown(target.read_text(encoding="utf-8"))
             return templates.TemplateResponse(request, "page.html", {
                 "title": target.stem, "html": html, "listing": None, "json": None,
-                "crumbs": breadcrumbs(target), "sidebar": sidebar(target)})
+                "crumbs": breadcrumbs(target), "sidebar": sidebar(target), "folder": folder_of(target)})
+        if suffix == ".pdf":
+            return FileResponse(target, media_type="application/pdf", filename=f"{target.parent.name}-{target.name}",
+                                content_disposition_type="inline")
         if suffix == ".json":
             if raw or target.stat().st_size > MAX_JSON_PREVIEW_BYTES:
                 return FileResponse(target, media_type="application/json")
@@ -260,7 +311,7 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
                 pretty = target.read_text(encoding="utf-8", errors="replace")
             return templates.TemplateResponse(request, "page.html", {
                 "title": target.name, "html": None, "listing": None, "json": pretty,
-                "crumbs": breadcrumbs(target), "sidebar": sidebar(target)})
+                "crumbs": breadcrumbs(target), "sidebar": sidebar(target), "folder": folder_of(target)})
         return HTMLResponse("Unsupported file type", status_code=404)
 
     @app.on_event("shutdown")

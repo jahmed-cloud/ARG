@@ -2,12 +2,12 @@
 Azure Resource Guardian - Security Posture Scanners
 ====================================================
 Scanners in this module:
-1. KeyVaultHardeningScanner        — Access-policy model, soft delete, purge protection, open network
-2. AIServicesHardeningScanner      — Foundry / Azure OpenAI key auth and open network access
-3. DefenderPlanCoverageScanner     — Defender plans left on Free while matching resources exist
-4. DefenderRecommendationsScanner  — Unhealthy Defender for Cloud assessments (High by default)
-5. PrivilegedRoleAssignmentScanner — Owners > 3, standing User Access Administrator, privileged SPs
-6. SecureScoreScanner              — Defender secure score below target
+1. KeyVaultHardeningScanner        - Access-policy model, soft delete, purge protection, open network
+2. AIServicesHardeningScanner      - Foundry / Azure OpenAI key auth and open network access
+3. DefenderPlanCoverageScanner     - Defender plans left on Free while matching resources exist
+4. DefenderRecommendationsScanner  - Unhealthy Defender for Cloud assessments (High by default)
+5. PrivilegedRoleAssignmentScanner - Owners > 3, standing User Access Administrator, privileged SPs
+6. SecureScoreScanner              - Defender secure score below target
 
 Covers the "Microsoft Defender for Cloud integration" roadmap item by
 reading securityresources through Resource Graph (no extra SDK needed).
@@ -106,7 +106,7 @@ class KeyVaultHardeningScanner(PostureScanner):
             if kv.get("soft_delete") is False or kv.get("soft_delete") is None:
                 findings.append(self.resource_finding(
                     kv, finding_type="key_vault_soft_delete_disabled", title=f"Key Vault soft delete not enabled: {name}",
-                    description=f"Key Vault '{name}' does not report soft delete — deleted secrets, keys and certificates are unrecoverable.",
+                    description=f"Key Vault '{name}' does not report soft delete - deleted secrets, keys and certificates are unrecoverable.",
                     severity=SeverityLevel.HIGH,
                     remediation_steps="Enable soft delete (mandatory for new vaults; legacy vaults must be updated).",
                     azure_cli_script=f"az keyvault update -g {rg} -n {name} --enable-soft-delete true",
@@ -117,7 +117,7 @@ class KeyVaultHardeningScanner(PostureScanner):
                     kv, finding_type="key_vault_purge_protection_disabled", title=f"Purge protection disabled: {name}",
                     description=f"Key Vault '{name}' can be purged immediately after deletion (no purge protection).",
                     severity=SeverityLevel.MEDIUM,
-                    remediation_steps="Enable purge protection (irreversible — confirm no automation depends on purging).",
+                    remediation_steps="Enable purge protection (irreversible - confirm no automation depends on purging).",
                     azure_cli_script=f"az keyvault update -g {rg} -n {name} --enable-purge-protection true",
                     evidence={"enablePurgeProtection": kv.get("purge_protection")}, cis_control="8.5", **common,
                 ))
@@ -401,8 +401,8 @@ class PrivilegedRoleAssignmentScanner(PostureScanner):
             findings.append(self.subscription_finding(
                 context, finding_type="standing_user_access_administrator",
                 title=f"{len(uaa)} standing User Access Administrator assignment(s)",
-                description=("User Access Administrator at subscription scope lets the holder grant any role — "
-                             "including Owner — to anyone. Holders: "
+                description=("User Access Administrator at subscription scope lets the holder grant any role - "
+                             "including Owner - to anyone. Holders: "
                              + ", ".join(f"{u['principal_type']} {u['principal_id']}" for u in uaa) + "."),
                 severity=SeverityLevel.HIGH,
                 remediation_steps="Remove standing UAA; make it PIM-eligible with approval, or use a constrained RBAC Administrator role.",

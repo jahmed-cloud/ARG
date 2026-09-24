@@ -1,4 +1,4 @@
-// ARG local portal — dashboard behaviour and mermaid rendering. No inline scripts (CSP: script-src 'self').
+// ARG local portal - dashboard behaviour and mermaid rendering. No inline scripts (CSP: script-src 'self').
 (function () {
   "use strict";
 
@@ -129,8 +129,35 @@
     poll();
   }
 
+  // ---- Report pages: PDF export toolbar and print view ----
+  function initExport() {
+    const printNow = document.getElementById("print-now");
+    if (printNow) printNow.addEventListener("click", () => window.print());
+
+    const toolbar = document.querySelector(".doc-toolbar");
+    if (!toolbar) return;
+    const status = toolbar.querySelector(".export-status");
+    toolbar.querySelectorAll("button.export-pdf").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const buttons = toolbar.querySelectorAll("button.export-pdf");
+        buttons.forEach((b) => { b.disabled = true; });
+        status.textContent = "Generating PDF - this can take a minute for large reports...";
+        try {
+          const result = await post("/api/export-pdf", { folder: toolbar.dataset.folder, detail: button.dataset.detail });
+          status.textContent = "";
+          window.open(result.url, "_blank", "noopener");
+        } catch (err) {
+          status.textContent = "PDF export failed: " + err.message + " Use 'Print view' and your browser's Save as PDF.";
+        } finally {
+          buttons.forEach((b) => { b.disabled = false; });
+        }
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     renderMermaid();
     initDashboard();
+    initExport();
   });
 })();

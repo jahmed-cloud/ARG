@@ -2,9 +2,9 @@
 Azure Resource Guardian - Storage Posture Scanners
 ===================================================
 Scanners in this module:
-1. StorageAccessHardeningScanner  — Shared-key access, open public network, blob soft delete
-2. StorageAccountSprawlScanner    — Many near-identical accounts in one resource group
-3. StorageTransactionHotspotScanner — Accounts whose transaction volume dominates their bill
+1. StorageAccessHardeningScanner  - Shared-key access, open public network, blob soft delete
+2. StorageAccountSprawlScanner    - Many near-identical accounts in one resource group
+3. StorageTransactionHotspotScanner - Accounts whose transaction volume dominates their bill
 """
 
 import sys
@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import re
 from typing import Any, Dict, List
 
-from scanners.base.azure_api import cached_metrics, cost_for, get_defender_plans, get_resource_costs
+from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, cached_metrics, cost_for, get_defender_plans, get_resource_costs
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -59,15 +59,16 @@ class StorageAccessHardeningScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            for sa in accounts:
+            async def _enrich(sa):
                 if (sa.get("kind") or "").lower() not in ("storagev2", "blobstorage", "blockblobstorage"):
-                    continue
+                    return
                 try:
                     blob = await context.arm_client.get(f"{sa['id']}/blobServices/default", "2023-01-01")
                     policy = (blob.get("properties") or {}).get("deleteRetentionPolicy") or {}
                     sa["blob_soft_delete"] = bool(policy.get("enabled"))
                 except Exception as exc:
                     warnings.append(f"blobServices unavailable for {sa['name']}: {exc}")
+            await gather_limited(accounts, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         findings = []
         for sa in accounts:
@@ -102,7 +103,7 @@ class StorageAccessHardeningScanner(PostureScanner):
             if sa.get("blob_soft_delete") is False:
                 findings.append(self.resource_finding(
                     sa, finding_type="storage_blob_soft_delete_disabled", title=f"Blob soft delete disabled: {name}",
-                    description=f"Storage account '{name}' has blob soft delete disabled — deleted or overwritten blobs are unrecoverable.",
+                    description=f"Storage account '{name}' has blob soft delete disabled - deleted or overwritten blobs are unrecoverable.",
                     resource_type="microsoft.storage/storageaccounts", severity=SeverityLevel.LOW,
                     remediation_steps="Enable blob (and container) soft delete with 7-30 days retention.",
                     azure_cli_script=f"az storage account blob-service-properties update -g {rg} --account-name {name} "
@@ -195,7 +196,7 @@ class StorageAccountSprawlScanner(PostureScanner):
 
 @register_scanner
 class StorageTransactionHotspotScanner(PostureScanner):
-    """Accounts with very high transaction volume (live mode) — often cheaper on a provisioned/premium model."""
+    """Accounts with very high transaction volume (live mode) - often cheaper on a provisioned/premium model."""
 
     scanner_name = "storage_transaction_hotspot_scanner"
     display_name = "Storage Transaction Hotspot"
@@ -203,7 +204,7 @@ class StorageTransactionHotspotScanner(PostureScanner):
     category = ScannerCategory.COST
     severity = SeverityLevel.LOW
 
-    HOT_TRANSACTIONS_7D = 50_000_000
+    HOT_TRANSACTIONS_30D = 200_000_000
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
@@ -220,30 +221,31 @@ class StorageTransactionHotspotScanner(PostureScanner):
         costs = None
         if self.is_live(context) and accounts:
             costs = await get_resource_costs(context)
-            for sa in accounts:
+            async def _enrich(sa):
                 try:
-                    m = await cached_metrics(context, sa["id"], ["Transactions"], days=7, interval="PT12H", aggregation="Total")
-                    sa["transactions_7d"] = (m.get("Transactions") or {}).get("total") or 0.0
+                    m = await cached_metrics(context, sa["id"], ["Transactions"], days=30, interval="P1D", aggregation="Total")
+                    sa["transactions_30d"] = (m.get("Transactions") or {}).get("total") or 0.0
                 except Exception as exc:
                     warnings.append(f"Storage metrics unavailable for {sa['name']}: {exc}")
                 sa["meters"] = (cost_for(costs, sa["id"]) or {}).get("meters") or {}
+            await gather_limited(accounts, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
-        limit = float(self.setting("hot_transactions_7d", self.HOT_TRANSACTIONS_7D))
+        limit = float(self.setting("hot_transactions_30d", self.HOT_TRANSACTIONS_30D))
         findings = []
         for sa in accounts:
-            tx = sa.get("transactions_7d")
+            tx = sa.get("transactions_30d")
             if not tx or tx < limit:
                 continue
             findings.append(self.resource_finding(
                 sa, finding_type="storage_transaction_hotspot",
-                title=f"{tx / 1e6:,.0f}M transactions/week: {sa['name']}",
-                description=(f"Storage account '{sa['name']}' ({sa.get('sku_name')}) served {tx:,.0f} transactions in 7 days. "
+                title=f"{tx / 1e6:,.0f}M transactions in 30 days: {sa['name']}",
+                description=(f"Storage account '{sa['name']}' ({sa.get('sku_name')}) served {tx:,.0f} transactions in 30 days. "
                              f"On pay-as-you-go tiers transactions can rival capacity cost; the provisioned (Premium / "
                              f"provisioned v2) Files model has no per-transaction charges."),
                 resource_type="microsoft.storage/storageaccounts",
                 remediation_steps=("Break down cost by meter, check for chatty clients (polling, missing caching), and "
                                    "price the provisioned Files model for this share."),
-                evidence={"transactions_7d": tx, "cost_by_meter_30d": sa.get("meters")},
+                evidence={"transactions_30d": tx, "cost_by_meter_30d": sa.get("meters")},
                 estimated_monthly_savings_usd=0.0,
             ))
         return ScanOutput(findings=findings, resources_scanned=len(accounts), warnings=warnings)
@@ -253,5 +255,5 @@ class StorageTransactionHotspotScanner(PostureScanner):
             "id": "/subscriptions/sub-1/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/stclient04",
             "name": "stclient04", "type": "microsoft.storage/storageaccounts", "resourceGroup": "rg-data",
             "subscriptionId": "sub-1", "location": "westeurope", "sku_name": "Standard_LRS",
-            "transactions_7d": 152_151_546.0, "meters": {"Files": 107.02},
+            "transactions_30d": 652_000_000.0, "meters": {"Files": 107.02},
         }]

@@ -4,12 +4,12 @@ Azure Resource Guardian - Security Scanners
 Detects public exposure and missing audit controls.
 
 Scanners in this module:
-1. PublicStorageAccountScanner    — Storage accounts with public blob access
-2. PublicSQLServerScanner          — SQL servers with public network access enabled
-3. MissingDiagnosticSettingsScanner — Key Vaults/SQL/NSGs missing audit logs
+1. PublicStorageAccountScanner    - Storage accounts with public blob access
+2. PublicSQLServerScanner          - SQL servers with public network access enabled
+3. MissingDiagnosticSettingsScanner - Key Vaults/SQL/NSGs missing audit logs
 
 Security findings carry the highest severities since they represent
-direct attack surface — a misconfigured public storage account or SQL
+direct attack surface - a misconfigured public storage account or SQL
 server can be exploited within minutes of going live.
 """
 
@@ -39,7 +39,7 @@ class PublicStorageAccountScanner(BaseScanner):
     Detects storage accounts with public blob access enabled, allowing
     unauthenticated internet read access to public containers. Microsoft
     disabled this by default in 2023, but older accounts may still
-    have it enabled — a frequent source of data breaches.
+    have it enabled - a frequent source of data breaches.
     """
 
     scanner_name = "public_storage_account_scanner"
@@ -150,7 +150,7 @@ class PublicSQLServerScanner(BaseScanner):
     """
     Detects Azure SQL Servers with public network access enabled,
     meaning they're reachable from the internet subject only to
-    firewall rules — a common attack vector when firewall rules are
+    firewall rules - a common attack vector when firewall rules are
     overly permissive.
     """
 
@@ -195,7 +195,7 @@ class PublicSQLServerScanner(BaseScanner):
                 severity=SeverityLevel.CRITICAL,
                 remediation_steps=(
                     "1. Disable public network access and use Private Endpoints.\n"
-                    "2. Audit firewall rules — remove any allowing the full IP range.\n"
+                    "2. Audit firewall rules - remove any allowing the full IP range.\n"
                     "3. Enable Microsoft Defender for SQL.\n"
                     "4. Enable Azure AD authentication; disable SQL authentication if possible."
                 ),
@@ -287,7 +287,9 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
         warnings: List[str] = []
         verified: Dict[str, bool] = {}
         if arm is not None:
-            for resource in resources:
+            from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited
+
+            async def check(resource: Dict) -> None:
                 try:
                     settings_list = await arm.get_all(
                         f"{resource['id']}/providers/Microsoft.Insights/diagnosticSettings", "2021-05-01-preview"
@@ -295,6 +297,8 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
                     verified[resource["id"]] = bool(settings_list)
                 except Exception as exc:
                     warnings.append(f"Diagnostic settings unavailable for {resource['name']}: {exc}")
+
+            await gather_limited(resources, check, self.config.get("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         findings = []
         for resource in resources:

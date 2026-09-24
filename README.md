@@ -19,7 +19,7 @@
 | Question | ARG's Answer |
 |---|---|
 | What resources are costing money unnecessarily? | Cost Optimization Engine with Azure Cost Management integration |
-| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (62 scanners in total — see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
+| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (62 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
 | Which resources violate governance standards? | Governance Module with CAF + Zero Trust scoring |
 | Which Entra ID objects are security risks? | Full Microsoft Graph hygiene analysis |
 | What resources are unmanaged by Terraform? | Terraform drift detection engine |
@@ -100,7 +100,7 @@
 - Region restriction compliance
 - CAF alignment scoring
 - Zero Trust alignment scoring
-- Governance Score (0–100)
+- Governance Score (0-100)
 - Environment tag vs name mismatches (e.g. a `-Test` database tagged `prod`) and tag-key typos
 - Production and non-production sharing one App Service plan; app and data tiers split across regions
 - Log Analytics daily caps that silently drop data, App Insights linked to deleted workspaces, missing Service Health alerts
@@ -118,7 +118,7 @@
 - Azure OpenAI / AI Services key authentication and open networks
 - Web apps allowing HTTP, EOL runtimes (.NET, Node, Python, PHP), weak TLS, no managed identity
 - Excess subscription Owners, standing User Access Administrator, privileged service principals
-- Security Score (0–100)
+- Security Score (0-100)
 
 ### 🌊 Terraform Drift Detection
 - Compare Terraform state vs live Azure inventory
@@ -133,7 +133,7 @@
 - Compliance reports
 
 ### 🧭 Subscription Analysis Report (CLI + local portal)
-Run every scanner against your subscriptions from your own workstation — **no Docker, database or
+Run every scanner against your subscriptions from your own workstation - **no Docker, database or
 service principal needed**. Azure access reuses your **`az login`** session (your own account).
 📖 Full guide: [docs/subscription-analysis.md](docs/subscription-analysis.md) · PRD: [docs/PRD-subscription-analysis.md](docs/PRD-subscription-analysis.md)
 
@@ -144,10 +144,10 @@ Reports always go to **`<ARG repo>/reports/`** unless you pass `-ReportsPath` / 
 ```powershell
 az login                                                         # once, in a terminal
 
-# Local portal — http://127.0.0.1:8765
+# Local portal - http://127.0.0.1:8765
 C:\path\to\ARG\scripts\Start-LocalPortal.ps1                     # Linux/macOS: ./scripts/start-local-portal.sh
 
-# Command line — one folder per subscription, plus an index
+# Command line - one folder per subscription, plus an index
 C:\path\to\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription '<subscription-id-or-name>'
 C:\path\to\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -All
 ```
@@ -189,7 +189,7 @@ reports/
 Your account needs **Reader**, **Cost Management Reader** and **Security Reader** on each subscription.
 Savings estimates are calculated in USD (list prices or actual `CostUSD`) and shown in the billing
 currency at the subscription's implied exchange rate. Re-running a subscription replaces its folder.
-Reports contain resource IDs and principal IDs — `reports/` is git-ignored. Entra ID (Graph) scanners
+Reports contain resource IDs and principal IDs - `reports/` is git-ignored. Entra ID (Graph) scanners
 are skipped in this mode.
 
 ---
@@ -220,7 +220,7 @@ docker compose -f docker-compose.hub.yml up -d
 
 # UI → http://localhost:3000
 # Log in with the ADMIN_EMAIL / ADMIN_PASSWORD you set in .env
-# The admin account is created automatically on first startup — no manual command needed.
+# The admin account is created automatically on first startup - no manual command needed.
 ```
 
 ### Pull a specific version
@@ -303,7 +303,7 @@ python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(3
 docker compose up -d --build
 ```
 
-This builds the backend, worker, beat, and frontend images, then starts Postgres, Redis, and all five application services. The backend container automatically runs `alembic upgrade head` on startup, so the database schema is created the first time it boots — no manual migration step needed.
+This builds the backend, worker, beat, and frontend images, then starts Postgres, Redis, and all five application services. The backend container automatically runs `alembic upgrade head` on startup, so the database schema is created the first time it boots - no manual migration step needed.
 
 Check that everything came up healthy:
 
@@ -319,7 +319,7 @@ http://localhost:3000
 ```
 
 Log in with the `ADMIN_EMAIL` and `ADMIN_PASSWORD` you set in `.env`.
-The admin account is **created automatically on first startup** — no manual command needed.
+The admin account is **created automatically on first startup** - no manual command needed.
 
 Log in with the `ADMIN_USERNAME` / `ADMIN_PASSWORD` you set in `.env`. Change the password immediately if you left it at a placeholder value.
 
@@ -345,13 +345,13 @@ docker compose down -v       # stop containers AND delete all data (Postgres/Red
 | Security | Security Reader |
 | Metrics, diagnostic settings, SQL firewall rules, site config (posture scanners) | Reader |
 
-These are **Azure AD / Azure RBAC roles** assigned to the Service Principal you register in ARG's Settings page — separate from the Linux/Docker permissions discussed above. To create the Service Principal and assign Reader access:
+These are **Azure AD / Azure RBAC roles** assigned to the Service Principal you register in ARG's Settings page - separate from the Linux/Docker permissions discussed above. To create the Service Principal and assign Reader access:
 
 ```bash
 az ad sp create-for-rbac --name "arg-scanner" --role Reader --scopes /subscriptions/<subscription-id>
 ```
 
-This prints a `appId` (client ID) and `password` (client secret) — enter those along with your Azure AD tenant ID into ARG's Settings → Azure Tenants page after logging in. The secret is encrypted with AES-256-GCM before being stored.
+This prints a `appId` (client ID) and `password` (client secret) - enter those along with your Azure AD tenant ID into ARG's Settings → Azure Tenants page after logging in. The secret is encrypted with AES-256-GCM before being stored.
 
 ---
 
@@ -406,10 +406,10 @@ make test
 
 ## 🤝 Contributing
 
-Contributions are welcome — bug reports, scanner additions, and pull requests all help.
+Contributions are welcome - bug reports, scanner additions, and pull requests all help.
 
 1. Fork the repo and create a feature branch off `main`
-2. Keep changes focused — one feature or fix per PR makes review much faster
+2. Keep changes focused - one feature or fix per PR makes review much faster
 3. Test against a real `docker compose up --build` before opening a PR, not just `import` checks
 4. Open a PR describing what changed and why
 
@@ -421,7 +421,7 @@ For bugs or feature requests, open an issue on [GitHub](https://github.com/jahme
 
 ## 📜 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 

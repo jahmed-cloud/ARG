@@ -29,7 +29,7 @@
     <button id="analyze-selected" class="primary" type="button" disabled>Analyze selected</button>
   </div>
   {% if subscription_error %}<p class="alert error">{{ subscription_error }}</p>{% endif %}
-  <p class="muted small">Reports are written to <code>{{ reports_dir }}</code> — one folder per subscription with
+  <p class="muted small">Reports are written to <code>{{ reports_dir }}</code> - one folder per subscription with
     <code>README.md</code> and <code>01-…</code> to <code>05-…</code> markdown files.</p>
   <table class="subs" id="subs">
     <thead>
@@ -49,18 +49,19 @@
           <div class="muted small mono">{{ s.id }}</div>
         </td>
         <td>{{ s.state }}</td>
-        <td>{{ (summary.generated_at or '')[:16]|replace('T', ' ') if summary else '—' }}</td>
+        <td>{{ (summary.generated_at or '')[:16]|replace('T', ' ') if summary else '-' }}</td>
         <td>{% if summary %}<span class="sev critical">{{ summary.findings_by_severity.critical }}</span> /
-            <span class="sev high">{{ summary.findings_by_severity.high }}</span>{% else %}—{% endif %}</td>
-        <td class="num">{% if summary %}{{ '{:,.0f}'.format(summary.cost_30d or 0) }} {{ summary.currency }}{% else %}—{% endif %}</td>
-        <td class="num">{% if summary and summary.savings_billing.wave_1 is not none %}{{ '{:,.0f}'.format((summary.savings_billing.wave_1 or 0) + (summary.savings_billing.wave_2 or 0)) }} {{ summary.currency }}{% else %}—{% endif %}</td>
+            <span class="sev high">{{ summary.findings_by_severity.high }}</span>{% else %}-{% endif %}</td>
+        <td class="num">{% if summary %}{{ '{:,.0f}'.format(summary.cost_30d or 0) }} {{ summary.currency }}{% else %}-{% endif %}</td>
+        <td class="num">{% if summary and summary.savings_billing.wave_1 is not none %}{{ '{:,.0f}'.format((summary.savings_billing.wave_1 or 0) + (summary.savings_billing.wave_2 or 0)) }} {{ summary.currency }}{% else %}-{% endif %}</td>
         <td class="actions">
           <button class="secondary analyze" type="button" data-id="{{ s.id }}" {% if s.state != 'Enabled' %}disabled{% endif %}>Analyze</button>
+          {% if summary and summary.pdf %}{% for d in summary.pdf %}<a class="small" href="/reports/{{ summary.folder }}/report-{{ d }}.pdf" target="_blank" rel="noopener">PDF ({{ d }})</a> {% endfor %}{% endif %}
           <span class="job-status" data-id="{{ s.id|lower }}"></span>
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="8" class="muted">No subscriptions visible — check the Azure CLI session above.</td></tr>
+      <tr><td colspan="8" class="muted">No subscriptions visible - check the Azure CLI session above.</td></tr>
     {% endfor %}
     </tbody>
   </table>

@@ -11,9 +11,9 @@ fi
 .venv-local/bin/python -m pip install --quiet -r requirements-local.txt
 
 if ! command -v az >/dev/null 2>&1; then
-  echo "WARNING: Azure CLI (az) not found — install it and run 'az login'." >&2
+  echo "WARNING: Azure CLI (az) not found - install it and run 'az login'." >&2
 elif ! az account show --output none >/dev/null 2>&1; then
-  echo "WARNING: Azure CLI is not signed in — run 'az login', then click Refresh in the portal." >&2
+  echo "WARNING: Azure CLI is not signed in - run 'az login', then click Refresh in the portal." >&2
 fi
 
 exec .venv-local/bin/python -m scripts.local_portal "$@"

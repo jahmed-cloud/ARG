@@ -120,91 +120,91 @@ How the subscription analysis report files each finding type (gap-analysis area,
 
 | Finding type | Gap area | Deep-dive folder | Wave |
 |---|---|---|---|
-| `ai_account_sprawl` | Structural / Architecture | `ai-foundry` | Wave 2 — Optimisation |
-| `ai_services_local_auth_enabled` | Security & Identity | `ai-foundry` | Wave 2 — Optimisation |
-| `ai_services_public_network_open` | Security & Identity | `ai-foundry` | Wave 1 — No-regret cleanup |
-| `ai_spend_without_gateway` | FinOps / Governance | `ai-foundry` | Wave 2 — Optimisation |
-| `app_insights_classic_mode` | Operational / Observability | `observability-operations` | Wave 2 — Optimisation |
-| `app_insights_workspace_missing` | Operational / Observability | `observability-operations` | Wave 1 — No-regret cleanup |
-| `app_service_plan_cpu_saturated` | Performance & Resilience | `compute-appservice` | Wave 2 — Optimisation |
-| `app_service_plan_mixed_environments` | Structural / Architecture | `compute-appservice` | Wave 2 — Optimisation |
-| `app_service_plan_previous_generation` | FinOps / Governance | `compute-appservice` | Wave 2 — Optimisation |
-| `app_service_plan_single_instance` | Performance & Resilience | `compute-appservice` | Wave 2 — Optimisation |
-| `budget_consistently_exceeded` | FinOps / Governance | `cost-finops` | Wave 1 — No-regret cleanup |
-| `budget_missing` | FinOps / Governance | `cost-finops` | Wave 1 — No-regret cleanup |
-| `commitment_discount_opportunity` | FinOps / Governance | `cost-finops` | Wave 2 — Optimisation |
-| `cosmos_public_network_access` | Security & Identity | `data-sql-storage` | Wave 2 — Optimisation |
-| `cross_region_app_data_tier` | Structural / Architecture | `data-sql-storage` | Wave 3 — Structural |
-| `deallocated_virtual_machine` | FinOps / Governance | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `defender_plan_disabled` | Security & Identity | `security-identity` | Wave 2 — Optimisation |
-| `defender_recommendations` | Security & Identity | `security-identity` | Wave 2 — Optimisation |
-| `dormant_member_user` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `empty_application_gateway` | FinOps / Governance | `networking` | Wave 1 — No-regret cleanup |
-| `empty_load_balancer` | FinOps / Governance | `networking` | Wave 1 — No-regret cleanup |
-| `empty_resource_group` | FinOps / Governance | `observability-operations` | Wave 1 — No-regret cleanup |
-| `environment_tag_name_mismatch` | Structural / Architecture | `observability-operations` | Wave 1 — No-regret cleanup |
-| `excessive_subscription_owners` | Security & Identity | `security-identity` | Wave 1 — No-regret cleanup |
-| `expired_app_certificate` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `expired_app_secret` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `guest_never_signed_in` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `idle_cosmos_db` | FinOps / Governance | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `idle_iot_hub` | FinOps / Governance | `cost-finops` | Wave 1 — No-regret cleanup |
-| `idle_sql_database` | FinOps / Governance | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `idle_vmss` | FinOps / Governance | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `key_vault_access_policy_model` | Security & Identity | `security-identity` | Wave 2 — Optimisation |
-| `key_vault_public_network_open` | Security & Identity | `security-identity` | Wave 2 — Optimisation |
-| `key_vault_purge_protection_disabled` | Security & Identity | `security-identity` | Wave 1 — No-regret cleanup |
-| `key_vault_soft_delete_disabled` | Security & Identity | `security-identity` | Wave 1 — No-regret cleanup |
-| `log_analytics_restrictive_daily_cap` | Operational / Observability | `observability-operations` | Wave 1 — No-regret cleanup |
-| `log_analytics_workspace_sprawl` | Operational / Observability | `observability-operations` | Wave 2 — Optimisation |
-| `low_secure_score` | Security & Identity | `security-identity` | Wave 2 — Optimisation |
-| `managed_disk_public_network_access` | Security & Identity | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `mfa_not_enabled` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `missing_diagnostic_settings` | Operational / Observability | `observability-operations` | Wave 2 — Optimisation |
-| `missing_required_tags` | FinOps / Governance | `observability-operations` | Wave 2 — Optimisation |
-| `missing_resource_lock` | Operational / Observability | `observability-operations` | Wave 2 — Optimisation |
-| `naming_convention_violation` | FinOps / Governance | `observability-operations` | Wave 3 — Structural |
-| `nsg_management_port_open_to_internet` | Security & Identity | `networking` | Wave 1 — No-regret cleanup |
-| `old_disk_snapshot` | FinOps / Governance | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `orphaned_backup_vault` | FinOps / Governance | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `orphaned_nic` | FinOps / Governance | `networking` | Wave 1 — No-regret cleanup |
-| `orphaned_nsg` | FinOps / Governance | `networking` | Wave 1 — No-regret cleanup |
-| `permanent_global_admin` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `private_dns_zone_without_endpoints` | Structural / Architecture | `networking` | Wave 1 — No-regret cleanup |
-| `public_ip_on_orphaned_nic` | FinOps / Governance | `networking` | Wave 1 — No-regret cleanup |
-| `public_sql_server` | Security & Identity | `data-sql-storage` | Wave 2 — Optimisation |
-| `public_storage_account` | Security & Identity | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `service_health_alert_missing` | Operational / Observability | `observability-operations` | Wave 1 — No-regret cleanup |
-| `service_principal_privileged_role` | Security & Identity | `security-identity` | Wave 2 — Optimisation |
-| `sql_database_cpu_saturated` | Performance & Resilience | `data-sql-storage` | Wave 2 — Optimisation |
-| `sql_entra_admin_individual_user` | Security & Identity | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `sql_entra_admin_missing` | Security & Identity | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `sql_entra_only_auth_disabled` | Security & Identity | `data-sql-storage` | Wave 2 — Optimisation |
-| `sql_firewall_allow_all_azure_services` | Security & Identity | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `sql_firewall_individual_ip_rules` | Security & Identity | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `sql_firewall_wide_ip_range` | Security & Identity | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `sql_hyperscale_legacy_storage_pricing` | FinOps / Governance | `data-sql-storage` | Wave 2 — Optimisation |
-| `standing_user_access_administrator` | Security & Identity | `security-identity` | Wave 1 — No-regret cleanup |
-| `storage_account_sprawl` | Structural / Architecture | `data-sql-storage` | Wave 2 — Optimisation |
-| `storage_blob_soft_delete_disabled` | Performance & Resilience | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `storage_public_network_access` | Security & Identity | `data-sql-storage` | Wave 2 — Optimisation |
-| `storage_shared_key_access_enabled` | Security & Identity | `data-sql-storage` | Wave 2 — Optimisation |
-| `storage_transaction_hotspot` | Performance & Resilience | `data-sql-storage` | Wave 2 — Optimisation |
-| `subnet_without_nsg` | Structural / Architecture | `networking` | Wave 3 — Structural |
-| `subscription_multiple_workloads` | Structural / Architecture | `observability-operations` | Wave 3 — Structural |
-| `tag_key_typo` | FinOps / Governance | `observability-operations` | Wave 1 — No-regret cleanup |
-| `terraform_missing_resource` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `terraform_unmanaged_resource` | Operational / Observability | `observability-operations` | Wave 3 — Structural |
-| `unattached_managed_disk` | FinOps / Governance | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `unused_ddos_protection_plan` | FinOps / Governance | `networking` | Wave 1 — No-regret cleanup |
-| `unused_public_ip` | FinOps / Governance | `networking` | Wave 1 — No-regret cleanup |
-| `unused_storage_account` | FinOps / Governance | `data-sql-storage` | Wave 1 — No-regret cleanup |
-| `vm_public_ip_bypasses_bastion` | Security & Identity | `networking` | Wave 1 — No-regret cleanup |
-| `vm_unsupported_os` | Security & Identity | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `web_app_32bit_worker` | Performance & Resilience | `compute-appservice` | Wave 2 — Optimisation |
-| `web_app_eol_runtime` | Security & Identity | `compute-appservice` | Wave 2 — Optimisation |
-| `web_app_ftp_enabled` | Security & Identity | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `web_app_health_check_missing` | Operational / Observability | `compute-appservice` | Wave 2 — Optimisation |
-| `web_app_https_not_enforced` | Security & Identity | `compute-appservice` | Wave 1 — No-regret cleanup |
-| `web_app_managed_identity_missing` | Security & Identity | `compute-appservice` | Wave 2 — Optimisation |
-| `web_app_weak_tls` | Security & Identity | `compute-appservice` | Wave 1 — No-regret cleanup |
+| `ai_account_sprawl` | Structural / Architecture | `ai-foundry` | Wave 2 - Optimisation |
+| `ai_services_local_auth_enabled` | Security & Identity | `ai-foundry` | Wave 2 - Optimisation |
+| `ai_services_public_network_open` | Security & Identity | `ai-foundry` | Wave 1 - No-regret cleanup |
+| `ai_spend_without_gateway` | FinOps / Governance | `ai-foundry` | Wave 2 - Optimisation |
+| `app_insights_classic_mode` | Operational / Observability | `observability-operations` | Wave 2 - Optimisation |
+| `app_insights_workspace_missing` | Operational / Observability | `observability-operations` | Wave 1 - No-regret cleanup |
+| `app_service_plan_cpu_saturated` | Performance & Resilience | `compute-appservice` | Wave 2 - Optimisation |
+| `app_service_plan_mixed_environments` | Structural / Architecture | `compute-appservice` | Wave 2 - Optimisation |
+| `app_service_plan_previous_generation` | FinOps / Governance | `compute-appservice` | Wave 2 - Optimisation |
+| `app_service_plan_single_instance` | Performance & Resilience | `compute-appservice` | Wave 2 - Optimisation |
+| `budget_consistently_exceeded` | FinOps / Governance | `cost-finops` | Wave 1 - No-regret cleanup |
+| `budget_missing` | FinOps / Governance | `cost-finops` | Wave 1 - No-regret cleanup |
+| `commitment_discount_opportunity` | FinOps / Governance | `cost-finops` | Wave 2 - Optimisation |
+| `cosmos_public_network_access` | Security & Identity | `data-sql-storage` | Wave 2 - Optimisation |
+| `cross_region_app_data_tier` | Structural / Architecture | `data-sql-storage` | Wave 3 - Structural |
+| `deallocated_virtual_machine` | FinOps / Governance | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `defender_plan_disabled` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
+| `defender_recommendations` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
+| `dormant_member_user` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `empty_application_gateway` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
+| `empty_load_balancer` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
+| `empty_resource_group` | FinOps / Governance | `observability-operations` | Wave 1 - No-regret cleanup |
+| `environment_tag_name_mismatch` | Structural / Architecture | `observability-operations` | Wave 1 - No-regret cleanup |
+| `excessive_subscription_owners` | Security & Identity | `security-identity` | Wave 1 - No-regret cleanup |
+| `expired_app_certificate` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `expired_app_secret` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `guest_never_signed_in` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `idle_cosmos_db` | FinOps / Governance | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `idle_iot_hub` | FinOps / Governance | `cost-finops` | Wave 1 - No-regret cleanup |
+| `idle_sql_database` | FinOps / Governance | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `idle_vmss` | FinOps / Governance | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `key_vault_access_policy_model` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
+| `key_vault_public_network_open` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
+| `key_vault_purge_protection_disabled` | Security & Identity | `security-identity` | Wave 1 - No-regret cleanup |
+| `key_vault_soft_delete_disabled` | Security & Identity | `security-identity` | Wave 1 - No-regret cleanup |
+| `log_analytics_restrictive_daily_cap` | Operational / Observability | `observability-operations` | Wave 1 - No-regret cleanup |
+| `log_analytics_workspace_sprawl` | Operational / Observability | `observability-operations` | Wave 2 - Optimisation |
+| `low_secure_score` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
+| `managed_disk_public_network_access` | Security & Identity | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `mfa_not_enabled` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `missing_diagnostic_settings` | Operational / Observability | `observability-operations` | Wave 2 - Optimisation |
+| `missing_required_tags` | FinOps / Governance | `observability-operations` | Wave 2 - Optimisation |
+| `missing_resource_lock` | Operational / Observability | `observability-operations` | Wave 2 - Optimisation |
+| `naming_convention_violation` | FinOps / Governance | `observability-operations` | Wave 3 - Structural |
+| `nsg_management_port_open_to_internet` | Security & Identity | `networking` | Wave 1 - No-regret cleanup |
+| `old_disk_snapshot` | FinOps / Governance | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `orphaned_backup_vault` | FinOps / Governance | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `orphaned_nic` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
+| `orphaned_nsg` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
+| `permanent_global_admin` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `private_dns_zone_without_endpoints` | Structural / Architecture | `networking` | Wave 1 - No-regret cleanup |
+| `public_ip_on_orphaned_nic` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
+| `public_sql_server` | Security & Identity | `data-sql-storage` | Wave 2 - Optimisation |
+| `public_storage_account` | Security & Identity | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `service_health_alert_missing` | Operational / Observability | `observability-operations` | Wave 1 - No-regret cleanup |
+| `service_principal_privileged_role` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
+| `sql_database_cpu_saturated` | Performance & Resilience | `data-sql-storage` | Wave 2 - Optimisation |
+| `sql_entra_admin_individual_user` | Security & Identity | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `sql_entra_admin_missing` | Security & Identity | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `sql_entra_only_auth_disabled` | Security & Identity | `data-sql-storage` | Wave 2 - Optimisation |
+| `sql_firewall_allow_all_azure_services` | Security & Identity | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `sql_firewall_individual_ip_rules` | Security & Identity | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `sql_firewall_wide_ip_range` | Security & Identity | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `sql_hyperscale_legacy_storage_pricing` | FinOps / Governance | `data-sql-storage` | Wave 2 - Optimisation |
+| `standing_user_access_administrator` | Security & Identity | `security-identity` | Wave 1 - No-regret cleanup |
+| `storage_account_sprawl` | Structural / Architecture | `data-sql-storage` | Wave 2 - Optimisation |
+| `storage_blob_soft_delete_disabled` | Performance & Resilience | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `storage_public_network_access` | Security & Identity | `data-sql-storage` | Wave 2 - Optimisation |
+| `storage_shared_key_access_enabled` | Security & Identity | `data-sql-storage` | Wave 2 - Optimisation |
+| `storage_transaction_hotspot` | Performance & Resilience | `data-sql-storage` | Wave 2 - Optimisation |
+| `subnet_without_nsg` | Structural / Architecture | `networking` | Wave 3 - Structural |
+| `subscription_multiple_workloads` | Structural / Architecture | `observability-operations` | Wave 3 - Structural |
+| `tag_key_typo` | FinOps / Governance | `observability-operations` | Wave 1 - No-regret cleanup |
+| `terraform_missing_resource` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `terraform_unmanaged_resource` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `unattached_managed_disk` | FinOps / Governance | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `unused_ddos_protection_plan` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
+| `unused_public_ip` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
+| `unused_storage_account` | FinOps / Governance | `data-sql-storage` | Wave 1 - No-regret cleanup |
+| `vm_public_ip_bypasses_bastion` | Security & Identity | `networking` | Wave 1 - No-regret cleanup |
+| `vm_unsupported_os` | Security & Identity | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `web_app_32bit_worker` | Performance & Resilience | `compute-appservice` | Wave 2 - Optimisation |
+| `web_app_eol_runtime` | Security & Identity | `compute-appservice` | Wave 2 - Optimisation |
+| `web_app_ftp_enabled` | Security & Identity | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `web_app_health_check_missing` | Operational / Observability | `compute-appservice` | Wave 2 - Optimisation |
+| `web_app_https_not_enforced` | Security & Identity | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `web_app_managed_identity_missing` | Security & Identity | `compute-appservice` | Wave 2 - Optimisation |
+| `web_app_weak_tls` | Security & Identity | `compute-appservice` | Wave 1 - No-regret cleanup |

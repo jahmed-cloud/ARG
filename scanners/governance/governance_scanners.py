@@ -4,9 +4,9 @@ Azure Resource Guardian - Governance Scanners
 Detects tag compliance, naming convention, and resource lock gaps.
 
 Scanners in this module:
-1. MissingRequiredTagsScanner — Resources missing required governance tags
-2. NamingConventionScanner    — Resources not following CAF naming patterns
-3. MissingResourceLockScanner — Production resources without deletion locks
+1. MissingRequiredTagsScanner - Resources missing required governance tags
+2. NamingConventionScanner    - Resources not following CAF naming patterns
+3. MissingResourceLockScanner - Production resources without deletion locks
 
 Governance findings often carry zero direct cost impact but are
 foundational for cost attribution, security notification routing, and
@@ -229,18 +229,18 @@ class NamingConventionScanner(BaseScanner):
                 severity=SeverityLevel.LOW,
                 remediation_steps=(
                     "Rename this resource to follow your organization's naming convention. "
-                    "Most Azure resources cannot be renamed in-place — provision a new resource "
+                    "Most Azure resources cannot be renamed in-place - provision a new resource "
                     "and migrate data as part of a planned governance sprint."
                 ),
                 azure_cli_script=(
-                    f"# Most Azure resources cannot be renamed — provision a replacement and migrate.\n"
+                    f"# Most Azure resources cannot be renamed - provision a replacement and migrate.\n"
                     f"# 1. Export current resource config:\n"
                     f"az resource show --ids \"{resource['id']}\" --output json > current-config.json\n"
                     f"# 2. Review current-config.json, create a renamed replacement, then delete this resource.\n"
                     f"# Resource ID: {resource['id']}"
                 ),
                 powershell_script=(
-                    f"# Most Azure resources cannot be renamed — provision a replacement and migrate.\n"
+                    f"# Most Azure resources cannot be renamed - provision a replacement and migrate.\n"
                     f"# 1. Export current resource config:\n"
                     f"Get-AzResource -ResourceId \"{resource['id']}\" | ConvertTo-Json -Depth 10 > current-config.json\n"
                     f"# 2. Review current-config.json, create a renamed replacement, then delete this resource.\n"
@@ -283,7 +283,7 @@ class MissingResourceLockScanner(BaseScanner):
     Flags production-tagged critical resources that should have a
     CanNotDelete or ReadOnly lock. Resource Graph cannot directly query
     lock existence, so this raises an advisory finding for every
-    production resource of a critical type — some may already be locked
+    production resource of a critical type - some may already be locked
     and represent false positives pending manual verification.
     """
 
@@ -320,7 +320,7 @@ class MissingResourceLockScanner(BaseScanner):
                 title=f"Verify resource lock: {resource['name']}",
                 description=(
                     f"Production resource '{resource['name']}' ({resource.get('type', 'Unknown')}) "
-                    f"should have a CanNotDelete or ReadOnly lock. Verify a lock exists — this "
+                    f"should have a CanNotDelete or ReadOnly lock. Verify a lock exists - this "
                     f"finding may be a false positive if one is already applied."
                 ),
                 resource_id=resource["id"],

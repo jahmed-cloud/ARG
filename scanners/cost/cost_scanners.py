@@ -2,9 +2,9 @@
 Azure Resource Guardian - Cost Scanners
 ========================================
 Scanners in this module:
-1. IdleIoTHubScanner              — IoT Hubs with no connected devices and no messages
-2. AISpendGovernanceScanner       — Foundry / Azure OpenAI spend with no gateway; AI account sprawl
-3. CommitmentDiscountScanner      — Advisor reservation / savings-plan opportunities
+1. IdleIoTHubScanner              - IoT Hubs with no connected devices and no messages
+2. AISpendGovernanceScanner       - Foundry / Azure OpenAI spend with no gateway; AI account sprawl
+3. CommitmentDiscountScanner      - Advisor reservation / savings-plan opportunities
 """
 
 import sys
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from typing import Any, Dict, List
 
-from scanners.base.azure_api import cached_metrics, cost_for, get_resource_costs
+from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, cached_metrics, cost_for, get_resource_costs
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -49,7 +49,7 @@ class IdleIoTHubScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            for hub in hubs:
+            async def _enrich(hub):
                 try:
                     m = await cached_metrics(context, hub["id"],
                                              ["devices.connectedDevices.allProtocol", "dailyMessageQuotaUsed"],
@@ -58,6 +58,7 @@ class IdleIoTHubScanner(PostureScanner):
                     hub["max_daily_messages"] = (m.get("dailyMessageQuotaUsed") or {}).get("maximum") or 0.0
                 except Exception as exc:
                     warnings.append(f"Metrics unavailable for {hub['name']}: {exc}")
+            await gather_limited(hubs, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         findings = []
         for hub in hubs:
@@ -128,7 +129,7 @@ class AISpendGovernanceScanner(PostureScanner):
         warnings = []
         if self.is_live(context) and accounts:
             costs = await get_resource_costs(context)
-            for acc in accounts:
+            async def _enrich(acc):
                 entry = cost_for(costs, acc["id"]) or {}
                 acc["cost_30d"], acc["cost_usd_30d"], acc["currency"] = entry.get("cost"), entry.get("cost_usd"), entry.get("currency")
                 try:
@@ -139,6 +140,7 @@ class AISpendGovernanceScanner(PostureScanner):
                                            "capacity": (d.get("sku") or {}).get("capacity")} for d in deployments]
                 except Exception as exc:
                     warnings.append(f"Deployments unavailable for {acc['name']}: {exc}")
+            await gather_limited(accounts, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         min_usd = float(self.setting("ai_min_monthly_usd", self.MIN_MONTHLY_USD))
         findings = []
@@ -242,7 +244,7 @@ class CommitmentDiscountScanner(PostureScanner):
             finding_type="commitment_discount_opportunity",
             title=f"{len(best)} commitment-discount opportunit{'y' if len(best) == 1 else 'ies'} (Advisor)",
             description=("Azure Advisor recommends: " + "; ".join(
-                f"{k} — {r.get('annual') or 0:,.0f} {r.get('currency') or ''}/yr" for k, r in best.items())
+                f"{k} - {r.get('annual') or 0:,.0f} {r.get('currency') or ''}/yr" for k, r in best.items())
                 + ". Commit only after rightsizing and clean-up, otherwise the reservation locks in waste."),
             remediation_steps="Rightsize first, then purchase reservations / savings plan for the steady-state baseline.",
             evidence={"recommendations": list(best.values())},

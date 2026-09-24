@@ -4,13 +4,13 @@ Azure Resource Guardian - Network Posture Scanners
 Network waste and exposure checks that complement network_scanners.py.
 
 Scanners in this module:
-1. UnassociatedDdosPlanScanner        — DDoS Network Protection plans protecting nothing
-2. OrphanedNSGScanner                  — NSGs attached to no subnet and no NIC
-3. OpenManagementPortScanner           — NSG rules allowing RDP/SSH/WinRM from the Internet
-4. PublicIPOnOrphanedNICScanner        — Public IPs held by NICs that have no VM
-5. VMPublicIPWithBastionScanner        — VMs keeping a public IP in a VNet that has Bastion
-6. PrivateDnsZoneWithoutEndpointsScanner — privatelink.* zones with no records
-7. SubnetWithoutNSGScanner             — Workload subnets with no NSG
+1. UnassociatedDdosPlanScanner        - DDoS Network Protection plans protecting nothing
+2. OrphanedNSGScanner                  - NSGs attached to no subnet and no NIC
+3. OpenManagementPortScanner           - NSG rules allowing RDP/SSH/WinRM from the Internet
+4. PublicIPOnOrphanedNICScanner        - Public IPs held by NICs that have no VM
+5. VMPublicIPWithBastionScanner        - VMs keeping a public IP in a VNet that has Bastion
+6. PrivateDnsZoneWithoutEndpointsScanner - privatelink.* zones with no records
+7. SubnetWithoutNSGScanner             - Workload subnets with no NSG
 
 At most one finding is emitted per (resource, finding_type): the worker
 upserts on that pair, so per-rule / per-subnet details go into evidence.
@@ -136,12 +136,12 @@ class UnassociatedDdosPlanScanner(PostureScanner):
                     f"DDoS Network Protection plan '{plan['name']}' has no associated virtual networks "
                     f"or public IPs, so it protects no resource while billing a flat monthly fee "
                     f"(~USD {monthly:,.0f}/month, {basis}). Note that a VNet DDoS plan cannot protect "
-                    f"multi-tenant PaaS endpoints such as App Service — use Front Door/WAF for those."
+                    f"multi-tenant PaaS endpoints such as App Service - use Front Door/WAF for those."
                 ),
                 resource_type="microsoft.network/ddosprotectionplans",
                 remediation_steps=(
                     "1. Confirm no policy or protection-class requirement mandates this plan.\n"
-                    "2. If VNets with public IPs must be protected, associate them — or link the spokes "
+                    "2. If VNets with public IPs must be protected, associate them - or link the spokes "
                     "to the central (hub) DDoS plan instead of paying for a second plan.\n"
                     "3. For a handful of public IPs, DDoS IP Protection per IP is far cheaper.\n"
                     "4. Otherwise delete the plan."
@@ -182,7 +182,7 @@ class UnassociatedDdosPlanScanner(PostureScanner):
 
 @register_scanner
 class OrphanedNSGScanner(PostureScanner):
-    """NSGs with no subnet and no NIC association — clutter and latent exposure."""
+    """NSGs with no subnet and no NIC association - clutter and latent exposure."""
 
     scanner_name = "orphaned_nsg_scanner"
     display_name = "Orphaned Network Security Groups"
@@ -245,7 +245,7 @@ class OpenManagementPortScanner(PostureScanner):
     """
     Inbound Allow rules exposing RDP/SSH/WinRM to '*' / Internet. CRITICAL
     when the NSG is effective (on a subnet or on a NIC attached to a VM);
-    HIGH when latent (orphaned NSG or a NIC without VM) — re-attaching the
+    HIGH when latent (orphaned NSG or a NIC without VM) - re-attaching the
     NIC or NSG would expose a machine instantly.
     """
 
@@ -360,7 +360,7 @@ class PublicIPOnOrphanedNICScanner(PostureScanner):
     """
     unused_public_ip_scanner only sees PIPs with no ipConfiguration at all.
     A PIP bound to a NIC whose VM was deleted looks "attached" but serves
-    nothing — and a Standard static PIP keeps billing.
+    nothing - and a Standard static PIP keeps billing.
     """
 
     scanner_name = "public_ip_on_orphaned_nic_scanner"

@@ -19,7 +19,7 @@
 | Question | ARG's Answer |
 |---|---|
 | What resources are costing money unnecessarily? | Cost Optimization Engine with Azure Cost Management integration |
-| Which resources are orphaned? | 15+ orphan scanners across Compute, Network, Storage, Database |
+| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (62 scanners in total — see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
 | Which resources violate governance standards? | Governance Module with CAF + Zero Trust scoring |
 | Which Entra ID objects are security risks? | Full Microsoft Graph hygiene analysis |
 | What resources are unmanaged by Terraform? | Terraform drift detection engine |
@@ -68,7 +68,7 @@
 - Tag analysis and ownership tracking
 - Resource history and change detection
 
-### 💀 Orphan Detection (15+ scanners)
+### 💀 Orphan Detection (20+ checks)
 - Unattached managed disks, old snapshots, deallocated VMs
 - Unused public IPs, public IPs held by VM-less NICs, orphaned NICs and NSGs, empty load balancers
 - Unused storage accounts (verified against 7-day transaction metrics), orphaned backups
@@ -135,28 +135,30 @@
 ### 🧭 Subscription Analysis Report (CLI + local portal)
 Run every scanner against your subscriptions from your own workstation — **no Docker, database or
 service principal needed**. Azure access reuses your **`az login`** session (your own account).
+📖 Full guide: [docs/subscription-analysis.md](docs/subscription-analysis.md) · PRD: [docs/PRD-subscription-analysis.md](docs/PRD-subscription-analysis.md)
 
-```bash
-az login                                                   # once, in a terminal
-python -m venv .venv-local && .venv-local/bin/pip install -r requirements-local.txt
-# Windows: py -m venv .venv-local; .venv-local\Scripts\pip install -r requirements-local.txt
+**Where to run:** the PowerShell/bash launchers work **from any folder** (they switch to the repo root and
+create `.venv-local` on first use). Plain `python -m …` commands must be run **from the ARG repository root**.
+Reports always go to **`<ARG repo>/reports/`** unless you pass `-ReportsPath` / `--reports-dir`.
+
+```powershell
+az login                                                         # once, in a terminal
+
+# Local portal — http://127.0.0.1:8765
+C:\path\to\ARG\scripts\Start-LocalPortal.ps1                     # Linux/macOS: ./scripts/start-local-portal.sh
+
+# Command line — one folder per subscription, plus an index
+C:\path\to\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription '<subscription-id-or-name>'
+C:\path\to\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -All
 ```
 
-**Command line** — one folder per subscription, plus an index:
+Python equivalents (from the repo root, after `pip install -r requirements-local.txt`):
 
 ```bash
 python -m scripts.subscription_analysis --subscription "<subscription-id-or-name>"   # repeatable
 python -m scripts.subscription_analysis --all                                        # every enabled subscription
-# options: --reports-dir ./reports  --tenant <id>  --scanners a,b  --config thresholds.json  --skip-cost
-```
-
-**Local portal** — the same analysis from a browser on `http://127.0.0.1:8765`:
-
-```powershell
-az login
-.\scripts\Start-LocalPortal.ps1          # Windows: creates .venv-local, installs deps, starts the portal
-./scripts/start-local-portal.sh          # Linux/macOS
-python -m scripts.local_portal           # or directly (after pip install -r requirements-local.txt)
+python -m scripts.local_portal                                                       # the portal
+# options: --reports-dir DIR  --tenant <id>  --scanners a,b  --config thresholds.json  --skip-cost
 ```
 
 - **Portal login** is a simple local username/password that only protects the portal:
@@ -372,8 +374,8 @@ arg/
 │   ├── security/      # Security posture, Defender, RBAC scanners
 │   └── terraform/     # Drift detection scanners
 ├── reports/           # Report generation engine
-├── docs/              # Documentation
-├── scripts/           # Utility scripts (subscription_analysis CLI, local_portal, Start-LocalPortal.ps1)
+├── docs/              # User guide, PRD, scanner catalog (docs/README.md)
+├── scripts/           # subscription_analysis CLI, local_portal, launchers (*.ps1, *.sh)
 ├── docker/            # Dockerfiles
 ├── helm/              # Helm charts for Kubernetes
 ├── terraform/         # Infrastructure as Code

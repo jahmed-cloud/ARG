@@ -10,7 +10,7 @@ This reflects what's actually planned, based on known gaps in the current build 
 - **Per-tenant Graph permission verification.** Right now "Graph Access" in Settings is a single on/off toggle the admin sets manually after granting consent in Azure AD. There's no in-app way to verify which of the five required permissions are actually granted — a partial-consent tenant will silently behave like a no-consent one with a generic 403, rather than telling you exactly which permission is missing.
 - **CI/CD pipeline.** `.github/workflows/` doesn't exist yet — no automated test run, build check, or image publish on push.
 - **Test suite.** `tests/unit/` now covers the posture scanners (mock mode + detection helpers) and the subscription analysis report generator (`make test`). `tests/integration/` and `tests/e2e/` are still missing, and the original scanners/API have no tests yet.
-- **Surface subscription analysis in the UI.** The `scripts.subscription_analysis` CLI renders a full 01–05 markdown review from scanner findings; the same renderer could back a "Subscription review" report type in `backend/services/report_service.py`.
+- **Surface subscription analysis in the Docker UI.** The `scripts.subscription_analysis` CLI and the lightweight `scripts.local_portal` render the full 01–05 markdown review; the same renderer could back a "Subscription review" report type in `backend/services/report_service.py`.
 
 ## Planned, not yet started
 

@@ -12,6 +12,7 @@ pytest==8.2.0
 pytest-asyncio==0.23.7
 pytest-cov==5.0.0
 factory-boy==3.3.0        # Test fixtures
+markdown==3.6             # Local portal renderer (see requirements-local.txt)
 
 # Code Quality
 ruff==0.4.4                # Linting

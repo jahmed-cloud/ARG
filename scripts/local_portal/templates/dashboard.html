@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block user %}
+<div class="user">
+  <span title="Portal user">👤 {{ username }}</span>
+  <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
+</div>
+{% endblock %}
+{% block content %}
+<section class="card azure {% if azure.signed_in %}ok{% else %}warn{% endif %}" id="azure-status">
+  <div>
+    <h2>Azure CLI session</h2>
+    {% if azure.signed_in %}
+      <p>Using <strong>{{ azure.account }}</strong>{% if azure.display_name and azure.display_name != azure.account %} ({{ azure.display_name }}){% endif %}
+        · tenant <code>{{ azure.tenant_id }}</code></p>
+      <p class="muted small">From <code>az login</code>. To use another account or tenant, run <code>az login</code> /
+        <code>az login --tenant &lt;id&gt;</code> in a terminal and click Refresh.</p>
+    {% else %}
+      <p class="alert error">{{ azure.error }}</p>
+      <p class="muted small">Open a terminal, run <code>az login</code>, then click Refresh. No service principal is needed.</p>
+    {% endif %}
+  </div>
+  <button id="refresh" class="secondary" type="button">Refresh</button>
+</section>
+
+<section class="card">
+  <div class="toolbar">
+    <h2>Subscriptions <span class="muted small">({{ subscriptions|length }})</span></h2>
+    <input id="filter" type="search" placeholder="Filter by name or ID" aria-label="Filter subscriptions">
+    <button id="analyze-selected" class="primary" type="button" disabled>Analyze selected</button>
+  </div>
+  {% if subscription_error %}<p class="alert error">{{ subscription_error }}</p>{% endif %}
+  <p class="muted small">Reports are written to <code>{{ reports_dir }}</code> — one folder per subscription with
+    <code>README.md</code> and <code>01-…</code> to <code>05-…</code> markdown files.</p>
+  <table class="subs" id="subs">
+    <thead>
+      <tr>
+        <th><input type="checkbox" id="select-all" aria-label="Select all"></th>
+        <th>Subscription</th><th>State</th><th>Last analysed</th><th>Critical / High</th>
+        <th class="num">Last 30 days</th><th class="num">Est. savings / month</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in subscriptions %}
+      {% set summary = summaries.get(s.id|lower) %}
+      <tr data-id="{{ s.id }}" data-search="{{ (s.name ~ ' ' ~ s.id)|lower }}">
+        <td><input type="checkbox" class="pick" value="{{ s.id }}" {% if s.state != 'Enabled' %}disabled{% endif %} aria-label="Select {{ s.name }}"></td>
+        <td>
+          {% if summary %}<a href="/reports/{{ summary.folder }}/README.md">{{ s.name }}</a>{% else %}{{ s.name }}{% endif %}
+          <div class="muted small mono">{{ s.id }}</div>
+        </td>
+        <td>{{ s.state }}</td>
+        <td>{{ (summary.generated_at or '')[:16]|replace('T', ' ') if summary else '—' }}</td>
+        <td>{% if summary %}<span class="sev critical">{{ summary.findings_by_severity.critical }}</span> /
+            <span class="sev high">{{ summary.findings_by_severity.high }}</span>{% else %}—{% endif %}</td>
+        <td class="num">{% if summary %}{{ '{:,.0f}'.format(summary.cost_30d or 0) }} {{ summary.currency }}{% else %}—{% endif %}</td>
+        <td class="num">{% if summary and summary.savings_billing.wave_1 is not none %}{{ '{:,.0f}'.format((summary.savings_billing.wave_1 or 0) + (summary.savings_billing.wave_2 or 0)) }} {{ summary.currency }}{% else %}—{% endif %}</td>
+        <td class="actions">
+          <button class="secondary analyze" type="button" data-id="{{ s.id }}" {% if s.state != 'Enabled' %}disabled{% endif %}>Analyze</button>
+          <span class="job-status" data-id="{{ s.id|lower }}"></span>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="muted">No subscriptions visible — check the Azure CLI session above.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Analysis jobs</h2>
+  <p class="muted small">Each analysis runs every ARG scanner (Resource Graph, metrics, Cost Management, Defender, Advisor) and
+    takes a few minutes per subscription. You can keep browsing reports meanwhile.</p>
+  <table class="jobs" id="jobs">
+    <thead><tr><th>Subscription</th><th>Status</th><th>Progress</th><th>Started</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/portal.js"></script>{% endblock %}

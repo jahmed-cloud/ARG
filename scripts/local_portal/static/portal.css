@@ -1,0 +1,69 @@
+:root {
+  --bg: #f5f7fa; --card: #fff; --text: #1f2933; --muted: #6b7785; --border: #dde3ea;
+  --primary: #0f6cbd; --primary-dark: #0b5394; --ok: #107c10; --warn: #c25e00; --crit: #c50f1f; --high: #da3b01;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-size: 15px; }
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono, pre { font-family: Consolas, "Cascadia Code", monospace; font-size: 0.9em; }
+code { background: #eef2f6; padding: 1px 4px; border-radius: 3px; }
+
+.topbar { display: flex; align-items: center; gap: 24px; padding: 10px 24px; background: #1b2a3a; color: #fff; }
+.topbar a { color: #fff; }
+.brand { font-weight: 600; font-size: 18px; }
+.brand span { font-weight: 400; opacity: 0.75; }
+.topbar nav { display: flex; gap: 16px; flex: 1; }
+.user { display: flex; align-items: center; gap: 12px; }
+.user form { margin: 0; }
+
+main { max-width: 1400px; margin: 24px auto; padding: 0 24px; }
+main.narrow { max-width: 480px; }
+main.with-sidebar { display: grid; grid-template-columns: 280px 1fr; gap: 24px; max-width: 1600px; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 18px 22px; margin-bottom: 20px; }
+.card h1, .card h2 { margin-top: 0; }
+.card.azure { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-left: 5px solid var(--ok); }
+.card.azure.warn { border-left-color: var(--warn); }
+.toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.toolbar h2 { margin: 0; flex: 1; }
+.muted { color: var(--muted); }
+.small { font-size: 0.85em; }
+.alert { padding: 8px 12px; border-radius: 6px; }
+.alert.error { background: #fde7e9; color: var(--crit); }
+
+button { font: inherit; border-radius: 6px; padding: 6px 14px; cursor: pointer; border: 1px solid var(--border); background: #fff; }
+button.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+button.primary:hover { background: var(--primary-dark); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.link { background: none; border: none; color: #fff; padding: 0; text-decoration: underline; }
+input[type=search], input[type=password], input:not([type]) { font: inherit; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.login form { display: grid; gap: 12px; }
+.login label { display: grid; gap: 4px; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { background: #f0f3f7; font-weight: 600; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+td.actions { white-space: nowrap; }
+.sev.critical { color: var(--crit); font-weight: 600; }
+.sev.high { color: var(--high); font-weight: 600; }
+.status.completed { color: var(--ok); font-weight: 600; }
+.status.failed { color: var(--crit); font-weight: 600; }
+.status.running { color: var(--primary); font-weight: 600; }
+progress { width: 220px; }
+.job-status { margin-left: 8px; color: var(--primary); font-size: 0.85em; }
+
+.sidebar { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; align-self: start; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+.sidebar h3 { margin: 0 0 8px; font-size: 15px; word-break: break-all; }
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li { padding: 3px 0; font-size: 0.88em; word-break: break-all; }
+.doc { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 18px 28px; min-width: 0; }
+.crumbs { font-size: 0.85em; margin-bottom: 12px; color: var(--muted); }
+.markdown table { display: block; overflow-x: auto; margin: 12px 0; }
+.markdown td, .markdown th { font-size: 0.9em; }
+.markdown pre, pre.json { background: #f6f8fa; border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow: auto; }
+.markdown blockquote { border-left: 4px solid var(--border); margin: 12px 0; padding: 4px 14px; color: var(--muted); }
+.markdown details { margin: 8px 0; }
+.mermaid { background: #fff; text-align: center; margin: 12px 0; }

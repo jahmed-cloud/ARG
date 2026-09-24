@@ -9,7 +9,7 @@ import dataclasses
 import logging
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from scanners.base.azure_api import ArmClient, get_resource_costs, run_cost_query
 from scanners.base.base_scanner import ScanContext, ScannerRegistry
@@ -99,11 +99,21 @@ def build_context(credential: Any, arm: ArmClient, subscription: Dict[str, Any])
     return context
 
 
+ProgressCallback = Callable[[str, int, int], None]
+
+
+def _noop_progress(message: str, step: int, total: int) -> None:
+    return None
+
+
 async def run_scanners(context: ScanContext, names: Optional[List[str]], config: Dict[str, Any],
-                       data: AnalysisData) -> None:
+                       data: AnalysisData, progress: ProgressCallback = _noop_progress,
+                       step_offset: int = 0, total_steps: Optional[int] = None) -> None:
     registry = ScannerRegistry.all()
     selected = [cls for name, cls in sorted(registry.items()) if not names or name in names]
-    for cls in selected:
+    total = total_steps or len(selected)
+    for index, cls in enumerate(selected, 1):
+        progress(f"Scanner {cls.scanner_name}", step_offset + index, total)
         if cls.requires_graph and context.graph_client is None:
             data.scanner_runs.append({"scanner": cls.scanner_name, "status": "skipped",
                                       "reason": "requires Microsoft Graph", "findings": 0})
@@ -172,20 +182,40 @@ async def collect_costs(context: ScanContext, data: AnalysisData, months: int = 
         data.cost["budgets"] = []
 
 
-async def run_analysis(credential: Any, subscription: str, *, scanners: Optional[List[str]] = None,
-                       config: Optional[Dict[str, Any]] = None, include_cost: bool = True) -> AnalysisData:
-    load_scanners()
+async def list_subscriptions(credential: Any) -> List[Dict[str, Any]]:
+    """Subscriptions visible to the credential, in the same shape resolve_subscription() returns."""
     arm = ArmClient(credential)
     try:
+        subs = await arm.get_all("/subscriptions", "2022-12-01")
+    finally:
+        arm.close()
+    return sorted(
+        ({"id": s["subscriptionId"], "name": s.get("displayName"), "tenant_id": s.get("tenantId"),
+          "state": s.get("state")} for s in subs),
+        key=lambda s: (s["name"] or "").lower(),
+    )
+
+
+async def run_analysis(credential: Any, subscription: str, *, scanners: Optional[List[str]] = None,
+                       config: Optional[Dict[str, Any]] = None, include_cost: bool = True,
+                       progress: ProgressCallback = _noop_progress) -> AnalysisData:
+    load_scanners()
+    selected = [n for n in ScannerRegistry.all() if not scanners or n in scanners]
+    total = len(selected) + 3
+    arm = ArmClient(credential)
+    try:
+        progress("Resolving subscription", 0, total)
         sub = await resolve_subscription(arm, subscription)
         data = AnalysisData(subscription=sub, generated_at=datetime.now(timezone.utc))
         context = build_context(credential, arm, sub)
         logger.info("Collecting inventory for %s (%s)", sub["name"], sub["id"])
+        progress("Collecting resource inventory", 1, total)
         await collect_inventory(arm, data)
         if include_cost:
+            progress("Querying Cost Management (throttled API, can take a minute)", 2, total)
             logger.info("Querying Cost Management")
             await collect_costs(context, data)
-        await run_scanners(context, scanners, config or {}, data)
+        await run_scanners(context, scanners, config or {}, data, progress=progress, step_offset=3, total_steps=total)
         return data
     finally:
         arm.close()

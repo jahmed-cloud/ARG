@@ -165,6 +165,7 @@ Pass a JSON file with `--config`. Keys apply to every scanner that reads them:
 
 | Symptom | Fix |
 |---|---|
+| Browser shows `ERR_CONNECTION_REFUSED` on `http://127.0.0.1:8765` | The portal isn't running. It only runs while `Start-LocalPortal.ps1` (or `python -m scripts.local_portal`) is running in a terminal. Start it and keep that terminal open. Ctrl+C or closing the terminal stops it. |
 | "The Azure CLI is not signed in" | Run `az login` in a terminal, then click **Refresh** (portal) or re-run. |
 | A subscription isn't listed | It belongs to another tenant: `az login --tenant <id>`, then Refresh. Or it's disabled. |
 | Cost sections empty / `cost query … 403` warning | Grant *Cost Management Reader* on the subscription. |

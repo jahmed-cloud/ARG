@@ -133,9 +133,18 @@ class ScanContext:
     management_client:        Any = None
     cost_management_client:   Any = None
     graph_client:             Any = None
+    # scanners.base.azure_api.ArmClient — ARM REST (metrics, diagnostic
+    # settings, firewall rules, Cost Management query, budgets). None means
+    # "no live Azure access": ARM-dependent scanners fall back to mock data.
+    arm_client:               Any = None
 
     # Configuration
     config: Dict[str, Any] = field(default_factory=dict)
+
+    # Per-scan scratch space shared between scanners (e.g. one Cost
+    # Management result reused by several cost-aware scanners, since that
+    # API is throttled to a handful of calls per minute per scope).
+    cache: Dict[str, Any] = field(default_factory=dict)
 
     # Parsed Terraform state JSON for the subscription being scanned, if
     # one has been imported via POST /drift/import. Read by
@@ -484,4 +493,11 @@ ORPHAN_FINDING_TYPES = {
     "empty_application_gateway",
     "unused_storage_account",
     "orphaned_backup_vault",
+    "unused_ddos_protection_plan",
+    "orphaned_nsg",
+    "public_ip_on_orphaned_nic",
+    "private_dns_zone_without_endpoints",
+    "idle_iot_hub",
+    "idle_cosmos_db",
+    "empty_resource_group",
 }

@@ -9,16 +9,19 @@ Scanners in this module:
 
 Note: True transaction-level "unused" detection requires Azure Monitor
 Storage Insights metrics, which are not queryable from Resource Graph.
-These scanners flag candidates for manual verification rather than
-claiming certainty — see each scanner's description for caveats.
+When an ArmClient is available (live scans) UnusedStorageAccountScanner
+reads the 7-day Transactions / UsedCapacity metrics and only reports
+genuinely idle accounts; without it, it falls back to flagging candidates
+for manual verification rather than claiming certainty.
 """
 
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from scanners.base.azure_api import cached_metrics, cost_for, get_resource_costs
 from scanners.base.base_scanner import (
     BaseScanner,
     ScanContext,
@@ -50,6 +53,7 @@ class UnusedStorageAccountScanner(BaseScanner):
     requires_cost = True
 
     BASE_MONTHLY_COST = 0.50  # Minimal cost just for the account existing
+    IDLE_TRANSACTIONS_7D = 50  # Platform housekeeping alone produces a few dozen per week
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
@@ -67,29 +71,53 @@ class UnusedStorageAccountScanner(BaseScanner):
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
+        live = getattr(context, "arm_client", None) is not None
+        costs = await get_resource_costs(context) if live and resources else None
+        idle_limit = float(self.config.get("idle_transactions_7d", self.IDLE_TRANSACTIONS_7D))
+        warnings: List[str] = []
+
         findings = []
         for sa in resources:
             tags = sa.get("tags") or {}
             if tags.get("arg-ignore") or tags.get("arg-reserved"):
                 continue
 
+            activity: Optional[Dict[str, Any]] = None
+            if live:
+                activity = await self._activity(context, sa["id"], warnings)
+                if activity is not None and activity["transactions_7d"] > idle_limit:
+                    continue
+
             is_blob_only = (sa.get("kind") or "").lower() == "blobstorage"
             severity = SeverityLevel.HIGH if is_blob_only else SeverityLevel.MEDIUM
             public_access = bool(sa.get("allow_blob_public_access"))
 
-            description = (
-                f"Storage account '{sa['name']}' (kind: {sa.get('kind', 'Unknown')}, "
-                f"SKU: {sa.get('sku_name', 'Unknown')}) could not be confirmed as actively "
-                f"used from Resource Graph metadata alone — verify with Storage Insights "
-                f"transaction metrics before taking action."
-            )
+            if activity is not None:
+                title = f"Idle storage account: {sa['name']}"
+                description = (
+                    f"Storage account '{sa['name']}' (kind: {sa.get('kind', 'Unknown')}, "
+                    f"SKU: {sa.get('sku_name', 'Unknown')}) served {activity['transactions_7d']:,.0f} "
+                    f"transactions in the last 7 days and holds {activity['used_capacity_gb']:,.2f} GB. "
+                    f"Per-account charges (e.g. Defender for Storage) keep accruing while it sits idle."
+                )
+                actual = cost_for(costs, sa["id"]) or {}
+                saving = round(actual["cost_usd"], 2) if actual.get("cost_usd") else self.BASE_MONTHLY_COST
+            else:
+                title = f"Verify usage: {sa['name']}"
+                description = (
+                    f"Storage account '{sa['name']}' (kind: {sa.get('kind', 'Unknown')}, "
+                    f"SKU: {sa.get('sku_name', 'Unknown')}) could not be confirmed as actively "
+                    f"used from Resource Graph metadata alone — verify with Storage Insights "
+                    f"transaction metrics before taking action."
+                )
+                saving = self.BASE_MONTHLY_COST
             if public_access:
                 description += " ⚠️ Public blob access is enabled on this account."
                 severity = SeverityLevel.HIGH
 
             findings.append(self.make_finding(
                 finding_type="unused_storage_account",
-                title=f"Verify usage: {sa['name']}",
+                title=title,
                 description=description,
                 resource_id=sa["id"],
                 resource_name=sa["name"],
@@ -123,11 +151,26 @@ class UnusedStorageAccountScanner(BaseScanner):
                     "sku": sa.get("sku_name"),
                     "access_tier": sa.get("access_tier"),
                     "public_access_enabled": public_access,
+                    **(activity or {}),
                 },
-                estimated_monthly_savings_usd=self.BASE_MONTHLY_COST,
+                estimated_monthly_savings_usd=saving,
             ))
 
-        return ScanOutput(findings=findings, resources_scanned=len(resources))
+        return ScanOutput(findings=findings, resources_scanned=len(resources), warnings=warnings)
+
+    async def _activity(self, context: ScanContext, resource_id: str, warnings: List[str]) -> Optional[Dict[str, Any]]:
+        """7-day transaction total and latest used capacity; None if metrics are unavailable."""
+        try:
+            tx = await cached_metrics(context, resource_id, ["Transactions"], days=7, interval="PT12H", aggregation="Total")
+            cap = await cached_metrics(context, resource_id, ["UsedCapacity"], days=7, interval="PT12H", aggregation="Average")
+        except Exception as exc:
+            warnings.append(f"Storage metrics unavailable for {resource_id.split('/')[-1]}: {exc}")
+            return None
+        used = (cap.get("UsedCapacity") or {}).get("latest_average") or 0.0
+        return {
+            "transactions_7d": (tx.get("Transactions") or {}).get("total") or 0.0,
+            "used_capacity_gb": round(used / 1024 ** 3, 2),
+        }
 
     async def _run_arg_query(self, context: ScanContext, query: str) -> List[Dict]:
         if context.resource_graph_client is None:

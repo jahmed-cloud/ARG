@@ -257,11 +257,14 @@ class PublicSQLServerScanner(BaseScanner):
 @register_scanner
 class MissingDiagnosticSettingsScanner(BaseScanner):
     """
-    Flags Key Vaults, SQL Servers, and NSGs that may be missing
-    diagnostic settings (audit logs). Resource Graph cannot directly
-    query diagnostic settings configuration, so this raises advisory
-    findings for every resource of a critical type pending manual
-    verification via the Management API or Azure Portal.
+    Flags critical resources (Key Vaults, SQL servers/databases, NSGs, web
+    apps, AI Services, IoT Hubs, Cosmos DB) missing diagnostic settings.
+
+    Resource Graph cannot see diagnostic settings, so with an ArmClient
+    (live scans) each resource's diagnosticSettings are read and only
+    resources without any setting are reported. Without it, the scanner
+    falls back to advisory findings for every critical resource pending
+    manual verification.
     """
 
     scanner_name = "missing_diagnostic_settings_scanner"
@@ -276,8 +279,14 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
         | where type in~ (
             'microsoft.keyvault/vaults',
             'microsoft.sql/servers',
-            'microsoft.network/networksecuritygroups'
+            'microsoft.sql/servers/databases',
+            'microsoft.network/networksecuritygroups',
+            'microsoft.web/sites',
+            'microsoft.cognitiveservices/accounts',
+            'microsoft.devices/iothubs',
+            'microsoft.documentdb/databaseaccounts'
         )
+        | where not(type =~ 'microsoft.sql/servers/databases' and name =~ 'master')
         | project id, name, type, resourceGroup, subscriptionId, location, tags
         """
 
@@ -286,8 +295,24 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
+        arm = getattr(context, "arm_client", None)
+        warnings: List[str] = []
+        verified: Dict[str, bool] = {}
+        if arm is not None:
+            for resource in resources:
+                try:
+                    settings_list = await arm.get_all(
+                        f"{resource['id']}/providers/Microsoft.Insights/diagnosticSettings", "2021-05-01-preview"
+                    )
+                    verified[resource["id"]] = bool(settings_list)
+                except Exception as exc:
+                    warnings.append(f"Diagnostic settings unavailable for {resource['name']}: {exc}")
+
         findings = []
         for resource in resources:
+            if verified.get(resource["id"]):
+                continue
+            confirmed = resource["id"] in verified
             rtype = (resource.get("type") or "").lower()
             if "keyvault" in rtype:
                 severity = SeverityLevel.HIGH
@@ -301,9 +326,10 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
 
             findings.append(self.make_finding(
                 finding_type="missing_diagnostic_settings",
-                title=f"Verify diagnostics: {resource['name']}",
+                title=f"{'Missing' if confirmed else 'Verify'} diagnostics: {resource['name']}",
                 description=(
-                    f"Resource '{resource['name']}' ({rtype}) may be missing diagnostic "
+                    f"Resource '{resource['name']}' ({rtype}) "
+                    f"{'has no' if confirmed else 'may be missing'} diagnostic "
                     f"settings. Without audit logs, security events cannot be investigated."
                 ),
                 resource_id=resource["id"],
@@ -318,13 +344,13 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
                     f"# Replace <workspace-id> with your Log Analytics workspace resource ID:\n"
                     f"az monitor diagnostic-settings create --name 'arg-diagnostics' "
                     f"--resource '{resource['id']}' --workspace <workspace-id> "
-                    f"--logs '[{{\"category\": \"AuditEvent\", \"enabled\": true}}]'"
+                    f"--logs '[{{\"categoryGroup\": \"allLogs\", \"enabled\": true}}]'"
                 ),
-                evidence={"resource_type": rtype},
+                evidence={"resource_type": rtype, "verified": confirmed},
                 estimated_monthly_savings_usd=0.0,
             ))
 
-        return ScanOutput(findings=findings, resources_scanned=len(resources))
+        return ScanOutput(findings=findings, resources_scanned=len(resources), warnings=warnings)
 
     async def _run_arg_query(self, context: ScanContext, query: str) -> List[Dict]:
         if context.resource_graph_client is None:

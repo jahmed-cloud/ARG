@@ -18,7 +18,7 @@ VERSION      := 0.1
 COMPOSE_FILE := docker-compose.yml
 HUB_FILE     := docker-compose.hub.yml
 
-.PHONY: build push up down logs seed migrate clean pull help
+.PHONY: build push up down logs seed migrate clean pull help test analyze
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -72,3 +72,9 @@ ps: ## Show running containers
 snapshot: ## Manually trigger a score snapshot (populates the Score Trend chart)
 	docker compose -f $(COMPOSE_FILE) exec worker python -c \
 		"from workers.scan_worker import snapshot_scores; snapshot_scores()"
+
+test: ## Run unit tests locally (needs backend/requirements.txt + requirements-dev.txt)
+	python -m pytest tests -q
+
+analyze: ## Subscription analysis report: make analyze SUB=<subscription-id-or-name>
+	python -m scripts.subscription_analysis --subscription "$(SUB)"

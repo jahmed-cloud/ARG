@@ -192,6 +192,37 @@ currency at the subscription's implied exchange rate. Re-running a subscription 
 Reports contain resource IDs and principal IDs - `reports/` is git-ignored. Entra ID (Graph) scanners
 are skipped in this mode.
 
+### 📐 ARG vs. Azure FinOps hubs
+
+ARG does **not** use or require [FinOps hubs](https://learn.microsoft.com/cloud-computing/finops/toolkit/hubs/finops-hubs-overview)
+from the Microsoft FinOps toolkit. It reads cost data **live** at scan time, straight from the Azure APIs:
+
+- **Cost Management Query API** (`Microsoft.CostManagement/query`) - 12-month cost by service, and 30-day
+  cost by resource group, meter and resource
+- **Consumption Budgets API** (`Microsoft.Consumption/budgets`) - budgets and overspend
+- **Azure Retail Prices API** (`prices.azure.com`, public, USD) - list prices for savings estimates
+- **Resource Graph** and **Azure Monitor metrics** - inventory and 30-day usage for idle detection
+
+The two tools answer different questions and work well together:
+
+| | Azure FinOps hubs (FinOps toolkit) | ARG |
+|---|---|---|
+| What it is | A data platform you deploy into Azure (Storage/ADLS, Data Factory, optionally Data Explorer or Fabric, Power BI) | A read-only scanner: local CLI/portal or the Docker stack |
+| Cost data | Scheduled Cost Management exports (FOCUS), ingested and retained | Live Cost Management API queries on each run |
+| Scope | Billing account / enrollment, across many subscriptions and tenants | One or more subscriptions per run |
+| History | As long as you retain it (beyond the 13-month API window) | About 12 months, as returned by the API at run time |
+| Output | Dashboards and KQL/Power BI analytics: trends, showback/chargeback, commitment utilisation | Actionable findings (`F-nnn`) with CLI remediation, savings estimates, security and architecture review |
+| Running cost | Ongoing Azure spend (storage, ADF, ADX/Fabric) and upkeep | None beyond API calls |
+
+**Where ARG adds value:** FinOps hubs show *where the money goes over time*; ARG ties the cost of each
+resource to *what it is actually doing* (30-day metrics such as storage transactions, SQL CPU/DTU and
+connections, IoT devices/messages, backup protected items) and adds security and architecture findings,
+so the output is a concrete action list per subscription.
+
+**What ARG does not do:** long-term cost history, the FOCUS schema, enterprise-wide showback/chargeback
+or Power BI reporting - use FinOps hubs for those. A possible future integration is reading costs from a
+hub's Data Explorer / FOCUS exports when one exists, and falling back to the live API otherwise.
+
 ---
 
 ## 🐳 Docker Hub Images

@@ -237,7 +237,7 @@ def test_child_resources_are_named_like_the_azure_portal():
     assert vm["name"] == "vm-app-01" and vm["subResource"] is False
 
 
-def test_vm_specs_and_30_day_utilisation(monkeypatch):
+def test_vm_specs_from_the_sku_catalogue(monkeypatch):
     import asyncio
 
     import scanners.base.azure_api as azure_api
@@ -245,38 +245,119 @@ def test_vm_specs_and_30_day_utilisation(monkeypatch):
 
     class FakeArm:
         def __init__(self, credential):
-            self.metric_calls = []
+            pass
 
         async def get_all(self, path, api_version, params=None):
             return [{"resourceType": "virtualMachines", "name": "Standard_D4s_v5",
                      "capabilities": [{"name": "vCPUs", "value": "4"}, {"name": "MemoryGB", "value": "16"}]},
                     {"resourceType": "disks", "name": "Premium_LRS", "capabilities": []}]
 
-        async def metrics_summary(self, resource_id, names, **kwargs):
-            self.metric_calls.append(resource_id)
-            return {"Percentage CPU": {"average": 3.26, "maximum": 71.0},
-                    "Available Memory Bytes": {"average": 12 * 1024 ** 3}}
-
         def close(self):
             pass
 
     monkeypatch.setattr(azure_api, "ArmClient", FakeArm)
-    rows = [
-        {"id": "/vm-running", "type": "microsoft.compute/virtualmachines", "location": "westeurope",
-         "subscriptionId": "s", "vmSize": "Standard_D4s_v5", "powerState": "PowerState/running"},
-        {"id": "/vm-off", "type": "microsoft.compute/virtualmachines", "location": "westeurope",
-         "subscriptionId": "s", "vmSize": "Standard_D4s_v5", "powerState": "PowerState/deallocated"},
-        {"id": "/disk", "type": "microsoft.compute/disks", "location": "westeurope", "subscriptionId": "s"},
-    ]
+    rows = [{"id": "/vm", "type": "microsoft.compute/virtualmachines", "location": "westeurope", "subscriptionId": "s",
+             "vmSize": "Standard_D4s_v5"}, {"id": "/disk", "type": "microsoft.compute/disks", "location": "westeurope"}]
     asyncio.run(estate.enrich_compute(object(), rows))
-    running, off, disk = rows
-    assert (running["vcpu"], running["ramGB"], running["cpuAvg"], running["cpuMax"], running["memAvg"]) == (4, 16.0, 3.3, 71.0, 25.0)
-    assert off["vcpu"] == 4 and "cpuAvg" not in off     # deallocated: specs yes, metrics no
-    assert "vcpu" not in disk
-    wire = compact(build_estate_from_rows([running]))
-    vm = wire["resources"][0]
-    assert (vm["vcpu"], vm["ram"], vm["cpu"], vm["mem"]) == (4, 16.0, 3.3, 25.0)
+    assert (rows[0]["vcpu"], rows[0]["ramGB"]) == (4, 16.0) and "vcpu" not in rows[1]
 
+
+def _series(**aggs):
+    return [{"timeseries": [{"data": [dict(aggs)] * 30}]}]
+
+
+def test_usage_metrics_via_the_batch_api(monkeypatch):
+    import asyncio
+
+    import scanners.base.azure_api as azure_api
+    from scripts.subscription_analysis import estate
+
+    class FakeArm:
+        def __init__(self, credential):
+            pass
+
+        def close(self):
+            pass
+
+    class Token:
+        token, expires_on = "t", 9e12
+
+    class Cred:
+        def get_token(self, scope):
+            assert scope == estate.METRICS_SCOPE
+            return Token()
+
+    calls = []
+    metrics = {
+        "Percentage CPU": _series(average=3.26, maximum=71.0),
+        "Available Memory Bytes": _series(average=12 * 1024 ** 3),
+        "Transactions": _series(total=4.0), "UsedCapacity": _series(average=5 * 1024 ** 3), "Egress": _series(total=0.0),
+        "Requests": _series(total=0.0), "Http5xx": _series(total=0.0), "FunctionExecutionCount": _series(total=10.0),
+        "Replicas": _series(average=0.0),
+        "TotalRequests": _series(count=100.0), "NormalizedRUConsumption": _series(maximum=80.0),
+    }
+
+    def fetch(token, sub, region, namespace, names, ids, start, end):
+        calls.append((sub, region, namespace, len(ids)))
+        values = [dict(m, name={"value": n}) for n in names for m in metrics.get(n, [])]
+        return {rid.lower(): estate._summarize(values) for rid in ids}
+
+    monkeypatch.setattr(azure_api, "ArmClient", FakeArm)
+    base = {"location": "westeurope", "subscriptionId": "s"}
+    rows = [
+        dict(base, id="/vm", type="microsoft.compute/virtualmachines", ramGB=16.0, powerState="PowerState/running"),
+        dict(base, id="/vm-off", type="microsoft.compute/virtualmachines", powerState="PowerState/deallocated"),
+        dict(base, id="/sa", type="microsoft.storage/storageaccounts"),
+        dict(base, id="/func", type="microsoft.web/sites", kind="functionapp"),
+        dict(base, id="/ca", type="microsoft.app/containerapps"),
+        dict(base, id="/cosmos", type="microsoft.documentdb/databaseaccounts"),
+        dict(base, id="/disk", type="microsoft.compute/disks"),
+    ] + [dict(base, id=f"/sa{i}", type="microsoft.storage/storageaccounts") for i in range(60)]
+    stats = asyncio.run(estate.collect_usage(Cred(), rows, fetch=fetch))
+    by = {r["id"]: r for r in rows}
+    assert (by["/vm"]["cpuAvg"], by["/vm"]["cpuMax"], by["/vm"]["memAvg"]) == (3.3, 71.0, 25.0)
+    assert "cpuAvg" not in by["/vm-off"] and "activity" not in by["/disk"]
+    assert by["/sa"]["activity"] == 120.0 and estate.is_idle(by["/sa"])          # housekeeping only
+    assert estate.usage_of(by["/sa"]) == "120 transactions · 5.0 GB used"
+    assert by["/func"]["activity"] == 0 and not estate.is_idle(by["/func"])      # timer-triggered function runs
+    assert estate.is_idle(by["/ca"])                                            # no requests and scaled to zero
+    assert by["/cosmos"]["activity"] == 3000.0 and "RU peak 80 %" in estate.usage_of(by["/cosmos"])
+    assert stats["resources"] == 65 and stats["failed_batches"] == 0
+    storage_batches = [c for c in calls if c[2] == "microsoft.storage/storageaccounts"]
+    assert sorted(n for *_, n in storage_batches) == [11, 50]                    # 61 accounts -> 2 batches of <= 50
+
+
+def test_failed_batch_is_retried_with_the_primary_metric():
+    import asyncio
+
+    from scripts.subscription_analysis import estate
+
+    seen = []
+
+    def fetch(token, sub, region, namespace, names, ids, start, end):
+        seen.append(names)
+        if len(names) > 1:
+            raise RuntimeError("400 metric not supported")
+        return {ids[0].lower(): estate._summarize([dict(_series(total=5.0)[0], name={"value": names[0]})])}
+
+    class Token:
+        token, expires_on = "t", 9e12
+
+    class Cred:
+        def get_token(self, scope):
+            return Token()
+
+    row = {"id": "/ai", "type": "microsoft.cognitiveservices/accounts", "location": "westeurope", "subscriptionId": "s"}
+    asyncio.run(estate.collect_usage(Cred(), [row], fetch=fetch))
+    assert seen == [["TotalCalls", "ProcessedPromptTokens", "GeneratedTokens"], ["TotalCalls"]]
+    assert row["activity"] == 150.0
+
+
+def test_human_readable_usage():
+    from scripts.subscription_analysis.estate import human, human_bytes
+
+    assert (human(950), human(1234), human(5_600_000), human(2.5e9)) == ("950", "1.2k", "5.6M", "2.5B")
+    assert (human_bytes(0), human_bytes(512 * 1024), human_bytes(3 * 1024 ** 3)) == ("0 B", "512.0 KB", "3.0 GB")
 
 def build_estate_from_rows(rows):
     from pathlib import Path

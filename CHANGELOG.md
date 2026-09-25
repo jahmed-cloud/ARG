@@ -25,6 +25,14 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 - Estate **vCPU, RAM, 30-day average CPU % and memory used %** for VMs and scale sets (Compute SKU catalogue + Azure
   Monitor), a CPU-band breakdown and filter, and right-sizing candidates in the markdown overview. Child resources are
   named like the Azure portal (`vm › extension`); VM / Arc extensions and license profiles are hidden by default.
+- Estate **usage metrics for 31 resource types** (last 30 days, Azure Monitor metrics batch API): storage
+  transactions / used capacity / egress, web and function app requests / 5xx / executions, SQL CPU / connections /
+  storage, PostgreSQL / MySQL / Redis / AKS / Data Explorer CPU and memory, App Service plan CPU and memory, Cosmos DB
+  requests and RU peak, Key Vault API calls, AI calls and tokens, messaging, runs, gateway requests, registry pulls
+  and more. New **Usage (30 d)** column, CPU / memory columns for every type that reports them, an **Activity**
+  breakdown and filter with an **idle** flag, and a usage section in the markdown overview (per-type table and the
+  costliest idle resources).
+- `MEMORY.md`: project memory (repository, git rules, running, decisions, pitfalls).
 - Author credit "Author: Junaid Ahmed · jahmed.cloud · github.com/jahmed-cloud/ARG" in the local portal footer,
   report / index / estate footers and the PDF cover.
 - **Marketplace SaaS scanner** (`marketplace_saas_scanner`, 63 scanners in total): unsubscribed SaaS left behind,

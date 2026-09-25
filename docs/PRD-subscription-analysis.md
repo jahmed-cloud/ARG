@@ -90,6 +90,17 @@ with a customer, reviewed in a pull request or read offline.
 54. As a platform operator of the Docker stack, I want the new scanners to run in scheduled scans, so that the UI shows the same findings as the local report.
 55. As a contributor, I want new scanners to follow one base class with a mock fallback, so that they're testable offline.
 56. As a contributor, I want a generated scanner catalog, so that documentation doesn't drift from the code.
+57. As a cloud architect, I want one inventory of every resource across all subscriptions with its category, type and size / SKU, so that I can make estate-wide decisions (VM families, disk tiers, plan SKUs, SQL editions).
+58. As a cloud architect, I want to filter the inventory by category, type, size, subscription, region, environment, state, suggestion type and severity and to click any breakdown to drill down, so that I get from "what do we run" to a concrete list quickly.
+59. As a cloud architect, I want each resource's key configuration (VM zone and disks, NIC attachment, private endpoint target, certificate expiry, alert severity, scale range, runtime), so that I don't need the Azure portal for the basics.
+60. As a FinOps analyst, I want vCPU, RAM and 30-day average CPU and memory for every VM and scale set, so that I can find right-sizing candidates.
+61. As a FinOps analyst, I want 30-day usage for every resource type Azure Monitor reports on (transactions, requests, connections, messages, runs, calls, tokens, used capacity) and an "idle" flag, so that I can find resources nobody uses.
+62. As a FinOps analyst, I want tag and naming hygiene findings kept apart from actionable suggestions, so that the "with suggestions" count means something.
+63. As a FinOps analyst, I want Marketplace SaaS plans reviewed (leftovers, suspended plans, renewals, commitments), so that large up-front charges have an owner and a review date.
+64. As a FinOps analyst, I want lumpy up-front spend explained and excluded from the run-rate, so that the forecast is not 12 × an annual charge.
+65. As a reviewer, I want subscriptions that share a display name kept in separate report folders, so that no report silently overwrites another.
+66. As a reviewer, I want child resources named like the Azure portal (`vm › extension`), so that I can find them.
+67. As a user of the inventory, I want CSV export and shareable filtered links, so that I can hand a list to a workload owner.
 
 ## Implementation Decisions
 
@@ -129,6 +140,23 @@ with a customer, reviewed in a pull request or read offline.
 - **Dependencies:** a minimal `requirements-local.txt` (identity, Resource Graph, httpx, FastAPI/uvicorn, Jinja2,
   python-multipart, markdown). Docker requirements are unchanged.
 
+- **Estate inventory** (`scripts/subscription_analysis/estate.py`): one paginated Resource Graph query across all
+  subscriptions (≤ 1,000 per request) projects the sizing fields and a per-type `cfg` bag (`pack()`), normalised into
+  category, readable type, size / SKU, configuration, OS / runtime, state and environment. VM / scale-set vCPU and RAM
+  come from the Compute SKU catalogue (one call per region). Findings and 30-day cost are joined from the reports by
+  resource ID; subscription-level findings stay with the subscription. Output: `reports/_estate/inventory.json` (raw),
+  `estate.json` (compact wire format) and `README.md`. Every analysis re-joins the estate offline; the live inventory
+  is refreshed from the portal or `--estate`.
+- **Usage metrics:** a declarative table (`USAGE_SPECS`, metric → role) for 31 resource types, fetched with the Azure
+  Monitor metrics batch API (token scope `https://metrics.monitor.azure.com/.default`, 50 resources of one type /
+  region / subscription per call, P1D over 30 days, `average,maximum,total,count`). A failing batch is retried with the
+  primary metric only; global resources use the per-resource ARM metrics API; deallocated VMs are skipped. Idle =
+  activity metric zero (storage ≤ 200, container apps also scaled to zero, web apps also no function executions).
+- **Estate page:** static HTML + `estate.js` (no inline script, all Azure text via `textContent`), filters in the URL
+  hash, client-side facets and breakdowns, paged table, CSV export with formula-injection guard; the API is gzip'd.
+- **Report folders** are claimed with a `.subscription-id` owner marker; a second subscription with the same display
+  name gets `<name>_<first 8 of ID>/`.
+
 ## Testing Decisions
 
 - Good tests assert **external behaviour**: finding types, severities, savings and titles produced from given input
@@ -150,6 +178,12 @@ with a customer, reviewed in a pull request or read offline.
 - Live verification was done manually against a real subscription through the CLI, the PowerShell launcher from
   another folder, and the portal in a browser.
 
+- **Estate** is tested offline: size / configuration / runtime / state per type (parametrised), environment tag
+  values, the join with report findings and costs, the compact format, the markdown sections, portal-style child
+  names, SKU-catalogue specs with a fake ARM client, and usage via a fake batch fetcher (batching by 50, retry with the
+  primary metric, idle rules, Cosmos Count fallback, formatting). Portal tests cover the Estate page, `/api/estate`
+  and the refresh endpoint.
+
 ## Out of Scope
 
 - Microsoft Graph (Entra ID) scanners in local mode. They need Graph consent and stay Docker-only.
@@ -166,3 +200,4 @@ with a customer, reviewed in a pull request or read offline.
 - The Hyperscale legacy-pricing saving must be validated with Microsoft or the CSP before acting.
 - AI spend savings are an estimate (15% from caching and routing) and are labelled as such.
 - Reports contain resource IDs, IPs and principal IDs. They're treated as internal and are git-ignored.
+- "Idle" in the estate is based on metrics only. Monthly or DR jobs can look idle over 30 days; confirm with the owner.

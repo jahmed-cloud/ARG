@@ -160,16 +160,18 @@ Python equivalents (from the repo root, after `pip install -r requirements-local
 ```bash
 python -m scripts.subscription_analysis --subscription "<subscription-id-or-name>"   # repeatable
 python -m scripts.subscription_analysis --all --parallel 3                           # every enabled subscription, 3 at a time
-python -m scripts.subscription_analysis --all --estate                               # estate inventory only (~30 s)
+python -m scripts.subscription_analysis --all --estate                               # estate inventory + usage (~4-5 min)
 python -m scripts.local_portal                                                       # the portal
 # options: --reports-dir DIR  --tenant <id>  --scanners a,b  --config thresholds.json  --skip-cost
 ```
 
 - **Estate inventory** (portal **Estate** page, `reports/_estate/`): every resource across all subscriptions
   with category, type, **size / SKU** (VM sizes, disk SKUs and GB, storage SKU/kind/tier, App Service plan SKUs,
-  SQL/Redis SKUs, AKS pools, Arc SQL editions), OS and Hybrid Benefit, power state, environment, region, cost and
-  the report findings on it. Filter by any of these, click breakdowns to drill down, switch to the Suggestions
-  view, export CSV and share filtered links. [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#5c-estate-inventory-all-subscriptions).
+  SQL/Redis SKUs, AKS pools, Arc SQL editions), configuration, OS and Hybrid Benefit, power state, environment,
+  region, cost, the report findings on it, **vCPU / RAM** and **30-day usage** from Azure Monitor (CPU and memory %,
+  transactions, requests, connections, messages, runs, calls, tokens, used capacity) with an **idle** flag, for 31
+  resource types. Filter by any of these, click breakdowns to drill down, switch to the Suggestions view, export CSV
+  and share filtered links. [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#5c-estate-inventory-all-subscriptions).
 
 - **Portal login** is a simple local username/password that only protects the portal:
   `ARG_PORTAL_USER` (default `admin`) / `ARG_PORTAL_PASSWORD`. If no password is set, a one-time

@@ -28,7 +28,7 @@ Reports land in `<ARG repo>\reports\<subscription>\`, with the index at `<ARG re
 - [ ] Expect minutes per subscription. `429 … retrying` log lines are normal (Cost Management throttling).
 - [ ] Check `05-deep-dive/README.md` → *Collection Warnings* for missing roles or skipped scanners.
 - [ ] Whole tenant: add `--parallel 3` (`-Parallel 3`). For the cross-subscription **estate inventory** (types, sizes,
-      SKUs, regions, suggestions with filters) use the portal's **Estate** page or `--all --estate` (`-Estate`, ~30 s);
+      SKUs, regions, vCPU/RAM, 30-day usage and idle flag, suggestions, with filters) use the portal's **Estate** page or `--all --estate` (`-Estate`, ~4-5 min);
       output in `reports/_estate/`.
 
 ## Workflow: start the local portal

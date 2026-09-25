@@ -13,7 +13,7 @@
 | Threshold overrides | `--config thresholds.json` (keys below) |
 | Faster, no cost datasets | `-SkipCost` · `--skip-cost` |
 | Whole tenant, faster | `-All -TenantId <id> -Parallel 3` · `python -m scripts.subscription_analysis --all --tenant <id> --parallel 3` |
-| Estate inventory (all subscriptions, ~30 s) | `-All -TenantId <id> -Estate` · `--all --tenant <id> --estate` · portal **Estate** → Refresh inventory |
+| Estate inventory + 30-day usage metrics (all subscriptions, ~4-5 min) | `-All -TenantId <id> -Estate` · `--all --tenant <id> --estate` · portal **Estate** → Refresh inventory |
 | Portal | `scripts\Start-LocalPortal.ps1 [-Port 8765] [-ReportsPath …] [-TenantId …] [-NoBrowser]` · `python -m scripts.local_portal` |
 | Make targets (repo root, venv active) | `make analyze SUB=<name>` · `make analyze-all` · `make portal` · `make test` |
 

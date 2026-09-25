@@ -21,10 +21,11 @@ join can be rebuilt offline whenever a report changes.
 import asyncio
 import json
 import threading
+import time
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from scanners.base.naming import env_from_name, env_from_tags
 
@@ -813,6 +814,11 @@ def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
         "cpuAvg": row.get("cpuAvg"),
         "cpuMax": row.get("cpuMax"),
         "memAvg": row.get("memAvg"),
+        "activity": row.get("activity"),
+        "activityUnit": row.get("activityUnit") or "",
+        "usage": usage_of(row),
+        "idle": is_idle(row),
+        "usedGB": row.get("usedGB"),
         "tags": row.get("tags") if isinstance(row.get("tags"), dict) else {},
     }
 
@@ -848,20 +854,18 @@ async def query_estate(credential: Any, subscription_ids: List[str], page_size: 
 def collect_inventory(credential: Any, subscriptions: List[Dict[str, Any]]) -> Dict[str, Any]:
     ids = [s["id"] for s in subscriptions]
     rows = asyncio.run(query_estate(credential, ids)) if ids else []
+    usage = {}
     if rows:
         asyncio.run(enrich_compute(credential, rows))
+        usage = asyncio.run(collect_usage(credential, rows))
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "source": "resource-graph",
             "subscriptions": [{"id": s["id"].lower(), "name": s.get("name")} for s in subscriptions],
-            "resources": rows}
+            "usage": usage, "resources": rows}
 
 
-async def enrich_compute(credential: Any, rows: List[Dict[str, Any]], days: int = 30, concurrency: int = 8) -> None:
-    """
-    vCPU / RAM from the Compute SKU catalogue (one call per region) and the 30-day average CPU % and memory used %
-    from Azure Monitor platform metrics ('Percentage CPU', 'Available Memory Bytes') for VMs and scale sets.
-    Deallocated VMs have no metrics and are skipped. Failures leave the fields empty.
-    """
-    from scanners.base.azure_api import ArmClient, gather_limited
+async def enrich_compute(credential: Any, rows: List[Dict[str, Any]]) -> None:
+    """vCPU / RAM for VMs and scale sets from the Compute SKU catalogue (one call per region)."""
+    from scanners.base.azure_api import ArmClient
 
     targets = [r for r in rows if (r.get("type") or "").lower() in METRIC_TYPES]
     if not targets:
@@ -888,29 +892,280 @@ async def enrich_compute(credential: Any, rows: List[Dict[str, Any]], days: int 
                     continue
                 specs[(location, s["name"].lower())] = spec
                 specs.setdefault(s["name"].lower(), spec)
-
-        async def one(r: Dict[str, Any]) -> None:
+        for r in targets:
             size = (r.get("vmSize") or (r.get("sku") or {}).get("name") or "").lower()
             spec = specs.get(((r.get("location") or "").lower(), size)) or specs.get(size)
             if spec:
                 r["vcpu"], r["ramGB"] = spec
-            if (r.get("powerState") or "").split("/")[-1] in ("deallocated", "stopped"):
-                return
-            try:
-                m = await arm.metrics_summary(r["id"], ["Percentage CPU", "Available Memory Bytes"], days=days,
-                                              interval="P1D", aggregation="Average,Maximum")
-            except Exception:
-                return
-            cpu = m.get("Percentage CPU") or {}
-            if cpu.get("average") is not None:
-                r["cpuAvg"], r["cpuMax"] = round(cpu["average"], 1), round(cpu.get("maximum") or 0.0, 1)
-            available = (m.get("Available Memory Bytes") or {}).get("average")
-            if available is not None and spec and spec[1]:
-                r["memAvg"] = round(min(100.0, max(0.0, 100 * (1 - available / (spec[1] * 1024 ** 3)))), 1)
-
-        await gather_limited(targets, one, concurrency)
     finally:
         arm.close()
+
+
+# ---------------------------------------------------------------------------
+# Usage metrics (Azure Monitor, last 30 days)
+# ---------------------------------------------------------------------------
+#
+# (metric, role). Roles: cpu / mem = average % (cpu also keeps the peak); memAvailBytes = available memory, turned
+# into used % with the VM's RAM; count:<unit> = 30-day total, the resource's activity (0 = idle); errors = failed
+# requests / runs; bytes = data moved; gb = latest used capacity; tokens = AI tokens; pct / maxpct / max / avg:<label>
+# = extra facts shown in the Usage column. The first metric is the primary one (kept when a batch must be retried).
+USAGE_SPECS: Dict[str, List[Tuple[str, str]]] = {
+    "microsoft.compute/virtualmachines": [("Percentage CPU", "cpu"), ("Available Memory Bytes", "memAvailBytes")],
+    "microsoft.compute/virtualmachinescalesets": [("Percentage CPU", "cpu"), ("Available Memory Bytes", "memAvailBytes")],
+    "microsoft.storage/storageaccounts": [("Transactions", "count:transactions"), ("UsedCapacity", "gb"),
+                                          ("Egress", "bytes")],
+    "microsoft.web/serverfarms": [("CpuPercentage", "cpu"), ("MemoryPercentage", "mem")],
+    "microsoft.web/sites": [("Requests", "count:requests"), ("Http5xx", "errors"), ("FunctionExecutionCount", "execs")],
+    "microsoft.web/sites/slots": [("Requests", "count:requests"), ("Http5xx", "errors")],
+    "microsoft.sql/servers/databases": [("cpu_percent", "cpu"), ("connection_successful", "count:connections"),
+                                        ("storage_percent", "pct:storage")],
+    "microsoft.sql/servers/elasticpools": [("cpu_percent", "cpu"), ("storage_percent", "pct:storage")],
+    "microsoft.dbforpostgresql/flexibleservers": [("cpu_percent", "cpu"), ("memory_percent", "mem"),
+                                                  ("storage_percent", "pct:storage")],
+    "microsoft.dbformysql/flexibleservers": [("cpu_percent", "cpu"), ("memory_percent", "mem"),
+                                             ("storage_percent", "pct:storage")],
+    "microsoft.documentdb/databaseaccounts": [("TotalRequests", "count:requests"),
+                                              ("NormalizedRUConsumption", "maxpct:RU peak")],
+    "microsoft.cache/redis": [("serverLoad", "cpu"), ("usedmemorypercentage", "mem"), ("connectedclients", "max:clients")],
+    "microsoft.containerservice/managedclusters": [("node_cpu_usage_percentage", "cpu"),
+                                                   ("node_memory_working_set_percentage", "mem")],
+    "microsoft.app/containerapps": [("Requests", "count:requests"), ("Replicas", "replicas")],
+    "microsoft.containerregistry/registries": [("SuccessfulPullCount", "count:pulls"), ("StorageUsed", "gb")],
+    "microsoft.keyvault/vaults": [("ServiceApiHit", "count:API calls")],
+    "microsoft.cognitiveservices/accounts": [("TotalCalls", "count:calls"), ("ProcessedPromptTokens", "tokens"),
+                                             ("GeneratedTokens", "tokens")],
+    "microsoft.search/searchservices": [("SearchQueriesPerSecond", "avg:queries/s")],
+    "microsoft.servicebus/namespaces": [("IncomingMessages", "count:messages"), ("ActiveMessages", "avg:active messages")],
+    "microsoft.eventhub/namespaces": [("IncomingMessages", "count:messages"), ("IncomingBytes", "bytes")],
+    "microsoft.devices/iothubs": [("d2c.telemetry.ingress.success", "count:messages"),
+                                  ("devices.connectedDevices.allProtocol", "max:devices")],
+    "microsoft.datafactory/factories": [("PipelineSucceededRuns", "count:runs"), ("PipelineFailedRuns", "errors")],
+    "microsoft.logic/workflows": [("RunsSucceeded", "count:runs"), ("RunsFailed", "errors")],
+    "microsoft.network/applicationgateways": [("TotalRequests", "count:requests"), ("CapacityUnits", "avg:capacity units")],
+    "microsoft.network/azurefirewalls": [("DataProcessed", "count:bytes")],
+    "microsoft.network/loadbalancers": [("ByteCount", "count:bytes")],
+    "microsoft.apimanagement/service": [("Requests", "count:requests"), ("Capacity", "pct:capacity")],
+    "microsoft.kusto/clusters": [("CPU", "cpu"), ("IngestionUtilization", "pct:ingestion")],
+    "microsoft.eventgrid/systemtopics": [("PublishSuccessCount", "count:events")],
+    "microsoft.cdn/profiles": [("RequestCount", "count:requests")],
+    "microsoft.signalrservice/signalr": [("MessageCount", "count:messages")],
+    "microsoft.automation/automationaccounts": [("TotalJob", "count:jobs")],
+}
+BATCH_SIZE = 50
+METRICS_SCOPE = "https://metrics.monitor.azure.com/.default"
+# Activity at or below this in 30 days counts as idle. Storage platform housekeeping alone makes ~4 requests a day
+# (same threshold as unused_storage_account_scanner).
+IDLE_THRESHOLDS = {"microsoft.storage/storageaccounts": 200}
+
+
+def _summarize(values: List[Dict[str, Any]]) -> Dict[str, Dict[str, Optional[float]]]:
+    """Like summarize_metrics, but 'total' falls back to 'count' (Cosmos DB TotalRequests only supports Count)."""
+    out: Dict[str, Dict[str, Optional[float]]] = {}
+    for metric in values:
+        points = [p for series in metric.get("timeseries") or [] for p in series.get("data") or []]
+        averages = [p["average"] for p in points if p.get("average") is not None]
+        maxima = [p["maximum"] for p in points if p.get("maximum") is not None]
+        totals = [p["total"] if p.get("total") is not None else p.get("count") for p in points]
+        totals = [t for t in totals if t is not None]
+        out[(metric.get("name") or {}).get("value")] = {
+            "average": sum(averages) / len(averages) if averages else None,
+            "maximum": max(maxima) if maxima else None,
+            "total": sum(totals) if totals else None,
+            "latest_average": averages[-1] if averages else None,
+            "points": float(len(points)),
+        }
+    return out
+
+
+def _batch_fetch(token: str, subscription: str, region: str, namespace: str, metrics: List[str],
+                 resource_ids: List[str], start: datetime, end: datetime) -> Dict[str, Dict[str, Any]]:
+    """Azure Monitor metrics:getBatch - up to 50 resources of one type/region/subscription per call."""
+    import httpx
+
+    params = {"starttime": f"{start:%Y-%m-%dT%H:%M:%SZ}", "endtime": f"{end:%Y-%m-%dT%H:%M:%SZ}", "interval": "P1D",
+              "metricnamespace": namespace, "metricnames": ",".join(metrics),
+              "aggregation": "average,maximum,total,count", "api-version": "2023-10-01"}
+    url = f"https://{region}.metrics.monitor.azure.com/subscriptions/{subscription}/metrics:getBatch"
+    for attempt in range(3):
+        response = httpx.post(url, params=params, json={"resourceids": resource_ids},
+                              headers={"Authorization": f"Bearer {token}"}, timeout=90)
+        if response.status_code == 429 and attempt < 2:
+            time.sleep(float(response.headers.get("Retry-After") or 5))
+            continue
+        response.raise_for_status()
+        break
+    return {(v.get("resourceid") or "").lower(): _summarize(v.get("value") or [])
+            for v in response.json().get("values") or []}
+
+
+async def collect_usage(credential: Any, rows: List[Dict[str, Any]], days: int = 30, concurrency: int = 16,
+                        fetch=None) -> Dict[str, int]:
+    """
+    30-day usage for every resource type in USAGE_SPECS via the metrics batch API (one call per 50 resources of a
+    type / region / subscription). A failing batch is retried with its primary metric only; global resources
+    (Front Door) use the per-resource ARM metrics API. Deallocated VMs are skipped. Returns counters for the overview.
+    """
+    from scanners.base.azure_api import ArmClient, gather_limited
+
+    fetch = fetch or _batch_fetch
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    stats = {"resources": 0, "with_data": 0, "failed_batches": 0}
+    groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        rtype = (r.get("type") or "").lower()
+        if rtype not in USAGE_SPECS or not r.get("id"):
+            continue
+        if (r.get("powerState") or "").split("/")[-1] in ("deallocated", "stopped"):
+            continue
+        by_id[r["id"].lower()] = r
+        groups[((r.get("subscriptionId") or "").lower(), (r.get("location") or "").lower().replace(" ", ""), rtype)].append(r)
+    stats["resources"] = len(by_id)
+    if not groups:
+        return stats
+
+    token_cache: Dict[str, Any] = {}
+
+    def token() -> str:
+        cached = token_cache.get("t")
+        if not cached or cached.expires_on - time.time() < 300:
+            token_cache["t"] = cached = credential.get_token(METRICS_SCOPE)
+        return cached.token
+
+    arm = ArmClient(credential)
+    jobs = [(key, members[i:i + BATCH_SIZE]) for key, members in groups.items() for i in range(0, len(members), BATCH_SIZE)]
+
+    async def run(job) -> None:
+        (sub, region, rtype), members = job
+        spec = USAGE_SPECS[rtype]
+        ids = [m["id"] for m in members]
+        results: Dict[str, Dict[str, Any]] = {}
+        if region in ("global", ""):
+            async def one(rid):
+                try:
+                    results[rid.lower()] = await arm.metrics_summary(rid, [spec[0][0]], days=days, interval="P1D",
+                                                                     aggregation="Average,Maximum,Total")
+                except Exception:
+                    pass
+            await gather_limited(ids, one, 4)
+        else:
+            for metrics in ([m for m, _ in spec], [spec[0][0]]):
+                try:
+                    results = await asyncio.to_thread(fetch, token(), sub, region, rtype, metrics, ids, start, end)
+                    break
+                except Exception:
+                    results = {}
+            if not results:
+                stats["failed_batches"] += 1
+        for rid, summary in results.items():
+            row = by_id.get(rid)
+            if row is not None:
+                apply_usage(row, summary, spec)
+                stats["with_data"] += 1
+
+    try:
+        await gather_limited(jobs, run, concurrency)
+    finally:
+        arm.close()
+    return stats
+
+
+def apply_usage(row: Dict[str, Any], summary: Dict[str, Dict[str, Any]], spec: List[Tuple[str, str]]) -> None:
+    extras: List[str] = []
+    for metric, role in spec:
+        s = summary.get(metric) or {}
+        avg, peak, total = s.get("average"), s.get("maximum"), s.get("total")
+        kind, _, label = role.partition(":")
+        if kind == "cpu" and avg is not None:
+            row["cpuAvg"], row["cpuMax"] = round(avg, 1), round(peak or 0.0, 1)
+        elif kind == "mem" and avg is not None:
+            row["memAvg"] = round(avg, 1)
+        elif kind == "memAvailBytes" and avg is not None and row.get("ramGB"):
+            row["memAvg"] = round(min(100.0, max(0.0, 100 * (1 - avg / (row["ramGB"] * 1024 ** 3)))), 1)
+        elif kind == "count":
+            if "activity" not in row:
+                row["activity"], row["activityUnit"] = ((total or 0.0) if s.get("points") else None), label
+        elif kind == "errors" and total:
+            row["errors30"] = total
+        elif kind == "bytes" and total:
+            row["dataBytes30"] = total
+        elif kind == "gb" and s.get("latest_average") is not None:
+            row["usedBytes"] = s["latest_average"]
+            row["usedGB"] = round(s["latest_average"] / 1024 ** 3, 2)
+        elif kind == "tokens" and total:
+            row["tokens30"] = (row.get("tokens30") or 0) + total
+        elif kind == "execs" and total:
+            row["executions30"] = total
+        elif kind == "replicas" and avg is not None:
+            row["replicasAvg"] = avg
+            extras.append(f"{avg:,.1f} replicas")
+        elif kind == "pct" and avg is not None:
+            extras.append(f"{label} {avg:.0f} %")
+        elif kind == "maxpct" and peak is not None:
+            extras.append(f"{label} {peak:.0f} %")
+        elif kind == "max" and peak is not None:
+            extras.append(f"{human(peak)} {label}")
+        elif kind == "avg" and avg is not None:
+            extras.append(f"{human(avg) if avg >= 1000 else f'{avg:,.1f}'} {label}")
+    if extras:
+        row["usageExtra"] = " · ".join(extras)
+
+
+def is_idle(row: Dict[str, Any]) -> bool:
+    """No (or only housekeeping) activity in 30 days. Workers without HTTP ingress are not idle while they run."""
+    activity = row.get("activity")
+    if activity is None:
+        return False
+    rtype = (row.get("type") or "").lower()
+    if activity > IDLE_THRESHOLDS.get(rtype, 0):
+        return False
+    if rtype == "microsoft.app/containerapps":
+        return not row.get("replicasAvg")
+    if rtype in ("microsoft.web/sites", "microsoft.web/sites/slots"):
+        return not row.get("executions30")
+    return True
+
+
+def human(n: Optional[float]) -> str:
+    """1234 -> '1.2k', 5600000 -> '5.6M'."""
+    if n is None:
+        return ""
+    for limit, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if abs(n) >= limit:
+            return f"{n / limit:.1f}{suffix}"
+    return f"{n:.0f}"
+
+
+def human_bytes(n: Optional[float]) -> str:
+    if not n:
+        return "0 B"
+    for limit, suffix in ((1024 ** 4, "TB"), (1024 ** 3, "GB"), (1024 ** 2, "MB"), (1024, "KB")):
+        if n >= limit:
+            return f"{n / limit:.1f} {suffix}"
+    return f"{n:.0f} B"
+
+
+def usage_of(row: Dict[str, Any]) -> str:
+    """'1.2M requests · 12 errors · 45.3 GB used · 3.1 GB transferred · storage 20 %' for the last 30 days."""
+    parts: List[str] = []
+    if row.get("activity") is not None:
+        unit = row.get("activityUnit") or ""
+        parts.append(f"{human_bytes(row['activity'])} processed" if unit == "bytes"
+                     else ("no " + unit if not row["activity"] else f"{human(row['activity'])} {unit}"))
+    if row.get("errors30"):
+        parts.append(f"{human(row['errors30'])} failed")
+    if row.get("executions30"):
+        parts.append(f"{human(row['executions30'])} function executions")
+    if row.get("tokens30"):
+        parts.append(f"{human(row['tokens30'])} tokens")
+    if row.get("usedBytes") is not None:
+        parts.append(f"{human_bytes(row['usedBytes'])} used")
+    if row.get("dataBytes30"):
+        parts.append(f"{human_bytes(row['dataBytes30'])} transferred")
+    if row.get("usageExtra"):
+        parts.append(row["usageExtra"])
+    return " · ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1273,7 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "inventory_at": inventory.get("generated_at"),
+        "usage": inventory.get("usage") or {},
         "source": inventory.get("source") or "reports",
         "subscriptions": subscriptions,
         "resources": sorted(resources, key=lambda r: (r["category"], r["typeLabel"], r["subscription"].lower(), r["name"].lower())),
@@ -1043,10 +1299,12 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
                "state": r["state"], "env": r["env"], "mb": r["managedBy"], "gb": r.get("sizeGB"), "tags": r["tags"],
                "vcpu": r.get("vcpu"), "ram": r.get("ramGB"), "cpu": r.get("cpuAvg"), "cpuMax": r.get("cpuMax"),
                "mem": r.get("memAvg"), "sub": 1 if r.get("subResource") else None,
+               "act": r.get("activity"), "use": r.get("usage"), "idle": 1 if r.get("idle") else None,
                "cost": r.get("cost30"), "cur": r.get("currency"), "n": r["suggestions"], "h": r.get("hygiene"),
                "sev": r["maxSeverity"]}
         resources.append({k: v for k, v in row.items()
-                          if v not in (None, "", {}, 0) or k == "s" or (k in ("cpu", "cpuMax", "mem") and v is not None)})
+                          if v not in (None, "", {}, 0) or k == "s"
+                          or (k in ("cpu", "cpuMax", "mem", "act") and v is not None)})
     suggestions = []
     for s in estate["suggestions"]:
         link = s["link"]
@@ -1057,7 +1315,7 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
                "name": None if s["resourceId"] else s["resourceName"]}
         suggestions.append({k: v for k, v in row.items() if v not in (None, "") or k == "s"})
     return {"format": 2, "generated_at": estate["generated_at"], "inventory_at": estate["inventory_at"],
-            "source": estate["source"], "subscriptions": estate["subscriptions"], "types": types,
+            "source": estate["source"], "usage": estate.get("usage") or {}, "subscriptions": estate["subscriptions"], "types": types,
             "resources": resources, "suggestions": suggestions}
 
 
@@ -1145,6 +1403,42 @@ def _utilisation(resources: List[Dict[str, Any]]) -> List[str]:
                        f"{r['memAvg']} %" if r.get("memAvg") is not None else "-", r["subscription"]]
                       for r in idle[:25]], ["---", "---", "---", "---:", "---:", "---:", "---"]),
                   "", "_Check the peak and memory before downsizing: a low average can hide batch jobs._", ""]
+    return lines
+
+
+def _usage_overview(resources: List[Dict[str, Any]], stats: Optional[Dict[str, Any]]) -> List[str]:
+    """Per type: resources with usage data, idle ones (no activity in 30 days), low CPU; then the costliest idle ones."""
+    measured = [r for r in resources if r["type"] in USAGE_SPECS and not r.get("subResource")]
+    with_data = [r for r in measured if r.get("activity") is not None or r.get("cpuAvg") is not None
+                 or r.get("usedGB") is not None]
+    if not with_data:
+        return []
+    lines = ["## Usage - last 30 days", "",
+             f"Azure Monitor platform metrics for {len(with_data):,} of {len(measured):,} resources of "
+             f"{len({r['type'] for r in measured})} supported types (deallocated VMs and resources without data are "
+             f"skipped). **Idle** = the type's activity metric (transactions, requests, messages, runs, calls...) "
+             f"was zero for 30 days."
+             + (f" {stats['failed_batches']} metric batch(es) failed and are missing." if stats and stats.get("failed_batches") else ""), ""]
+    by_type: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in with_data:
+        by_type[r["typeLabel"]].append(r)
+    rows = []
+    for label, group in sorted(by_type.items(), key=lambda kv: -len(kv[1])):
+        cpu = [r["cpuAvg"] for r in group if r.get("cpuAvg") is not None]
+        idle = [r for r in group if r.get("idle")]
+        rows.append([label, len(group), len(idle) if any(r.get("activity") is not None for r in group) else "-",
+                     f"{sum(cpu) / len(cpu):.1f} %" if cpu else "-",
+                     sum(1 for v in cpu if v < 5) if cpu else "-", _cost_label(idle) if idle else "-"])
+    lines += [_table(["Type", "With usage data", "Idle (no activity)", "Avg CPU", "Under 5 % CPU", "Last 30 days (idle)"],
+                     rows, ["---", "---:", "---:", "---:", "---:", "---:"]), ""]
+    idle = sorted((r for r in with_data if r.get("idle")), key=lambda r: -(r.get("cost30") or 0))
+    if idle:
+        lines += [f"### Idle resources - no activity in 30 days ({len(idle)})", "",
+                  _table(["Resource", "Type", "Usage", "Last 30 days", "Subscription"], [
+                      [r["name"], r["typeLabel"], r.get("usage") or "", _cost_label([r]), r["subscription"]]
+                      for r in idle[:30]], ["---", "---", "---", "---:", "---"]),
+                  "", "_Idle by metrics is a strong hint, not proof: confirm with the owner (monthly / DR jobs) before "
+                      "deleting._", ""]
     return lines
 
 
@@ -1239,6 +1533,7 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
                     "Arc SQL Server instances by version · edition · vCores")
     lines += _sizes(resources, "microsoft.sqlvirtualmachine/sqlvirtualmachines", "SQL Server on VMs by edition · license")
     lines += _utilisation(resources)
+    lines += _usage_overview(resources, estate.get("usage"))
 
     regions = Counter(r["location"] or "(none)" for r in resources)
     envs = Counter(r["env"] for r in resources)

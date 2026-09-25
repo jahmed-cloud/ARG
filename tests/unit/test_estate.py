@@ -14,6 +14,7 @@ from scripts.subscription_analysis.estate import (
     build_estate,
     category_of,
     compact,
+    config_of,
     os_of,
     refresh_estate,
     size_of,
@@ -67,6 +68,46 @@ def test_os_state_category_and_labels():
     assert type_label("microsoft.keyvault/vaults/secrets") == "Key Vault › secrets"
     assert type_label("microsoft.foo/bars") == "foo/bars"
 
+
+@pytest.mark.parametrize("row, size, config, os_label, state", [
+    ({"type": "microsoft.desktopvirtualization/hostpools",
+      "cfg": {"pool": "Pooled", "lb": "BreadthFirst", "max": 10, "app": "Desktop", "pna": "Disabled"}},
+     "Pooled · BreadthFirst", "max 10 sessions · Desktop · private access only", "", ""),
+    ({"type": "microsoft.compute/virtualmachines/extensions",
+      "cfg": {"publisher": "Microsoft.Azure.Monitor", "ext": "AzureMonitorWindowsAgent", "ver": "1.2", "auto": True}},
+     "AzureMonitorWindowsAgent · 1.2", "Microsoft.Azure.Monitor · auto-upgrade", "", ""),
+    ({"type": "microsoft.network/networkinterfaces", "cfg": {"vm": None, "pe": None, "ip": "10.0.0.4", "accel": False}},
+     "", "10.0.0.4", "", "Unattached"),
+    ({"type": "microsoft.network/networkinterfaces",
+      "cfg": {"vm": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1", "ip": "10.0.0.5",
+              "accel": True}},
+     "Accelerated networking", "VM vm1 · 10.0.0.5", "", "Attached"),
+    ({"type": "microsoft.web/sites", "kind": "app,linux",
+      "cfg": {"plan": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Web/serverfarms/asp-1", "fx": "DOTNETCORE|8.0",
+              "https": True}},
+     "plan asp-1", "HTTPS only", "Linux · .NET 8.0", ""),
+    ({"type": "microsoft.web/certificates", "cfg": {"expires": "2020-01-01T00:00:00Z", "subject": "app.contoso.com"}},
+     "", "expires 2020-01-01 · app.contoso.com", "", "Expired"),
+    ({"type": "microsoft.insights/scheduledqueryrules", "cfg": {"sev": 0, "on": False, "freq": "PT5M"}},
+     "Sev 0", "every 5m", "", "Disabled"),
+    ({"type": "microsoft.network/privateendpoints",
+      "cfg": {"target": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Sql/servers/sql1", "group": "sqlServer",
+              "status": "Pending"}},
+     "sqlServer", "→ sql1", "", "Pending"),
+    ({"type": "microsoft.app/containerapps",
+      "cfg": {"cpu": 0.5, "mem": "1Gi", "image": "acr.io/app:1", "min": 0, "max": 10, "wp": "Consumption"}},
+     "0.5 vCPU / 1Gi", "scale 0-10 · Consumption", "Container acr.io/app:1", ""),
+    ({"type": "microsoft.network/networksecuritygroups", "cfg": {"rules": 3, "subnets": 0, "nics": 0}},
+     "", "3 custom rules · 0 subnets · 0 NICs", "", "Unassociated"),
+    ({"type": "microsoft.cognitiveservices/accounts", "kind": "OpenAI", "sku": {"name": "S0"}},
+     "S0", "Azure OpenAI", "", ""),
+    ({"type": "microsoft.compute/virtualmachines", "vmSize": "Standard_D4s_v5", "osType": "Linux",
+      "powerState": "PowerState/running",
+      "cfg": {"zones": ["1"], "data": 2, "nics": 1, "priority": "Spot", "avset": None, "host": "web01"}},
+     "Standard_D4s_v5", "zone 1 · 2 data disks · 1 NIC · Spot · host web01", "Linux", "running"),
+])
+def test_type_profiles_fill_size_configuration_runtime_and_state(row, size, config, os_label, state):
+    assert (size_of(row), config_of(row), os_of(row), state_of(row)) == (size, config, os_label, state)
 
 @pytest.mark.parametrize("value, expected", [
     ("prod", "prod"), ("Core Prod", "prod"), ("public prod", "prod"), ("Non public-prod", "prod"),

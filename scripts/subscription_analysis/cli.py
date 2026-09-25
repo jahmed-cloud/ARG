@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import sys
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -50,6 +51,11 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="Also export report-<detail>.pdf via headless Edge/Chrome (default detail: summary)")
     p.add_argument("--pdf-only", action="store_true",
                    help="Only (re)export the PDF of existing report folders; no Azure calls")
+    p.add_argument("--estate", action="store_true",
+                   help="Only refresh the estate inventory (<reports-dir>/_estate/): one Resource Graph query across "
+                        "the --all / --subscription targets, joined with the existing reports; no scanners")
+    p.add_argument("--parallel", type=int, default=1, metavar="N",
+                   help="Analyse up to N subscriptions at the same time (default 1; 3 is a good value for --all)")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -114,8 +120,24 @@ def main(argv=None) -> int:
         return 0
 
     credential = make_credential(args.auth, args.tenant)
+    if args.all or args.estate:
+        visible = asyncio.run(list_subscriptions(credential))
+        visible = [s for s in visible if s.get("state") == "Enabled"
+                   and (not args.tenant or (s.get("tenant_id") or "").lower() == args.tenant.lower())]
+    if args.estate:
+        from scripts.subscription_analysis.estate import refresh_estate
+
+        wanted = {s.lower() for s in (args.subscription or [])}
+        chosen = [s for s in visible if args.all or s["id"].lower() in wanted or (s.get("name") or "").lower() in wanted]
+        if not chosen:
+            raise SystemExit("No matching enabled subscriptions for the estate inventory.")
+        estate = refresh_estate(reports_dir, credential, chosen)
+        write_index(reports_dir)
+        print(f"Estate: {len(estate['resources']):,} resources in {len(chosen)} subscription(s), "
+              f"{len(estate['suggestions']):,} suggestions -> {(reports_dir / '_estate' / 'README.md').resolve()}")
+        return 0
     if args.all:
-        targets = [s["id"] for s in asyncio.run(list_subscriptions(credential)) if s.get("state") == "Enabled"]
+        targets = [s["id"] for s in visible]
         print(f"Analysing {len(targets)} enabled subscription(s)")
     else:
         targets = args.subscription
@@ -125,27 +147,43 @@ def main(argv=None) -> int:
         config=default_config(args.config),
         include_cost=not args.skip_cost,
     )
+    lock = threading.Lock()
     failures = 0
-    for subscription in targets:
+
+    def one(subscription: str) -> bool:
         try:
             data, model, target = analyse_one(credential, subscription, reports_dir,
                                               Path(args.output) if args.output else None, **kwargs)
         except Exception as exc:  # keep going with the next subscription
-            failures += 1
-            print(f"FAILED {subscription}: {exc}", file=sys.stderr)
-            continue
+            print(f"FAILED {subscription}: {exc}", file=sys.stderr, flush=True)
+            return False
         waves = model.savings_by_wave()
-        print(f"{data.subscription['name']}: report written to {target.resolve()}")
-        print(f"  resources: {len(data.resources)}  findings: {len(data.findings)}  "
-              f"30-day cost: {model.total_30:,.2f} {model.currency}")
-        print(f"  estimated monthly savings: wave 1 {model.savings_label(waves[1])} | "
-              f"wave 2 {model.savings_label(waves[2])}")
-        if data.warnings:
-            print(f"  {len(data.warnings)} collection warning(s) - see 05-deep-dive/README.md")
+        with lock:
+            print(f"{data.subscription['name']}: report written to {target.resolve()}")
+            print(f"  resources: {len(data.resources)}  findings: {len(data.findings)}  "
+                  f"30-day cost: {model.total_30:,.2f} {model.currency}")
+            print(f"  estimated monthly savings: wave 1 {model.savings_label(waves[1])} | "
+                  f"wave 2 {model.savings_label(waves[2])}")
+            if data.warnings:
+                print(f"  {len(data.warnings)} collection warning(s) - see 05-deep-dive/README.md")
+            sys.stdout.flush()
         if args.pdf:
             export_report_pdf(target, args.pdf)
+        return True
+
+    workers = max(1, min(args.parallel, len(targets)))
+    if workers == 1:
+        failures = sum(1 for s in targets if not one(s))
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="analysis") as pool:
+            failures = sum(1 for ok in pool.map(one, targets) if not ok)
 
     if not args.output:
+        from scripts.subscription_analysis.estate import refresh_estate
+
+        refresh_estate(reports_dir)  # offline re-join: new findings/costs show up in the estate view
         print(f"Index: {write_index(reports_dir).resolve()}")
     return 1 if failures else 0
 

@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 from scanners.base.azure_api import ArmClient, get_resource_costs, query_resource_graph, run_cost_query
 from scanners.base.base_scanner import ScanContext, ScannerRegistry
 
+from scripts.subscription_analysis.estate import DETAIL_COLUMNS, RESOURCE_DETAILS
 from scripts.subscription_analysis.knowledge import classify
 
 logger = logging.getLogger("arg.analysis")
@@ -134,10 +135,8 @@ async def run_scanners(context: ScanContext, names: Optional[List[str]], config:
         data.warnings.extend(f"{cls.scanner_name}: {w}" for w in output.warnings)
 
 
-INVENTORY_QUERY = """
-Resources
-| project id, name, type, location, kind, sku, tags, resourceGroup, managedBy
-"""
+INVENTORY_QUERY = ("Resources" + RESOURCE_DETAILS
+                   + f"| project id, name, type, location, kind, sku, tags, resourceGroup, managedBy, {DETAIL_COLUMNS}")
 CREATED_TIME_CONCURRENCY = 8
 
 

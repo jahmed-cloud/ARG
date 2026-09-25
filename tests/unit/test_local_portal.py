@@ -136,6 +136,39 @@ def test_report_paths_cannot_escape_reports_dir(client, tmp_path):
     assert client.get("/reports/%2e%2e/outside.md").status_code == 404
 
 
+def test_estate_page_and_api(client, tmp_path):
+    assert client.get("/estate", follow_redirects=False).status_code == 303
+    assert client.get("/api/estate").status_code == 401
+    _login(client)
+    fake_runner(None, SUB["id"], tmp_path, lambda *a: None)
+    page = client.get("/estate")
+    assert page.status_code == 200 and "/static/estate.js" in page.text and "<script>" not in page.text
+    assert "Junaid Ahmed" in page.text and "https://github.com/jahmed-cloud/ARG" in page.text
+    data = client.get("/api/estate", headers={"accept-encoding": "gzip"})
+    assert data.status_code == 200 and data.json()["format"] == 2
+    assert [s["name"] for s in data.json()["subscriptions"]] == ["sub-demo"]
+    assert (tmp_path / "_estate" / "README.md").is_file()
+    assert client.get("/static/estate.js").status_code == 200
+
+
+def test_estate_refresh_uses_the_az_login_session(client, tmp_path, monkeypatch):
+    import scripts.subscription_analysis.estate as estate
+
+    calls = []
+    monkeypatch.setattr(estate, "refresh_estate", lambda reports, credential=None, subs=None: calls.append(
+        (reports, credential, [s["id"] for s in subs or []])))
+    _login(client)
+    assert client.post("/api/estate/refresh", json={}, headers={"origin": "https://evil.example"}).status_code == 403
+    r = client.post("/api/estate/refresh", json={}, headers=ORIGIN)
+    assert r.status_code == 200 and r.json()["subscriptions"] == 1
+    for _ in range(50):
+        status = client.get("/api/estate/status").json()
+        if not status["running"]:
+            break
+        time.sleep(0.05)
+    assert status["error"] is None and calls and calls[0][2] == [SUB["id"]]
+
+
 def test_markdown_rendering_neutralises_html_but_keeps_details():
     text = ("Name <script>alert(1)</script> `a<b>`\n\n<details><summary>Evidence</summary>\n\n"
             "```json\n{\"x\": \"<y>\"}\n```\n\n</details>\n")

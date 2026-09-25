@@ -37,6 +37,7 @@ SUMMARY_PAGES = [
 ]
 FULL_EXTRA = ["01-current-findings/resource-inventory.md"]
 MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
+AUTHOR_CREDIT = "Author: Junaid Ahmed · jahmed.cloud · github.com/jahmed-cloud/ARG"
 
 BROWSER_CANDIDATES = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -162,6 +163,7 @@ def build_print_body(report_dir: Path, detail: str = "summary") -> Tuple[str, st
         f"<h1>{html_lib.escape(title)}</h1>",
         f'<div class="meta">Azure Resource Guardian - {html_lib.escape(detail)} report - generated '
         f"{datetime.now():%Y-%m-%d %H:%M}</div>",
+        f'<div class="meta">{html_lib.escape(AUTHOR_CREDIT)}</div>',
         f"<h2>Contents</h2><ol>{toc}</ol>",
         "</section>",
     ]

@@ -87,7 +87,8 @@ Python equivalent (run from the repository root):
 
 ```bash
 python -m scripts.subscription_analysis --subscription <id-or-name> [--subscription <another>]
-python -m scripts.subscription_analysis --all
+python -m scripts.subscription_analysis --all --tenant <id> --parallel 3     # whole tenant, 3 at a time
+python -m scripts.subscription_analysis --all --tenant <id> --estate         # estate inventory only (~30 s)
 ```
 
 | Option | Meaning |
@@ -98,6 +99,8 @@ python -m scripts.subscription_analysis --all
 | `--scanners a,b` | Run only these scanners (names in [scanner-catalog.md](./scanner-catalog.md)) |
 | `--config FILE` | JSON with threshold overrides, see [§7](#7-tuning-thresholds) |
 | `--skip-cost` | Skip the report's cost datasets (trend, breakdowns). Cost-aware scanners still query per-resource cost |
+| `--estate` | Only refresh the estate inventory (`reports/_estate/`) for `--all` / `-s` targets: one Resource Graph query (about 30 s for 12,000 resources), joined with the existing reports. No scanners, see [§5c](#5c-estate-inventory-all-subscriptions) |
+| `--parallel N` | Analyse up to N subscriptions at once (default 1). `--all --parallel 3` is a good balance; beyond that Cost Management throttling (429 retries) eats most of the gain |
 | `--auth default` | Use `DefaultAzureCredential` (env vars / managed identity) instead of az login, for automation |
 | `-v` | Verbose logging |
 
@@ -110,6 +113,7 @@ The exit code is non-zero if any subscription failed. The others are still writt
 ```
 reports/
 ├── README.md                        index: one row per analysed subscription
+├── _estate/                         estate inventory across all subscriptions (§5c)
 └── <subscription-name>/             display name made filesystem-safe; <name>_<first 8 of ID>/ when another
     │                                subscription with the same name already owns <name>/
     ├── README.md                    executive summary, headline savings, top risks, prioritised actions
@@ -157,6 +161,45 @@ No saving is estimated: whether to renew, resize or cancel is a business decisio
 
 A missing budget (`budget_missing`) is **High** instead of Medium when the peak monthly spend in the last six full months
 is at least `budget_missing_high_monthly_usd` (10,000 USD).
+
+---
+
+## 5c. Estate inventory (all subscriptions)
+
+The subscription reports answer "what is wrong in this subscription". The **estate** answers "what do we run,
+where, at what size, and what should change" across the whole tenant, so architecture and FinOps decisions can
+be made on the complete picture (e.g. "all deallocated D-series VMs", "every Premium disk that is unattached",
+"which subscriptions still run SQL Server 2016 on Arc").
+
+| | |
+|---|---|
+| **Portal** | **Estate** in the top bar (`/estate`). Click **Refresh inventory** for a live Resource Graph query across every enabled subscription of the signed-in tenant (~30 s) |
+| **CLI** | `python -m scripts.subscription_analysis --all --tenant <id> --estate` |
+| **Files** | `reports/_estate/README.md` (markdown overview, linked from `reports/README.md`), `estate.json` (portal data), `inventory.json` (raw inventory) |
+| **Kept current** | Every analysis (CLI or portal job) re-joins the estate offline, so new findings and costs appear without a new inventory query |
+
+What each resource carries: category (Compute, Storage, Networking, Databases, Hybrid & Arc, …), readable type,
+**size / SKU** (VM size; VMSS SKU × instances; disk SKU + GB; storage SKU · kind · access tier; App Service plan SKU ×
+instances; SQL / PostgreSQL / Redis SKU; AKS version, pools and nodes; Arc SQL version · edition · vCores), OS image
+and Azure Hybrid Benefit (`· AHB`), power / disk / agent state, environment (from `Environment` tags such as
+`Core Prod`, `Non public-prod`, `public non-prod`, `prep`, then from names), region, subscription, resource group,
+tags, last-30-days cost and the report findings on it.
+
+The **Estate** page:
+- **Tiles** per category and **breakdowns** (by type, size/SKU, region, subscription, environment, suggestion type)
+  that follow the current filters; click any entry to filter on it.
+- **Filters:** search (name, resource group, tag, size), category, type, size / SKU, subscription, region,
+  environment, state, "with actionable / critical-high / no suggestions", suggestion type and severity.
+- **Resources** view: sortable, paged table; click a row for the full ID, tags, Azure portal and report links and its
+  suggestions. **Suggestions** view: every finding across the estate (including subscription-level ones such as
+  missing budgets), sortable by severity and estimated saving.
+- **Hygiene vs actionable:** tag and naming findings (`missing_required_tags`, `naming_convention_violation`,
+  `tag_key_typo`) sit on almost every resource, so they are counted separately and hidden unless you tick
+  *Include tag / naming hygiene findings* or pick that suggestion type.
+- **Download CSV** exports the filtered rows (all pages); **Copy link** shares the filtered view (filters live in the URL).
+
+Suggestions and cost come from the latest report of each subscription; subscriptions that were never analysed
+still appear in the inventory, without suggestions.
 
 ---
 

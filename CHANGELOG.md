@@ -6,6 +6,18 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Estate inventory** across all subscriptions: portal **Estate** page (`/estate`) and `reports/_estate/`
+  (markdown overview + `estate.json`). One Resource Graph query (~30 s for 12,000 resources) gives every resource's
+  category, readable type, size / SKU (VM size, VMSS, disk SKU + GB, storage SKU/kind/tier, App Service plan, SQL,
+  Redis, AKS pools, Arc SQL version/edition/vCores), OS and Hybrid Benefit, state, environment, region, tags and
+  30-day cost, joined with every report finding. Filters (category, type, size, subscription, region, environment,
+  state, suggestions, suggestion type, severity, search), clickable breakdowns, Resources and Suggestions views,
+  sortable/paged table with detail rows, CSV export and shareable filtered links. Tag/naming findings are counted
+  as hygiene, separately from actionable suggestions. CLI `--estate`; the estate is re-joined after every analysis.
+- CLI `--parallel N` to analyse several subscriptions at once (launcher `-Parallel`, `-Estate`); `--all` honours `--tenant`.
+- Per-subscription resource inventory shows size / SKU and state; the VM table adds size, OS image, power state and cost.
+- Author credit "Author: Junaid Ahmed · jahmed.cloud · github.com/jahmed-cloud/ARG" in the local portal footer,
+  report / index / estate footers and the PDF cover.
 - **Marketplace SaaS scanner** (`marketplace_saas_scanner`, 63 scanners in total): unsubscribed SaaS left behind,
   suspended or never-activated plans, terms ending within 90 days (auto-renew on or off) and material SaaS
   commitments, using the SaaS status/term from Resource Graph and 12-month cost per SaaS resource.
@@ -46,6 +58,9 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   12-month average instead of 30 days × 12; the monthly chart's axis now includes negative months.
 - Defender recommendation titles named a GUID or the subscription ID; they now name the recommendation.
 - `budget_missing` is High when the peak monthly spend is ≥ 10,000 USD (was always Medium).
+- Environment detection recognises `non prod` / `nonprod` / `public non-prod`, `core prod` / `public prod` /
+  `Non public-prod`, `prep`, `systest` and numbered stages (`stage1`); these were treated as unknown before, which
+  also affects the environment-mismatch and mixed App Service plan checks.
 
 ### Changed (inventory)
 - The subscription-analysis inventory is built from paginated Resource Graph, with creation dates merged from ARM

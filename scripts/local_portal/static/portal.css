@@ -68,3 +68,52 @@ progress { width: 220px; }
 .markdown details { margin: 8px 0; }
 .mermaid { background: #fff; text-align: center; margin: 12px 0; }
 .doc-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+
+.site-footer { text-align: center; color: var(--muted); font-size: 0.8em; padding: 18px 0 26px; }
+
+/* ---- Estate inventory ---- */
+main.wide { max-width: 1800px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+.tile { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; padding: 6px 10px; background: #f7f9fc; }
+.tile strong { font-size: 17px; }
+.tile span { font-size: 0.82em; }
+.tile em { font-style: normal; font-size: 0.78em; color: var(--high); }
+.tile.active, .tile:hover { border-color: var(--primary); background: #eaf2fb; }
+.filters .filter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 14px; align-items: end; }
+.filters label { display: grid; gap: 3px; font-size: 0.82em; color: var(--muted); }
+.filters select, .filters input { font: inherit; font-size: 0.95rem; color: var(--text); padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; width: 100%; background: #fff; }
+.filters select:disabled { opacity: 0.5; }
+.filter-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.view-switch { display: flex; gap: 4px; margin-bottom: 12px; }
+.view-switch .tab { border-radius: 6px 6px 0 0; }
+.view-switch .tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.breakdowns { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.breakdowns .card { margin: 0; padding: 12px 14px; }
+.breakdown h3 { margin: 0 0 8px; font-size: 14px; }
+.breakdown ul { list-style: none; margin: 0; padding: 0; }
+.breakdown li { margin: 2px 0; }
+.link-button { position: relative; display: flex; justify-content: space-between; gap: 8px; width: 100%; border: none; background: none; padding: 3px 6px; text-align: left; font-size: 0.86em; overflow: hidden; border-radius: 4px; }
+.link-button .label { position: relative; z-index: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-button .count { position: relative; z-index: 1; color: var(--muted); }
+.link-button .bar { position: absolute; left: 0; top: 0; bottom: 0; background: #e3eefa; z-index: 0; }
+.link-button:hover .bar, .link-button.active .bar { background: #c7ddf5; }
+.link-button.active { font-weight: 600; }
+.pager { display: flex; align-items: center; gap: 8px; }
+.table-wrap { overflow-x: auto; }
+table.estate td, table.estate th { font-size: 0.86em; }
+table.estate th.sortable { padding: 0; }
+table.estate th .sort { width: 100%; text-align: inherit; border: none; background: none; font-weight: 600; padding: 7px 8px; border-radius: 0; }
+table.estate tr.clickable { cursor: pointer; }
+table.estate tr.clickable:hover { background: #f5f9ff; }
+table.estate tr.detail td { background: #fafbfd; }
+.pill { display: inline-block; min-width: 22px; text-align: center; padding: 1px 7px; border-radius: 10px; font-size: 0.82em; font-weight: 600; background: #eef2f6; color: var(--text); text-transform: capitalize; }
+.pill.sev-critical { background: #fde7e9; color: var(--crit); }
+.pill.sev-high { background: #fdeee6; color: var(--high); }
+.pill.sev-medium { background: #fff4ce; color: #8a6100; }
+.pill.sev-low, .pill.sev-info { background: #eef2f6; color: var(--muted); }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { background: #eef2f6; border-radius: 4px; padding: 1px 6px; font-size: 0.8em; }
+ul.suggestions { margin: 6px 0; padding-left: 18px; }
+ul.suggestions li { margin: 3px 0; }
+.filters label.check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 0.85em; }
+.filters label.check input { width: auto; }

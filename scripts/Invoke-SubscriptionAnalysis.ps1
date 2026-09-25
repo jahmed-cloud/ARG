@@ -29,12 +29,25 @@
     Also export a PDF of each report: 'summary' (executive pages) or 'full' (everything).
     Uses the locally installed Microsoft Edge or Google Chrome in headless mode.
 
+.PARAMETER Parallel
+    Analyse up to this many subscriptions at the same time (default 1; 3 is a good value with -All).
+
+.PARAMETER Estate
+    Only refresh the estate inventory (<ReportsPath>\_estate\): one Resource Graph query across the
+    selected subscriptions, joined with the existing reports. No scanners run.
+
 .EXAMPLE
     az login
     C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'pp-buehler_insights_leybold_optics' -Pdf summary
 
 .EXAMPLE
     .\scripts\Invoke-SubscriptionAnalysis.ps1 -All -ReportsPath 'D:\arg-reports'
+
+.EXAMPLE
+    .\scripts\Invoke-SubscriptionAnalysis.ps1 -All -TenantId '<tenant-id>' -Parallel 3
+
+.EXAMPLE
+    .\scripts\Invoke-SubscriptionAnalysis.ps1 -All -TenantId '<tenant-id>' -Estate
 
 .OUTPUTS
     None. Progress and the report location are printed by the analysis.
@@ -59,7 +72,14 @@ param(
 
     [Parameter()]
     [ValidateSet('summary', 'full')]
-    [string] $Pdf
+    [string] $Pdf,
+
+    [Parameter()]
+    [ValidateRange(1, 16)]
+    [int] $Parallel = 1,
+
+    [Parameter()]
+    [switch] $Estate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +106,12 @@ if ($SkipCost) {
 }
 if ($Pdf) {
     $analysisArguments += @('--pdf', $Pdf)
+}
+if ($Parallel -gt 1) {
+    $analysisArguments += @('--parallel', $Parallel)
+}
+if ($Estate) {
+    $analysisArguments += '--estate'
 }
 
 Push-Location -Path $repositoryRoot

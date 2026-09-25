@@ -6,7 +6,10 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- **31 posture and FinOps scanners** (62 in total) across network, compute/App Service, database, storage,
+- **Marketplace SaaS scanner** (`marketplace_saas_scanner`, 63 scanners in total): unsubscribed SaaS left behind,
+  suspended or never-activated plans, terms ending within 90 days (auto-renew on or off) and material SaaS
+  commitments, using the SaaS status/term from Resource Graph and 12-month cost per SaaS resource.
+- **31 posture and FinOps scanners** (62 in the 0.1 baseline) across network, compute/App Service, database, storage,
   security, governance/observability and cost. See [docs/scanner-catalog.md](docs/scanner-catalog.md).
 - Shared Azure API layer for scanners: paginated and tenant-scoped Resource Graph, an ARM REST client (metrics, Cost
   Management with `CostUSD`, 429 retry), a per-scan cost and metric cache, Defender plan lookup, and Retail Prices.
@@ -35,6 +38,14 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Older scanners' Resource Graph queries now follow skip tokens. Before, results stopped at 1,000 rows, or at
   100 for the snapshot, deallocated-VM and VMSS scanners, so large subscriptions were silently under-reported.
+- Subscriptions sharing a display name (e.g. several "Visual Studio Professional Subscription"s) overwrote one report
+  folder; each now gets its own (`<name>_<first 8 of ID>/`, owner recorded in `.subscription-id`), and the index and
+  portal show the short ID next to duplicate names.
+- Executive summary trend no longer compares the first and last month with cost and labels it "possibly partial": it
+  uses the last full month, the peak, credits/refunds, and flags lumpy (up-front) spend. The forecast then uses the
+  12-month average instead of 30 days × 12; the monthly chart's axis now includes negative months.
+- Defender recommendation titles named a GUID or the subscription ID; they now name the recommendation.
+- `budget_missing` is High when the peak monthly spend is ≥ 10,000 USD (was always Medium).
 
 ### Changed (inventory)
 - The subscription-analysis inventory is built from paginated Resource Graph, with creation dates merged from ARM

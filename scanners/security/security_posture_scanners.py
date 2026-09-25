@@ -304,23 +304,35 @@ class DefenderRecommendationsScanner(PostureScanner):
         findings = []
         for rid, items in by_resource.items():
             parts = rid.split("/")
-            is_sub = len(parts) <= 3
+            lowered = [p.lower() for p in parts]
+            # Subscription-level checks and Defender "security entities" (…/Microsoft.Security/…/<guid>) have no
+            # meaningful resource name, so the recommendation itself names the finding.
+            is_sub = len(parts) <= 3 or ("providers" in lowered
+                                         and lowered[lowered.index("providers") + 1:][:1] == ["microsoft.security"])
             worst = min((_SEVERITY_MAP.get(i["severity"], SeverityLevel.LOW) for i in items),
                         key=lambda s: list(SeverityLevel).index(s))
             names = sorted({i["assessment"] for i in items})
+            target = "subscription" if is_sub else parts[-1]
+            title = (f"Defender: {names[0]} ({target})" if len(names) == 1
+                     else f"{len(names)} Defender recommendations on {target}: {names[0]}, …")
             kwargs = dict(
                 finding_type="defender_recommendations",
-                title=f"{len(names)} Defender recommendation(s): {parts[-1]}",
+                title=title,
                 description="Unhealthy Defender for Cloud assessments: " + "; ".join(names) + ".",
                 severity=worst,
                 remediation_steps="Open Defender for Cloud → Recommendations for this resource and follow the remediation steps.",
                 evidence={"assessments": items},
                 estimated_monthly_savings_usd=0.0,
             )
-            if is_sub:
+            if len(parts) <= 3:
                 findings.append(self.subscription_finding(context, **kwargs))
+            elif is_sub:
+                findings.append(self.make_finding(
+                    resource_id=rid, resource_name=f"Defender entity {parts[-1][:8]}",
+                    resource_type="microsoft.security/assessments", resource_group="(subscription)",
+                    subscription_id=context.subscription_id, location="global", **kwargs,
+                ))
             else:
-                lowered = [p.lower() for p in parts]
                 rg = parts[lowered.index("resourcegroups") + 1] if "resourcegroups" in lowered else "(subscription)"
                 provider_idx = lowered.index("providers") if "providers" in lowered else -1
                 rtype = "/".join(lowered[provider_idx + 1:provider_idx + 3]) if provider_idx > 0 else "unknown"

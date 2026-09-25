@@ -132,6 +132,10 @@ FINDING_CLASSIFICATION: Dict[str, Classification] = {
     "budget_missing": Classification(FINOPS, "cost-finops", WAVE_NO_REGRET, "finops"),
     "commitment_discount_opportunity": Classification(FINOPS, "cost-finops", WAVE_OPTIMISE, "finops"),
     "idle_iot_hub": Classification(FINOPS, "cost-finops", WAVE_NO_REGRET),
+    "marketplace_saas_unsubscribed": Classification(FINOPS, "cost-finops", WAVE_NO_REGRET),
+    "marketplace_saas_inactive": Classification(FINOPS, "cost-finops", WAVE_NO_REGRET, "finops"),
+    "marketplace_saas_term_ending": Classification(FINOPS, "cost-finops", WAVE_NO_REGRET, "finops"),
+    "marketplace_saas_commitment": Classification(FINOPS, "cost-finops", WAVE_OPTIMISE, "finops"),
 }
 
 CATEGORY_DEFAULTS = {

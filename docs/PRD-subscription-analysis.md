@@ -19,7 +19,7 @@ with a customer, reviewed in a pull request or read offline.
 ## Solution
 
 1. **Broader detection:** 31 new posture and FinOps scanners, so every finding of a manual subscription review is
-   produced automatically (62 scanners in total). Examples: DDoS plans protecting nothing, prod/non-prod sharing a plan,
+   produced automatically (63 scanners in total). Examples: DDoS plans protecting nothing, prod/non-prod sharing a plan,
    EOL runtimes and OS images, SQL firewall and Entra auth, Hyperscale legacy pricing, storage/Key Vault/AI hardening,
    Defender, RBAC, observability gaps, budgets, AI spend and commitment discounts.
 2. **Your own account:** a command-line analysis that runs on the engineer's workstation with their `az login`

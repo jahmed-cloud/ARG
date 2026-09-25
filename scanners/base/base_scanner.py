@@ -483,6 +483,7 @@ def register_scanner(cls: Type[BaseScanner]) -> Type[BaseScanner]:
 # import from, rather than as two separately-maintained copies that
 # could silently drift apart.
 ORPHAN_FINDING_TYPES = {
+    "marketplace_saas_unsubscribed",
     "unattached_managed_disk",
     "old_disk_snapshot",
     "deallocated_virtual_machine",

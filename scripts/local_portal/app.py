@@ -24,6 +24,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from scripts.local_portal.azure_session import AzureCliSession, friendly_error
@@ -86,9 +87,13 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
     auth = PortalAuth(username, password)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     cache: Dict[str, Any] = {"subscriptions": None, "loaded_at": 0.0, "error": None}
+    estate_job: Dict[str, Any] = {"running": False, "error": None, "started_at": None, "finished_at": None,
+                                  "subscriptions": 0}
+    background: set = set()
 
     app = FastAPI(title="ARG Local Portal", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth, app.state.azure, app.state.jobs = auth, azure, jobs
+    app.add_middleware(GZipMiddleware, minimum_size=2048)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or ["127.0.0.1", "localhost"])
 
     @app.middleware("http")
@@ -260,6 +265,54 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         from scripts.subscription_analysis.export import PRINT_CSS
 
         return Response(PRINT_CSS, media_type="text/css")
+
+    # -- estate inventory ------------------------------------------------------------
+
+    @app.get("/estate", response_class=HTMLResponse)
+    async def estate_page(request: Request):
+        return templates.TemplateResponse(request, "estate.html", {"username": auth.username})
+
+    @app.get("/api/estate")
+    async def api_estate():
+        from scripts.subscription_analysis.estate import ESTATE_DIR, ESTATE_FILE, refresh_estate
+
+        path = reports_dir / ESTATE_DIR / ESTATE_FILE
+        if not path.is_file():
+            await asyncio.to_thread(refresh_estate, reports_dir)  # first visit: build from the reports
+        return FileResponse(path, media_type="application/json")
+
+    @app.get("/api/estate/status")
+    async def api_estate_status():
+        return estate_job
+
+    @app.post("/api/estate/refresh")
+    async def api_estate_refresh():
+        from scripts.subscription_analysis.estate import refresh_estate
+
+        if estate_job["running"]:
+            return estate_job
+        status = await asyncio.to_thread(azure.status)
+        tenant = (status.get("tenant_id") or "").lower()
+        subs = [s for s in await subscriptions(refresh=True) if s.get("state") == "Enabled"
+                and (not tenant or (s.get("tenant_id") or "").lower() == tenant)]
+        if not subs:
+            return JSONResponse({"detail": cache["error"] or "No enabled subscriptions visible to the az login session"},
+                                status_code=400)
+        estate_job.update(running=True, error=None, started_at=time.time(), subscriptions=len(subs))
+
+        async def run() -> None:
+            try:
+                await asyncio.to_thread(refresh_estate, reports_dir, azure.credential, subs)
+                await asyncio.to_thread(write_index, reports_dir)
+            except Exception as exc:
+                estate_job["error"] = friendly_error(exc)
+            finally:
+                estate_job.update(running=False, finished_at=time.time())
+
+        task = asyncio.get_running_loop().create_task(run())
+        background.add(task)
+        task.add_done_callback(background.discard)
+        return estate_job
 
     @app.get("/print/{folder}", response_class=HTMLResponse)
     async def print_view(request: Request, folder: str, detail: str = "summary"):

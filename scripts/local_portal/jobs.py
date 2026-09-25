@@ -51,10 +51,12 @@ def default_runner(credential: Any, subscription_id: str, reports_dir: Path,
                    progress: Callable[[str, int, int], None]) -> Dict[str, Any]:
     """Run the full analysis for one subscription and write its report folder."""
     from scripts.subscription_analysis.cli import analyse_one, default_config
+    from scripts.subscription_analysis.estate import refresh_estate
     from scripts.subscription_analysis.report import write_index
 
     data, model, target = analyse_one(credential, subscription_id, reports_dir, None,
                                       config=default_config(), progress=progress)
+    refresh_estate(reports_dir)
     write_index(reports_dir)
     return {"folder": target.name, "findings": len(data.findings)}
 

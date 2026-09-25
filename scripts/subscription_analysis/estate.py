@@ -1,0 +1,756 @@
+"""
+Estate inventory: one architecture-level view of every subscription.
+
+The per-subscription reports answer "what is wrong in this subscription". The
+estate answers "what do we run, where, at what size, and what should change":
+
+- inventory: one paginated Resource Graph query across all subscriptions
+  (VM sizes and OS images, power state, disk SKUs and sizes, storage SKU /
+  kind / tier, App Service plan SKUs, SQL SKUs, AKS versions and node pools,
+  Redis SKUs, ...), normalised into categories and readable type names;
+- suggestions: the findings of the per-subscription reports, joined by
+  resource ID (subscription-level findings stay with the subscription);
+- cost: the reports' last-30-days cost per resource.
+
+Output: <reports>/_estate/estate.json (read by the portal's Estate page, which
+filters and groups it in the browser) and <reports>/_estate/README.md (the same
+overview as markdown). The inventory is kept in _estate/inventory.json so the
+join can be rebuilt offline whenever a report changes.
+"""
+
+import asyncio
+import json
+import threading
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
+
+from scanners.base.naming import env_from_name, env_from_tags
+
+ESTATE_DIR = "_estate"
+ESTATE_FILE = "estate.json"
+INVENTORY_FILE = "inventory.json"
+SUBSCRIPTIONS_PER_QUERY = 1000
+SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
+_WRITE_LOCK = threading.Lock()
+
+# Shared by the per-subscription inventory and the estate query: the properties that drive sizing decisions.
+RESOURCE_DETAILS = """
+| extend vmSize = tostring(properties.hardwareProfile.vmSize),
+         osType = tostring(coalesce(properties.storageProfile.osDisk.osType,
+                                    properties.virtualMachineProfile.storageProfile.osDisk.osType, properties.osType)),
+         imageOffer = tostring(coalesce(properties.storageProfile.imageReference.offer,
+                                        properties.virtualMachineProfile.storageProfile.imageReference.offer)),
+         imageSku = tostring(coalesce(properties.storageProfile.imageReference.sku,
+                                      properties.virtualMachineProfile.storageProfile.imageReference.sku)),
+         powerState = tostring(properties.extended.instanceView.powerState.code),
+         diskSizeGB = toint(properties.diskSizeGB),
+         diskState = tostring(properties.diskState),
+         accessTier = tostring(properties.accessTier),
+         k8sVersion = tostring(properties.kubernetesVersion),
+         agentPools = iff(type =~ 'microsoft.containerservice/managedclusters', properties.agentPoolProfiles, dynamic(null)),
+         innerSku = trim(' ', strcat(tostring(properties.sku.name), ' ', tostring(properties.sku.family),
+                                     tostring(properties.sku.capacity))),
+         resourceState = tostring(coalesce(properties.state, properties.status, properties.provisioningState)),
+         licenseType = tostring(coalesce(properties.licenseType, properties.sqlServerLicenseType)),
+         osSku = tostring(coalesce(properties.osSku, properties.osName)),
+         edition = tostring(coalesce(properties.edition, properties.sqlImageSku)),
+         productVersion = tostring(properties.version),
+         vCores = tostring(properties.vCore)
+"""
+DETAIL_COLUMNS = ("vmSize, osType, imageOffer, imageSku, powerState, diskSizeGB, diskState, accessTier, k8sVersion, "
+                  "agentPools, innerSku, resourceState, licenseType, osSku, edition, productVersion, vCores")
+ESTATE_QUERY = ("Resources" + RESOURCE_DETAILS
+                + f"| project id, name, type, location, kind, sku, tags, resourceGroup, subscriptionId, managedBy, "
+                  f"{DETAIL_COLUMNS}")
+
+CATEGORY_BY_PROVIDER = {
+    "microsoft.compute": "Compute",
+    "microsoft.classiccompute": "Compute",
+    "microsoft.desktopvirtualization": "Compute",
+    "microsoft.batch": "Compute",
+    "microsoft.containerservice": "Containers",
+    "microsoft.containerregistry": "Containers",
+    "microsoft.containerinstance": "Containers",
+    "microsoft.app": "Containers",
+    "microsoft.web": "Web & App Service",
+    "microsoft.certificateregistration": "Web & App Service",
+    "microsoft.domainregistration": "Web & App Service",
+    "microsoft.storage": "Storage",
+    "microsoft.classicstorage": "Storage",
+    "microsoft.storagesync": "Storage",
+    "microsoft.netapp": "Storage",
+    "microsoft.elasticsan": "Storage",
+    "microsoft.sql": "Databases",
+    "microsoft.dbforpostgresql": "Databases",
+    "microsoft.dbformysql": "Databases",
+    "microsoft.dbformariadb": "Databases",
+    "microsoft.documentdb": "Databases",
+    "microsoft.cache": "Databases",
+    "microsoft.network": "Networking",
+    "microsoft.cdn": "Networking",
+    "microsoft.classicnetwork": "Networking",
+    "microsoft.cognitiveservices": "AI & Machine Learning",
+    "microsoft.machinelearningservices": "AI & Machine Learning",
+    "microsoft.search": "AI & Machine Learning",
+    "microsoft.botservice": "AI & Machine Learning",
+    "microsoft.databricks": "Analytics & Data",
+    "microsoft.synapse": "Analytics & Data",
+    "microsoft.datafactory": "Analytics & Data",
+    "microsoft.kusto": "Analytics & Data",
+    "microsoft.purview": "Analytics & Data",
+    "microsoft.fabric": "Analytics & Data",
+    "microsoft.powerbidedicated": "Analytics & Data",
+    "microsoft.streamanalytics": "Analytics & Data",
+    "microsoft.analysisservices": "Analytics & Data",
+    "microsoft.datalakestore": "Analytics & Data",
+    "microsoft.servicebus": "Integration & Messaging",
+    "microsoft.eventhub": "Integration & Messaging",
+    "microsoft.eventgrid": "Integration & Messaging",
+    "microsoft.logic": "Integration & Messaging",
+    "microsoft.apimanagement": "Integration & Messaging",
+    "microsoft.relay": "Integration & Messaging",
+    "microsoft.notificationhubs": "Integration & Messaging",
+    "microsoft.signalrservice": "Integration & Messaging",
+    "microsoft.communication": "Integration & Messaging",
+    "microsoft.keyvault": "Security & Identity",
+    "microsoft.managedidentity": "Security & Identity",
+    "microsoft.security": "Security & Identity",
+    "microsoft.aad": "Security & Identity",
+    "microsoft.azureactivedirectory": "Security & Identity",
+    "microsoft.insights": "Monitoring & Management",
+    "microsoft.operationalinsights": "Monitoring & Management",
+    "microsoft.operationsmanagement": "Monitoring & Management",
+    "microsoft.alertsmanagement": "Monitoring & Management",
+    "microsoft.automation": "Monitoring & Management",
+    "microsoft.maintenance": "Monitoring & Management",
+    "microsoft.dashboard": "Monitoring & Management",
+    "microsoft.monitor": "Monitoring & Management",
+    "microsoft.portal": "Monitoring & Management",
+    "microsoft.resources": "Monitoring & Management",
+    "microsoft.managedservices": "Monitoring & Management",
+    "microsoft.recoveryservices": "Backup & Recovery",
+    "microsoft.dataprotection": "Backup & Recovery",
+    "microsoft.devices": "IoT",
+    "microsoft.iotcentral": "IoT",
+    "microsoft.digitaltwins": "IoT",
+    "microsoft.saas": "Marketplace SaaS",
+    "microsoft.hybridcompute": "Hybrid & Arc",
+    "microsoft.azurearcdata": "Hybrid & Arc",
+    "microsoft.kubernetes": "Hybrid & Arc",
+    "microsoft.kubernetesconfiguration": "Hybrid & Arc",
+    "microsoft.extendedlocation": "Hybrid & Arc",
+    "microsoft.sqlvirtualmachine": "Databases",
+    "microsoft.devtestlab": "Developer tools",
+    "microsoft.devcenter": "Developer tools",
+    "microsoft.devopsinfrastructure": "Developer tools",
+    "microsoft.visualstudio": "Developer tools",
+    "microsoft.loadtestservice": "Developer tools",
+    "microsoft.appconfiguration": "Integration & Messaging",
+    "microsoft.billingbenefits": "Billing & commitments",
+    "microsoft.capacity": "Billing & commitments",
+    "microsoft.resourcegraph": "Monitoring & Management",
+    "microsoft.elastic": "Monitoring & Management",
+    "microsoft.bing": "AI & Machine Learning",
+    "microsoft.videoindexer": "AI & Machine Learning",
+    "microsoft.maps": "Integration & Messaging",
+    "microsoft.powerplatform": "Integration & Messaging",
+    "microsoft.syntex": "AI & Machine Learning",
+}
+CATEGORY_BY_TYPE = {
+    "microsoft.compute/disks": "Storage",
+    "microsoft.compute/snapshots": "Storage",
+    "microsoft.network/privatednszones": "Networking",
+}
+TYPE_LABELS = {
+    "microsoft.compute/virtualmachines": "Virtual machine",
+    "microsoft.compute/virtualmachinescalesets": "VM scale set",
+    "microsoft.compute/disks": "Managed disk",
+    "microsoft.compute/snapshots": "Disk snapshot",
+    "microsoft.compute/images": "VM image",
+    "microsoft.compute/availabilitysets": "Availability set",
+    "microsoft.compute/virtualmachines/extensions": "VM extension",
+    "microsoft.containerservice/managedclusters": "AKS cluster",
+    "microsoft.containerregistry/registries": "Container registry",
+    "microsoft.app/containerapps": "Container app",
+    "microsoft.app/managedenvironments": "Container Apps environment",
+    "microsoft.web/sites": "App Service / Function app",
+    "microsoft.web/sites/slots": "App Service slot",
+    "microsoft.web/serverfarms": "App Service plan",
+    "microsoft.web/staticsites": "Static web app",
+    "microsoft.web/connections": "API connection",
+    "microsoft.storage/storageaccounts": "Storage account",
+    "microsoft.sql/servers": "SQL server",
+    "microsoft.sql/servers/databases": "SQL database",
+    "microsoft.sql/servers/elasticpools": "SQL elastic pool",
+    "microsoft.sql/managedinstances": "SQL managed instance",
+    "microsoft.dbforpostgresql/flexibleservers": "PostgreSQL flexible server",
+    "microsoft.dbformysql/flexibleservers": "MySQL flexible server",
+    "microsoft.documentdb/databaseaccounts": "Cosmos DB account",
+    "microsoft.cache/redis": "Azure Cache for Redis",
+    "microsoft.network/virtualnetworks": "Virtual network",
+    "microsoft.network/networkinterfaces": "Network interface",
+    "microsoft.network/networksecuritygroups": "Network security group",
+    "microsoft.network/publicipaddresses": "Public IP address",
+    "microsoft.network/privateendpoints": "Private endpoint",
+    "microsoft.network/privatednszones": "Private DNS zone",
+    "microsoft.network/loadbalancers": "Load balancer",
+    "microsoft.network/applicationgateways": "Application gateway",
+    "microsoft.network/azurefirewalls": "Azure Firewall",
+    "microsoft.network/bastionhosts": "Bastion",
+    "microsoft.network/virtualnetworkgateways": "VPN / ExpressRoute gateway",
+    "microsoft.network/frontdoors": "Front Door (classic)",
+    "microsoft.cdn/profiles": "Front Door / CDN profile",
+    "microsoft.network/dnszones": "Public DNS zone",
+    "microsoft.network/ddosprotectionplans": "DDoS protection plan",
+    "microsoft.network/natgateways": "NAT gateway",
+    "microsoft.network/routetables": "Route table",
+    "microsoft.network/networkwatchers": "Network Watcher",
+    "microsoft.cognitiveservices/accounts": "AI Services / Azure OpenAI",
+    "microsoft.machinelearningservices/workspaces": "ML / Foundry workspace",
+    "microsoft.search/searchservices": "AI Search",
+    "microsoft.databricks/workspaces": "Databricks workspace",
+    "microsoft.synapse/workspaces": "Synapse workspace",
+    "microsoft.datafactory/factories": "Data Factory",
+    "microsoft.kusto/clusters": "Data Explorer cluster",
+    "microsoft.servicebus/namespaces": "Service Bus namespace",
+    "microsoft.eventhub/namespaces": "Event Hubs namespace",
+    "microsoft.eventgrid/systemtopics": "Event Grid system topic",
+    "microsoft.eventgrid/topics": "Event Grid topic",
+    "microsoft.logic/workflows": "Logic app",
+    "microsoft.apimanagement/service": "API Management",
+    "microsoft.keyvault/vaults": "Key Vault",
+    "microsoft.managedidentity/userassignedidentities": "Managed identity",
+    "microsoft.insights/components": "Application Insights",
+    "microsoft.insights/actiongroups": "Action group",
+    "microsoft.insights/metricalerts": "Metric alert",
+    "microsoft.insights/activitylogalerts": "Activity log alert",
+    "microsoft.insights/scheduledqueryrules": "Log alert",
+    "microsoft.insights/datacollectionrules": "Data collection rule",
+    "microsoft.insights/workbooks": "Workbook",
+    "microsoft.operationalinsights/workspaces": "Log Analytics workspace",
+    "microsoft.operationsmanagement/solutions": "Monitoring solution",
+    "microsoft.automation/automationaccounts": "Automation account",
+    "microsoft.recoveryservices/vaults": "Recovery Services vault",
+    "microsoft.dataprotection/backupvaults": "Backup vault",
+    "microsoft.devices/iothubs": "IoT Hub",
+    "microsoft.saas/resources": "Marketplace SaaS",
+    "microsoft.portal/dashboards": "Portal dashboard",
+    "microsoft.web/certificates": "App Service certificate",
+    "microsoft.alertsmanagement/smartdetectoralertrules": "Smart detector alert",
+    "microsoft.hybridcompute/machines": "Arc-enabled server",
+    "microsoft.hybridcompute/machines/extensions": "Arc server extension",
+    "microsoft.hybridcompute/machines/licenseprofiles": "Arc server license profile",
+    "microsoft.azurearcdata/sqlserverinstances": "Arc SQL Server instance",
+    "microsoft.azurearcdata/sqlserverinstances/databases": "Arc SQL Server database",
+    "microsoft.kubernetes/connectedclusters": "Arc-enabled Kubernetes",
+    "microsoft.sqlvirtualmachine/sqlvirtualmachines": "SQL Server on VM",
+    "microsoft.insights/webtests": "Availability test",
+    "microsoft.insights/autoscalesettings": "Autoscale setting",
+    "microsoft.insights/datacollectionendpoints": "Data collection endpoint",
+    "microsoft.network/privatednszones/virtualnetworklinks": "Private DNS zone VNet link",
+    "microsoft.network/applicationsecuritygroups": "Application security group",
+    "microsoft.network/privatelinkservices": "Private Link service",
+    "microsoft.network/vpnsites": "VPN site",
+    "microsoft.network/virtualhubs": "Virtual WAN hub",
+    "microsoft.network/virtualwans": "Virtual WAN",
+    "microsoft.network/publicipprefixes": "Public IP prefix",
+    "microsoft.network/dnsresolvers": "DNS private resolver",
+    "microsoft.network/frontdoorwebapplicationfirewallpolicies": "Front Door WAF policy",
+    "microsoft.network/applicationgatewaywebapplicationfirewallpolicies": "Application Gateway WAF policy",
+    "microsoft.network/connections": "VPN / ExpressRoute connection",
+    "microsoft.network/localnetworkgateways": "Local network gateway",
+    "microsoft.containerinstance/containergroups": "Container instance",
+    "microsoft.app/jobs": "Container Apps job",
+    "microsoft.automation/automationaccounts/runbooks": "Automation runbook",
+    "microsoft.cognitiveservices/accounts/projects": "Foundry project",
+    "microsoft.compute/sshpublickeys": "SSH public key",
+    "microsoft.compute/restorepointcollections": "Restore point collection",
+    "microsoft.compute/galleries": "Compute gallery",
+    "microsoft.compute/galleries/images": "Gallery image definition",
+    "microsoft.compute/galleries/images/versions": "Gallery image version",
+    "microsoft.communication/communicationservices": "Communication Services",
+    "microsoft.communication/emailservices": "Email Communication Service",
+    "microsoft.communication/emailservices/domains": "Email domain",
+    "microsoft.operationalinsights/querypacks": "Log Analytics query pack",
+    "microsoft.botservice/botservices": "Bot service",
+    "microsoft.cdn/profiles/afdendpoints": "Front Door endpoint",
+    "microsoft.devtestlab/schedules": "Auto-shutdown schedule",
+    "microsoft.resourcegraph/queries": "Resource Graph shared query",
+    "microsoft.appconfiguration/configurationstores": "App Configuration",
+    "microsoft.maintenance/maintenanceconfigurations": "Maintenance configuration",
+    "microsoft.desktopvirtualization/hostpools": "AVD host pool",
+    "microsoft.desktopvirtualization/applicationgroups": "AVD application group",
+    "microsoft.desktopvirtualization/workspaces": "AVD workspace",
+    "microsoft.desktopvirtualization/scalingplans": "AVD scaling plan",
+    "microsoft.fabric/capacities": "Fabric capacity",
+    "microsoft.signalrservice/signalr": "SignalR Service",
+    "microsoft.notificationhubs/namespaces": "Notification Hubs namespace",
+    "microsoft.devices/provisioningservices": "IoT Hub DPS",
+    "microsoft.billingbenefits/maccs": "MACC commitment",
+    "microsoft.billingbenefits/credits": "Azure credit",
+}
+# Findings about tags and naming are real, but they sit on almost every resource; keeping them apart lets
+# the estate filter on suggestions that change cost, risk or architecture.
+HYGIENE_TYPES = {"missing_required_tags", "naming_convention_violation", "tag_key_typo"}
+AHB_LICENSES = {"windows_server", "windows_client", "rhel_byos", "sles_byos", "ahub"}
+
+
+# ---------------------------------------------------------------------------
+# Normalisation
+# ---------------------------------------------------------------------------
+
+def category_of(rtype: str) -> str:
+    rtype = (rtype or "").lower()
+    return CATEGORY_BY_TYPE.get(rtype) or CATEGORY_BY_PROVIDER.get(rtype.split("/")[0], "Other")
+
+
+def type_label(rtype: str) -> str:
+    rtype = (rtype or "").lower()
+    if rtype in TYPE_LABELS:
+        return TYPE_LABELS[rtype]
+    parts = rtype.split("/")
+    if len(parts) > 2 and "/".join(parts[:-1]) in TYPE_LABELS:
+        return f"{TYPE_LABELS['/'.join(parts[:-1])]} › {parts[-1]}"
+    return rtype.replace("microsoft.", "") or "unknown"
+
+
+def _sku(row: Dict[str, Any]) -> Dict[str, Any]:
+    return row.get("sku") if isinstance(row.get("sku"), dict) else {}
+
+
+def size_of(row: Dict[str, Any]) -> str:
+    """The sizing that matters for each type: VM size, disk SKU + GB, storage SKU/kind/tier, plan SKU × instances..."""
+    rtype = (row.get("type") or "").lower()
+    sku = _sku(row)
+    name, tier, capacity = sku.get("name"), sku.get("tier"), sku.get("capacity")
+    if rtype == "microsoft.compute/virtualmachines":
+        return row.get("vmSize") or ""
+    if rtype == "microsoft.compute/virtualmachinescalesets":
+        return f"{name} × {capacity}" if name and capacity is not None else (name or "")
+    if rtype in ("microsoft.compute/disks", "microsoft.compute/snapshots"):
+        return " ".join(x for x in (name, f"{row['diskSizeGB']} GB" if row.get("diskSizeGB") else None) if x)
+    if rtype == "microsoft.storage/storageaccounts":
+        return " · ".join(x for x in (name, row.get("kind"), row.get("accessTier")) if x)
+    if rtype == "microsoft.web/serverfarms":
+        label = f"{name} ({tier})" if name and tier and tier != name else (name or "")
+        return f"{label} × {capacity}" if label and capacity else label
+    if rtype == "microsoft.containerservice/managedclusters":
+        pools = row.get("agentPools") or []
+        nodes = sum(int(p.get("count") or 0) for p in pools)
+        sizes = sorted({p.get("vmSize") for p in pools if p.get("vmSize")})
+        parts = [f"k8s {row['k8sVersion']}" if row.get("k8sVersion") else None,
+                 f"{len(pools)} pool(s), {nodes} node(s)" if pools else None, ", ".join(sizes) or None]
+        return " · ".join(x for x in parts if x)
+    if rtype == "microsoft.azurearcdata/sqlserverinstances":
+        version = row.get("productVersion") or ""
+        parts = [version if version.lower().startswith("sql") else (f"SQL {version}" if version else None),
+                 row.get("edition") or None, f"{row['vCores']} vCores" if row.get("vCores") else None]
+        return " · ".join(x for x in parts if x)
+    if rtype == "microsoft.sqlvirtualmachine/sqlvirtualmachines":
+        return " · ".join(x for x in (row.get("edition"), row.get("licenseType")) if x)
+    if not name and row.get("innerSku"):
+        return row["innerSku"]
+    parts = [name, tier if tier and tier != name else None, str(capacity) if capacity not in (None, "") else None]
+    return " / ".join(x for x in parts if x)
+
+
+def os_of(row: Dict[str, Any]) -> str:
+    offer, sku = row.get("imageOffer") or "", row.get("imageSku") or ""
+    image = " ".join(x for x in (offer, sku) if x) or row.get("osSku") or ""
+    os_type = row.get("osType") or ""
+    label = f"{os_type} ({image})" if image and os_type else (os_type or image)
+    if label and (row.get("licenseType") or "").lower() in AHB_LICENSES:
+        label += " · AHB"
+    return label
+
+
+def state_of(row: Dict[str, Any]) -> str:
+    power = row.get("powerState") or ""
+    if power:
+        return power.split("/")[-1]
+    if row.get("diskState"):
+        return row["diskState"]
+    state = row.get("resourceState") or ""
+    return "" if state.lower() == "succeeded" else state
+
+
+def environment_of(row: Dict[str, Any]) -> str:
+    env = env_from_tags(row.get("tags")) or env_from_name(row.get("name") or "")
+    if not env:
+        env = env_from_name(row.get("resourceGroup") or "")
+    return {"prod": "Production", "nonprod": "Non-production"}.get(env or "", "Unknown")
+
+
+def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
+    rtype = (row.get("type") or "").lower()
+    sub_id = (row.get("subscriptionId") or (row.get("id") or "/subscriptions//").split("/")[2]).lower()
+    rg = row.get("resourceGroup") or ((row.get("id") or "").split("/")[4] if (row.get("id") or "").count("/") > 4 else "")
+    return {
+        "id": row.get("id") or "",
+        "name": row.get("name") or "",
+        "type": rtype,
+        "typeLabel": type_label(rtype),
+        "category": category_of(rtype),
+        "subscriptionId": sub_id,
+        "subscription": sub_names.get(sub_id) or sub_id,
+        "resourceGroup": rg,
+        "location": (row.get("location") or "").lower(),
+        "kind": row.get("kind") or "",
+        "size": size_of(row),
+        "os": os_of(row),
+        "state": state_of(row),
+        "env": environment_of(row),
+        "managedBy": row.get("managedBy") or "",
+        "sizeGB": int(row["diskSizeGB"]) if str(row.get("diskSizeGB") or "").isdigit() else None,
+        "tags": row.get("tags") if isinstance(row.get("tags"), dict) else {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Live inventory (Resource Graph, all subscriptions)
+# ---------------------------------------------------------------------------
+
+async def query_estate(credential: Any, subscription_ids: List[str], page_size: int = 1000) -> List[Dict[str, Any]]:
+    from azure.mgmt.resourcegraph import ResourceGraphClient
+    from azure.mgmt.resourcegraph.models import QueryRequest, QueryRequestOptions
+
+    client = ResourceGraphClient(credential)
+    rows: List[Dict[str, Any]] = []
+    for i in range(0, len(subscription_ids), SUBSCRIPTIONS_PER_QUERY):
+        batch = subscription_ids[i:i + SUBSCRIPTIONS_PER_QUERY]
+        skip_token: Optional[str] = None
+        while True:
+            request = QueryRequest(subscriptions=batch, query=ESTATE_QUERY, options=QueryRequestOptions(
+                result_format="objectArray", top=page_size, skip_token=skip_token))
+            response = await asyncio.to_thread(client.resources, request)
+            rows.extend(response.data or [])
+            skip_token = getattr(response, "skip_token", None)
+            if not skip_token:
+                break
+    for row in rows:
+        if row.get("agentPools"):
+            row["agentPools"] = [{k: p.get(k) for k in ("name", "vmSize", "count", "mode", "osType")}
+                                 for p in row["agentPools"] if isinstance(p, dict)]
+    return rows
+
+
+def collect_inventory(credential: Any, subscriptions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    ids = [s["id"] for s in subscriptions]
+    rows = asyncio.run(query_estate(credential, ids)) if ids else []
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "source": "resource-graph",
+            "subscriptions": [{"id": s["id"].lower(), "name": s.get("name")} for s in subscriptions],
+            "resources": rows}
+
+
+# ---------------------------------------------------------------------------
+# Join with the per-subscription reports
+# ---------------------------------------------------------------------------
+
+def _load_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def _reports(reports_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """sub_id -> {folder, name, generated_at, currency, findings, costs, resources} from each report folder."""
+    from scripts.subscription_analysis.report import SUMMARY_FILE
+
+    result: Dict[str, Dict[str, Any]] = {}
+    if not reports_dir.is_dir():
+        return result
+    for child in sorted(p for p in reports_dir.iterdir() if p.is_dir() and p.name != ESTATE_DIR):
+        summary = _load_json(child / SUMMARY_FILE, None)
+        if not summary:
+            continue
+        sub = summary.get("subscription") or {}
+        raw = child / "05-deep-dive" / "raw"
+        result[(sub.get("id") or "").lower()] = {
+            "folder": child.name, "name": sub.get("name"), "generated_at": summary.get("generated_at"),
+            "currency": summary.get("currency") or "",
+            "findings": _load_json(raw / "findings.json", []),
+            "costs": _load_json(raw / "cost" / "last30_by_resource.json", {}),
+            "resources": _load_json(raw / "inventory" / "resources.json", []),
+        }
+    return result
+
+
+def _suggestion(f: Dict[str, Any], sub_id: str, folder: str, resource: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "ref": f.get("ref"), "title": f.get("title"), "severity": (f.get("severity") or "info").lower(),
+        "type": f.get("finding_type"), "area": f.get("area"), "wave": f.get("wave"),
+        "hygiene": f.get("finding_type") in HYGIENE_TYPES,
+        "savingsUsd": f.get("estimated_monthly_savings_usd"),
+        "link": f"/reports/{folder}/05-deep-dive/{f['folder']}/README.md" if f.get("folder") else f"/reports/{folder}/README.md",
+        "subscriptionId": sub_id, "resourceId": (resource or {}).get("id") or "",
+        "resourceName": (resource or {}).get("name") or f.get("resource_name") or "(subscription)",
+        "category": (resource or {}).get("category") or "Subscription",
+        "typeLabel": (resource or {}).get("typeLabel") or "Subscription",
+    }
+
+
+def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Join the inventory with the reports. Without a live inventory (none passed and no _estate/inventory.json),
+    the reports' own resources.json files are used, so the estate always covers every analysed subscription.
+    """
+    reports = _reports(reports_dir)
+    if inventory is None:
+        inventory = _load_json(reports_dir / ESTATE_DIR / INVENTORY_FILE, None)
+    if inventory is None:
+        inventory = {"generated_at": None, "source": "reports",
+                     "subscriptions": [{"id": k, "name": v["name"]} for k, v in reports.items()],
+                     "resources": [r for v in reports.values() for r in v["resources"]]}
+
+    sub_names = {s["id"].lower(): s.get("name") or s["id"] for s in inventory.get("subscriptions") or []}
+    sub_names.update({k: v["name"] for k, v in reports.items() if v.get("name")})
+    resources = [normalise(r, sub_names) for r in inventory.get("resources") or [] if r.get("id")]
+    by_id = {r["id"].lower(): r for r in resources}
+
+    suggestions: List[Dict[str, Any]] = []
+    for sub_id, rep in reports.items():
+        costs = {k.lower(): v for k, v in (rep["costs"] or {}).items()}
+        for rid, entry in costs.items():
+            if rid in by_id:
+                by_id[rid]["cost30"] = round(float(entry.get("cost") or 0.0), 2)
+                by_id[rid]["currency"] = entry.get("currency") or rep["currency"]
+        for f in rep["findings"]:
+            resource = by_id.get((f.get("resource_id") or "").lower())
+            suggestions.append(_suggestion(f, sub_id, rep["folder"], resource))
+
+    counts: Dict[str, Counter] = defaultdict(Counter)
+    hygiene: Counter = Counter()
+    for s in suggestions:
+        if not s["resourceId"]:
+            continue
+        if s["hygiene"]:
+            hygiene[s["resourceId"].lower()] += 1
+        else:
+            counts[s["resourceId"].lower()][s["severity"]] += 1
+    for r in resources:
+        c = counts.get(r["id"].lower())
+        r["suggestions"] = sum(c.values()) if c else 0
+        r["hygiene"] = hygiene.get(r["id"].lower(), 0)
+        r["maxSeverity"] = next((s for s in SEVERITY_ORDER if c and c.get(s)), "")
+        r["folder"] = (reports.get(r["subscriptionId"]) or {}).get("folder") or ""
+
+    subscriptions = []
+    for sub_id in sorted(set(sub_names) | set(reports), key=lambda k: (sub_names.get(k) or k).lower()):
+        rep = reports.get(sub_id) or {}
+        subscriptions.append({
+            "id": sub_id, "name": sub_names.get(sub_id) or sub_id, "folder": rep.get("folder") or "",
+            "analysedAt": rep.get("generated_at"), "currency": rep.get("currency") or "",
+            "resources": sum(1 for r in resources if r["subscriptionId"] == sub_id),
+            "suggestions": sum(1 for s in suggestions if s["subscriptionId"] == sub_id),
+        })
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "inventory_at": inventory.get("generated_at"),
+        "source": inventory.get("source") or "reports",
+        "subscriptions": subscriptions,
+        "resources": sorted(resources, key=lambda r: (r["category"], r["typeLabel"], r["subscription"].lower(), r["name"].lower())),
+        "suggestions": suggestions,
+    }
+
+
+def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Wire format for estate.json: subscriptions and types are listed once and referenced by index, empty fields
+    are dropped and report links are rebuilt in the browser - about half the size of the expanded form.
+    """
+    sub_index = {s["id"]: i for i, s in enumerate(estate["subscriptions"])}
+    types: Dict[str, Dict[str, str]] = {}
+    res_index: Dict[str, int] = {}
+    resources = []
+    for i, r in enumerate(estate["resources"]):
+        res_index[r["id"].lower()] = i
+        types.setdefault(r["type"], {"label": r["typeLabel"], "category": r["category"]})
+        row = {"id": r["id"], "name": r["name"], "type": r["type"], "s": sub_index.get(r["subscriptionId"], -1),
+               "rg": r["resourceGroup"], "loc": r["location"], "kind": r["kind"], "size": r["size"], "os": r["os"],
+               "state": r["state"], "env": r["env"], "mb": r["managedBy"], "gb": r.get("sizeGB"), "tags": r["tags"],
+               "cost": r.get("cost30"), "cur": r.get("currency"), "n": r["suggestions"], "h": r.get("hygiene"),
+               "sev": r["maxSeverity"]}
+        resources.append({k: v for k, v in row.items() if v not in (None, "", {}, 0) or k in ("s",)})
+    suggestions = []
+    for s in estate["suggestions"]:
+        link = s["link"]
+        area = link.split("/05-deep-dive/")[1].split("/")[0] if "/05-deep-dive/" in link else ""
+        row = {"ref": s["ref"], "title": s["title"], "sev": s["severity"], "type": s["type"], "wave": s["wave"],
+               "usd": s["savingsUsd"], "r": res_index.get((s["resourceId"] or "").lower()),
+               "s": sub_index.get(s["subscriptionId"], -1), "af": area, "hy": 1 if s["hygiene"] else None,
+               "name": None if s["resourceId"] else s["resourceName"]}
+        suggestions.append({k: v for k, v in row.items() if v not in (None, "") or k == "s"})
+    return {"format": 2, "generated_at": estate["generated_at"], "inventory_at": estate["inventory_at"],
+            "source": estate["source"], "subscriptions": estate["subscriptions"], "types": types,
+            "resources": resources, "suggestions": suggestions}
+
+
+def write_estate(reports_dir: Path, estate: Dict[str, Any], inventory: Optional[Dict[str, Any]] = None) -> Path:
+    folder = reports_dir / ESTATE_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    if inventory is not None:
+        (folder / INVENTORY_FILE).write_text(json.dumps(inventory, default=str), encoding="utf-8")
+    (folder / ESTATE_FILE).write_text(json.dumps(compact(estate), default=str, ensure_ascii=False,
+                                                 separators=(",", ":")), encoding="utf-8")
+    (folder / "README.md").write_text(render_estate_markdown(estate) + "\n", encoding="utf-8")
+    return folder
+
+
+def refresh_estate(reports_dir: Path, credential: Any = None,
+                   subscriptions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Live refresh (Resource Graph) when a credential and subscriptions are given, else re-join offline."""
+    inventory = collect_inventory(credential, subscriptions) if credential is not None and subscriptions else None
+    with _WRITE_LOCK:
+        estate = build_estate(reports_dir, inventory)
+        write_estate(reports_dir, estate, inventory)
+    return estate
+
+
+# ---------------------------------------------------------------------------
+# Markdown overview
+# ---------------------------------------------------------------------------
+
+def _table(headers: List[str], rows: Iterable[Iterable[Any]], align: Optional[List[str]] = None) -> str:
+    from scripts.subscription_analysis.report import md_table
+
+    return md_table(headers, rows, align)
+
+
+def _cost_label(values: Iterable[Dict[str, Any]]) -> str:
+    totals: Dict[str, float] = defaultdict(float)
+    for r in values:
+        if r.get("cost30"):
+            totals[r.get("currency") or ""] += r["cost30"]
+    return " + ".join(f"{v:,.0f} {k}".strip() for k, v in sorted(totals.items(), key=lambda kv: -kv[1])) or "-"
+
+
+def _sizes(resources: List[Dict[str, Any]], rtype: str, title: str, extra=None, key: str = "size",
+           key_label: str = "Size / SKU") -> List[str]:
+    items = [r for r in resources if r["type"] == rtype]
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in items:
+        groups[r[key] or "(not reported)"].append(r)
+    headers = [key_label, "Count", "Subscriptions"] + ([h for h, _ in extra] if extra else []) + ["Last 30 days"]
+    rows = []
+    for size, group in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        rows.append([size, len(group), len({r["subscriptionId"] for r in group})]
+                    + ([fn(group) for _, fn in extra] if extra else []) + [_cost_label(group)])
+    return [f"### {title} ({len(items)})", "",
+            _table(headers, rows, ["---", "---:", "---:"] + ["---"] * len(extra or []) + ["---:"]), ""]
+
+
+def render_estate_markdown(estate: Dict[str, Any]) -> str:
+    resources, suggestions = estate["resources"], estate["suggestions"]
+    subs = estate["subscriptions"]
+    actionable = [s for s in suggestions if not s["hygiene"]]
+    sev = Counter(s["severity"] for s in actionable)
+    inventory_note = (f"live Resource Graph inventory of {str(estate.get('inventory_at'))[:16].replace('T', ' ')} UTC"
+                      if estate.get("source") == "resource-graph" else "inventory taken from the subscription reports")
+    lines = [
+        "# Estate Inventory", "",
+        "[← All subscriptions](../README.md)", "",
+        f"Every resource across {len(subs)} subscription(s), grouped by what it is, how it is sized and what the "
+        f"reports suggest - {inventory_note}. **Filter, sort and drill down interactively on the local portal's "
+        f"[Estate](/estate) page.** Raw data: [estate.json](./estate.json).", "",
+        "## Overview", "",
+        _table(["Metric", "Value"], [
+            ["Resources", f"{len(resources):,}"],
+            ["Subscriptions", len(subs)],
+            ["Regions", len({r["location"] for r in resources if r["location"]})],
+            ["Resource types", len({r["type"] for r in resources})],
+            ["Resources with actionable suggestions", f"{sum(1 for r in resources if r['suggestions']):,}"],
+            ["Actionable suggestions (critical / high / medium / low)",
+             f"{sev.get('critical', 0)} / {sev.get('high', 0)} / {sev.get('medium', 0)} / {sev.get('low', 0)}"],
+            ["Tag / naming hygiene findings (listed separately)", f"{len(suggestions) - len(actionable):,}"],
+            ["Last 30 days (resources with cost data)", _cost_label(resources)],
+        ]), "",
+        "## By category", "",
+    ]
+    by_cat: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in resources:
+        by_cat[r["category"]].append(r)
+    lines.append(_table(["Category", "Resources", "Types", "Subscriptions", "With suggestions", "Last 30 days"], [
+        [c, len(g), len({r["type"] for r in g}), len({r["subscriptionId"] for r in g}),
+         sum(1 for r in g if r["suggestions"]), _cost_label(g)]
+        for c, g in sorted(by_cat.items(), key=lambda kv: -len(kv[1]))
+    ], ["---", "---:", "---:", "---:", "---:", "---:"]))
+
+    by_type: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in resources:
+        by_type[r["type"]].append(r)
+    lines += ["", "## Top resource types", "", _table(
+        ["Type", "Category", "Count", "Subscriptions", "Regions", "With suggestions", "Last 30 days"], [
+            [g[0]["typeLabel"], g[0]["category"], len(g), len({r["subscriptionId"] for r in g}),
+             len({r["location"] for r in g}), sum(1 for r in g if r["suggestions"]), _cost_label(g)]
+            for t, g in sorted(by_type.items(), key=lambda kv: -len(kv[1]))[:30]
+        ], ["---", "---", "---:", "---:", "---:", "---:", "---:"]), ""]
+
+    def running(group):
+        states = Counter(r["state"] or "?" for r in group)
+        return ", ".join(f"{k} {v}" for k, v in states.most_common())
+
+    def os_mix(group):
+        return ", ".join(f"{k} {v}" for k, v in Counter((r["os"] or "?").split(" (")[0] for r in group).most_common())
+
+    def total_gb(group):
+        return f"{sum(r.get('sizeGB') or 0 for r in group):,} GB"
+
+    def unattached(group):
+        return sum(1 for r in group if r["state"].lower() == "unattached")
+
+    lines += ["## Sizing - what we run", ""]
+    lines += _sizes(resources, "microsoft.compute/virtualmachines", "Virtual machines by size",
+                    [("Power state", running), ("OS", os_mix)])
+    lines += _sizes(resources, "microsoft.compute/virtualmachinescalesets", "VM scale sets by SKU × instances")
+    lines += _sizes(resources, "microsoft.containerservice/managedclusters", "AKS clusters")
+    lines += _sizes(resources, "microsoft.web/serverfarms", "App Service plans by SKU × instances")
+    lines += _sizes(resources, "microsoft.sql/servers/databases", "SQL databases by SKU")
+    lines += _sizes(resources, "microsoft.sql/servers/elasticpools", "SQL elastic pools by SKU")
+    lines += _sizes(resources, "microsoft.dbforpostgresql/flexibleservers", "PostgreSQL flexible servers by SKU")
+    lines += _sizes(resources, "microsoft.cache/redis", "Redis caches by SKU")
+    lines += _sizes(resources, "microsoft.storage/storageaccounts", "Storage accounts by SKU · kind · tier")
+    lines += _sizes(resources, "microsoft.compute/disks", "Managed disks by SKU and size",
+                    [("Total", total_gb), ("Unattached", unattached)])
+    lines += _sizes(resources, "microsoft.cognitiveservices/accounts", "AI Services / Azure OpenAI by SKU")
+    lines += _sizes(resources, "microsoft.hybridcompute/machines", "Arc-enabled servers by OS", [("Status", running)],
+                    key="os", key_label="OS")
+    lines += _sizes(resources, "microsoft.azurearcdata/sqlserverinstances",
+                    "Arc SQL Server instances by version · edition · vCores")
+    lines += _sizes(resources, "microsoft.sqlvirtualmachine/sqlvirtualmachines", "SQL Server on VMs by edition · license")
+
+    regions = Counter(r["location"] or "(none)" for r in resources)
+    envs = Counter(r["env"] for r in resources)
+    lines += ["## Regions and environments", "",
+              _table(["Region", "Resources", "Subscriptions"], [
+                  [loc, n, len({r["subscriptionId"] for r in resources if (r["location"] or "(none)") == loc})]
+                  for loc, n in regions.most_common()], ["---", "---:", "---:"]), "",
+              _table(["Environment (from tags / names)", "Resources"], [[e, n] for e, n in envs.most_common()],
+                     ["---", "---:"]), ""]
+
+    by_finding: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for s in suggestions:
+        by_finding[s["type"] or "?"].append(s)
+    lines += ["## Most common suggestions", "", _table(
+        ["Suggestion type", "Worst severity", "Count", "Subscriptions", "Est. saving / month (USD)"], [
+            [t, next((x for x in SEVERITY_ORDER if any(s["severity"] == x for s in g)), ""), len(g),
+             len({s["subscriptionId"] for s in g}),
+             f"{sum(s['savingsUsd'] or 0 for s in g):,.0f}" if any(s["savingsUsd"] for s in g) else "-"]
+            for t, g in sorted(by_finding.items(), key=lambda kv: (SEVERITY_ORDER.index(
+                next((x for x in SEVERITY_ORDER if any(s["severity"] == x for s in kv[1])), "info")), -len(kv[1])))[:40]
+        ], ["---", "---", "---:", "---:", "---:"]), ""]
+
+    lines += ["## Subscriptions", "", _table(
+        ["Subscription", "Resources", "Suggestions", "Analysed"], [
+            [f"[{s['name']}](../{s['folder']}/README.md)" if s["folder"] else s["name"], s["resources"],
+             s["suggestions"], str(s.get("analysedAt") or "not analysed")[:10]]
+            for s in sorted(subs, key=lambda s: -s["resources"])
+        ], ["---", "---:", "---:", "---"]), ""]
+    from scripts.subscription_analysis.report import BRAND_CREDIT
+
+    lines += [f"_{BRAND_CREDIT}._"]
+    return "\n".join(lines)

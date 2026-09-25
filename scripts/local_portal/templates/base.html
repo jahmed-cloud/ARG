@@ -11,6 +11,7 @@
     <a class="brand" href="/">🛡️ ARG <span>Local Portal</span></a>
     <nav>
       <a href="/">Subscriptions</a>
+      <a href="/estate">Estate</a>
       <a href="/reports/README.md">Reports</a>
     </nav>
     {% block user %}{% endblock %}
@@ -18,6 +19,11 @@
   <main class="{% block main_class %}{% endblock %}">
     {% block content %}{% endblock %}
   </main>
+  <footer class="site-footer">
+    Azure Resource Guardian (ARG) · Author: Junaid Ahmed ·
+    <a href="https://jahmed.cloud" target="_blank" rel="noopener">jahmed.cloud</a> ·
+    <a href="https://github.com/jahmed-cloud/ARG" target="_blank" rel="noopener">github.com/jahmed-cloud/ARG</a>
+  </footer>
   {% block scripts %}{% endblock %}
 </body>
 </html>

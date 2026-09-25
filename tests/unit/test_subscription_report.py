@@ -79,6 +79,7 @@ def test_report_writes_expected_structure(tmp_path):
     readme = (tmp_path / "README.md").read_text(encoding="utf-8")
     assert "sub-demo" in readme and "Headline savings" in readme and "Prioritised Action List" in readme
     assert "exceeded in 2 of 2 months" in readme
+    assert "Author: Junaid Ahmed" in readme and "(https://github.com/jahmed-cloud/ARG)" in readme
     critique = (tmp_path / "04-architectural-critique" / "README.md").read_text(encoding="utf-8")
     assert "DDoS Network Protection plan" in critique
     assert model.savings_by_wave()[1] > 0

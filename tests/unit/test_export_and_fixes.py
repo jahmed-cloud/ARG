@@ -51,6 +51,7 @@ def test_print_body_rewrites_links_to_in_document_anchors(tmp_path):
     assert 'href="#page-05-deep-dive-networking-readme-md--f-001"' in body
     assert 'id="page-05-deep-dive-networking-readme-md--f-001"' in body
     assert "Summary sub-demo" in body  # TOC uses page titles
+    assert "Author: Junaid Ahmed" in body and "github.com/jahmed-cloud/ARG" in body
 
 
 def test_export_pdf_with_fake_browser(tmp_path, monkeypatch):

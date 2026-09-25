@@ -5,14 +5,20 @@
 
   const PAGE_SIZE = 100;
   const SEVERITIES = ["critical", "high", "medium", "low", "info"];
-  const FILTER_KEYS = ["q", "category", "type", "size", "sub", "region", "env", "state", "has", "stype", "sev", "hyg"];
+  const FILTER_KEYS = ["q", "category", "type", "size", "sub", "region", "env", "state", "has", "stype", "sev", "hyg", "ext", "cpu"];
   const RESOURCE_COLUMNS = [
     { key: "name", label: "Name" }, { key: "typeLabel", label: "Type" }, { key: "size", label: "Size / SKU" },
+    { key: "vcpu", label: "vCPU", num: true, compute: true }, { key: "ramGB", label: "RAM (GB)", num: true, compute: true },
+    { key: "cpuAvg", label: "CPU avg 30 d", num: true, compute: true, pct: true },
+    { key: "memAvg", label: "Memory avg 30 d", num: true, compute: true, pct: true },
     { key: "config", label: "Configuration" }, { key: "os", label: "OS / runtime" }, { key: "state", label: "State" },
     { key: "env", label: "Environment" }, { key: "location", label: "Region" }, { key: "subscription", label: "Subscription" },
     { key: "resourceGroup", label: "Resource group" }, { key: "cost30", label: "Last 30 d", num: true },
     { key: "suggestions", label: "Suggestions", num: true },
   ];
+  const CPU_BANDS = [[5, "under 5 %"], [20, "5-20 %"], [50, "20-50 %"], [80, "50-80 %"], [101, "80 % and more"]];
+  const cpuBand = (v) => (v === null || v === undefined ? "no data" : CPU_BANDS.find(([limit]) => v < limit)[1]);
+  const hasCompute = (r) => r.type === "microsoft.compute/virtualmachines" || r.type === "microsoft.compute/virtualmachinescalesets";
   const SUGGESTION_COLUMNS = [
     { key: "severity", label: "Severity" }, { key: "title", label: "Suggestion" }, { key: "type", label: "Suggestion type" },
     { key: "resourceName", label: "Resource" }, { key: "typeLabel", label: "Resource type" },
@@ -51,6 +57,8 @@
         os: r.os || "",
         state: r.state || "", env: r.env || "Unknown", managedBy: r.mb || "", sizeGB: r.gb || null, tags: r.tags || {},
         cost30: r.cost || 0, currency: r.cur || "", suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
+        vcpu: r.vcpu || null, ramGB: r.ram || null, cpuAvg: r.cpu === undefined ? null : r.cpu,
+        cpuMax: r.cpuMax === undefined ? null : r.cpuMax, memAvg: r.mem === undefined ? null : r.mem, subResource: !!r.sub,
       };
     });
     const suggestions = (data.suggestions || []).map((s) => {
@@ -103,8 +111,13 @@
 
   // ---- filtering -----------------------------------------------------------
 
+  // VM / Arc extensions and license profiles sit on a machine; hidden unless ticked or their type is picked.
+  const shownByDefault = (r, f) => !r.subResource || !!f.ext || (f.type && f.type === r.typeLabel);
+
   function resourceMatches(r, f, skip) {
+    if (!shownByDefault(r, f)) return false;
     if (f.q && skip !== "q" && !r._text.includes(f.q.toLowerCase())) return false;
+    if (f.cpu && skip !== "cpu" && (!hasCompute(r) || cpuBand(r.cpuAvg) !== f.cpu)) return false;
     if (f.category && skip !== "category" && r.category !== f.category) return false;
     if (f.type && skip !== "type" && r.typeLabel !== f.type) return false;
     if (f.size && skip !== "size" && (r.size || "(none)") !== f.size) return false;
@@ -210,6 +223,7 @@
     $("f-has").value = state.f.has || "";
     $("f-has").disabled = !res;
     $("f-hyg").checked = !!state.f.hyg;
+    $("f-ext").checked = !!state.f.ext;
   }
 
   // ---- tiles and breakdowns ------------------------------------------------
@@ -217,12 +231,13 @@
   function renderTiles() {
     const tiles = $("tiles");
     tiles.replaceChildren();
+    const visible = estate.resources.filter((r) => shownByDefault(r, state.f));
     const all = el("button", { type: "button", class: "tile" + (state.f.category ? "" : " active") });
-    all.append(el("strong", null, fmt(estate.resources.length)), el("span", null, "All resources"));
+    all.append(el("strong", null, fmt(visible.length)), el("span", null, "All resources"));
     all.addEventListener("click", () => setFilter("category", ""));
     tiles.appendChild(all);
-    countBy(estate.resources, (r) => r.category).forEach(([cat, count]) => {
-      const withSugg = estate.resources.filter((r) => r.category === cat && r.suggestions).length;
+    countBy(visible, (r) => r.category).forEach(([cat, count]) => {
+      const withSugg = visible.filter((r) => r.category === cat && r.suggestions).length;
       const tile = el("button", { type: "button", class: "tile" + (state.f.category === cat ? " active" : ""),
         title: withSugg + " with suggestions" });
       tile.append(el("strong", null, fmt(count)), el("span", null, cat));
@@ -259,9 +274,13 @@
     const target = $("breakdowns");
     target.replaceChildren();
     const subName = (id) => (subs.get(id) || {}).name || id;
+    const compute = current.filter(hasCompute);
+    const bandOrder = CPU_BANDS.map(([, label]) => label).concat(["no data"]);
     const panels = state.view === "resources" ? [
       panel("By type", countBy(current, (r) => r.typeLabel), "type"),
       panel(state.f.type ? "Sizes / SKUs of " + state.f.type : "Sizes / SKUs", countBy(current, (r) => r.size || "(none)"), "size"),
+      compute.length ? panel("Average CPU, last 30 days (VMs / scale sets)", countBy(compute, (r) => cpuBand(r.cpuAvg))
+        .sort((a, b) => bandOrder.indexOf(a[0]) - bandOrder.indexOf(b[0])), "cpu") : null,
       panel("By region", countBy(current, (r) => r.location || "(none)"), "region"),
       panel("By subscription", countBy(current, (r) => r.subscriptionId), "sub", subName),
       panel("By environment", countBy(current, (r) => r.env), "env"),
@@ -312,27 +331,43 @@
 
   const sevPill = (s) => el("span", { class: "pill sev-" + s }, s);
 
-  function resourceRow(r) {
+  function cellValue(r, c) {
+    const v = r[c.key];
+    if (c.key === "cost30") return v ? fmt(v) + " " + (r.currency || "") : "";
+    if (c.pct) return v === null || v === undefined ? "" : v.toFixed(1) + " %";
+    if (c.key === "ramGB") return v ? String(v) : "";
+    return v === null || v === undefined ? "" : v;
+  }
+
+  function resourceRow(r, columns) {
     const tr = el("tr", { class: "clickable", tabindex: "0" });
-    const name = el("td");
-    name.appendChild(el("strong", null, r.name));
-    tr.appendChild(name);
-    ["typeLabel", "size", "config", "os", "state", "env", "location", "subscription", "resourceGroup"].forEach((k) => tr.appendChild(el("td", null, r[k])));
-    tr.appendChild(el("td", { class: "num" }, r.cost30 ? fmt(r.cost30) + " " + (r.currency || "") : ""));
-    const sugg = el("td", { class: "num" });
-    if (r.suggestions) sugg.appendChild(el("span", { class: "pill sev-" + r.maxSeverity }, r.suggestions));
-    tr.appendChild(sugg);
-    tr.addEventListener("click", () => toggleDetail(tr, r));
-    tr.addEventListener("keydown", (e) => { if (e.key === "Enter") toggleDetail(tr, r); });
+    columns.forEach((c) => {
+      const td = el("td", c.num ? { class: "num" } : null);
+      if (c.key === "name") td.appendChild(el("strong", null, r.name));
+      else if (c.key === "suggestions") { if (r.suggestions) td.appendChild(el("span", { class: "pill sev-" + r.maxSeverity }, r.suggestions)); }
+      else td.textContent = cellValue(r, c);
+      if (c.key === "cpuAvg" && r.cpuMax !== null) td.title = "Peak " + r.cpuMax.toFixed(1) + " % (highest 1-minute value in 30 days)";
+      if (c.key === "cpuAvg" && r.cpuAvg !== null && r.cpuAvg < 5) td.classList.add("low-util");
+      tr.appendChild(td);
+    });
+    tr.addEventListener("click", () => toggleDetail(tr, r, columns.length));
+    tr.addEventListener("keydown", (e) => { if (e.key === "Enter") toggleDetail(tr, r, columns.length); });
     return tr;
   }
 
-  function toggleDetail(tr, r) {
+  function toggleDetail(tr, r, span) {
     const next = tr.nextElementSibling;
     if (next && next.classList.contains("detail")) { next.remove(); return; }
     const detail = el("tr", { class: "detail" });
-    const td = el("td", { colspan: String(RESOURCE_COLUMNS.length) });
+    const td = el("td", { colspan: String(span) });
     td.appendChild(el("div", { class: "mono small" }, r.id));
+    if (hasCompute(r)) {
+      td.appendChild(el("p", { class: "small" }, [
+        r.vcpu ? r.vcpu + " vCPU, " + r.ramGB + " GB RAM" : null,
+        r.cpuAvg !== null ? "CPU average " + r.cpuAvg.toFixed(1) + " %, peak " + (r.cpuMax || 0).toFixed(1) + " %" : "no CPU data (not running in the last 30 days)",
+        r.memAvg !== null ? "memory used " + r.memAvg.toFixed(1) + " % on average" : null,
+      ].filter(Boolean).join(" · ") + " - last 30 days, Azure Monitor"));
+    }
     const links = el("p", { class: "small" });
     const portal = el("a", { href: "https://portal.azure.com/#resource" + r.id, target: "_blank", rel: "noopener" }, "Open in Azure portal");
     links.appendChild(portal);
@@ -390,7 +425,10 @@
   }
 
   function renderTable(current) {
-    const columns = state.view === "resources" ? RESOURCE_COLUMNS : SUGGESTION_COLUMNS;
+    // vCPU / RAM / utilisation columns only when VMs or scale sets are in view - keeps other views narrow.
+    const columns = state.view === "resources"
+      ? RESOURCE_COLUMNS.filter((c) => !c.compute || current.some(hasCompute))
+      : SUGGESTION_COLUMNS;
     const sorted = sortRows(current.slice(), columns);
     const pages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
     state.page = Math.min(state.page, pages - 1);
@@ -399,7 +437,7 @@
     table.tHead.replaceChildren(header(columns));
     const body = table.tBodies[0];
     body.replaceChildren();
-    slice.forEach((x) => body.appendChild(state.view === "resources" ? resourceRow(x) : suggestionRow(x)));
+    slice.forEach((x) => body.appendChild(state.view === "resources" ? resourceRow(x, columns) : suggestionRow(x)));
     if (!slice.length) body.appendChild(el("tr", null)).appendChild(el("td", { colspan: String(columns.length), class: "muted" }, "Nothing matches these filters."));
     $("result-title").textContent = state.view === "resources" ? "Resources" : "Suggestions";
     $("result-count").textContent = fmt(current.length) + " match" + (current.length === 1 ? "" : "es") +
@@ -453,7 +491,7 @@
 
   function csv() {
     const columns = state.view === "resources"
-      ? ["name", "typeLabel", "category", "size", "config", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
+      ? ["name", "typeLabel", "category", "size", "vcpu", "ramGB", "cpuAvg", "cpuMax", "memAvg", "config", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
       : ["severity", "ref", "title", "type", "resourceName", "typeLabel", "category", "subscription", "savingsUsd", "wave", "resourceId"];
     const escape = (v) => {
       let text = v === undefined || v === null ? "" : String(v);
@@ -510,6 +548,7 @@
       $(id).addEventListener("change", (e) => setFilter(key, e.target.value));
     });
     $("f-hyg").addEventListener("change", (e) => setFilter("hyg", e.target.checked ? "1" : ""));
+    $("f-ext").addEventListener("change", (e) => setFilter("ext", e.target.checked ? "1" : ""));
     $("f-clear").addEventListener("click", () => { state.f = {}; state.page = 0; render(); });
     $("f-csv").addEventListener("click", csv);
     $("f-link").addEventListener("click", async () => {

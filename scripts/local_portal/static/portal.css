@@ -117,3 +117,4 @@ ul.suggestions { margin: 6px 0; padding-left: 18px; }
 ul.suggestions li { margin: 3px 0; }
 .filters label.check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 0.85em; }
 .filters label.check input { width: auto; }
+table.estate td.low-util { color: var(--high); font-weight: 600; }

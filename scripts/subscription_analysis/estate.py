@@ -418,6 +418,10 @@ TYPE_LABELS = {
 # the estate filter on suggestions that change cost, risk or architecture.
 HYGIENE_TYPES = {"missing_required_tags", "naming_convention_violation", "tag_key_typo"}
 AHB_LICENSES = {"windows_server", "windows_client", "rhel_byos", "sles_byos", "ahub"}
+METRIC_TYPES = {"microsoft.compute/virtualmachines", "microsoft.compute/virtualmachinescalesets"}
+# Agents and settings that live *on* a machine; hidden in the estate view unless asked for.
+MACHINE_SUB_RESOURCES = {"microsoft.compute/virtualmachines/extensions", "microsoft.hybridcompute/machines/extensions",
+                         "microsoft.hybridcompute/machines/licenseprofiles", "microsoft.hybridcompute/machines/runcommands"}
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +550,7 @@ def _profile(row: Dict[str, Any]) -> Dict[str, str]:
     if not c:
         return out
     if rtype in ("microsoft.compute/virtualmachines/extensions", "microsoft.hybridcompute/machines/extensions"):
-        out["size"] = _join(c.get("ext"), c.get("ver"))
+        out["size"] = _join(f"extension {c['ext']}" if c.get("ext") else None, c.get("ver"))
         out["config"] = _join(c.get("publisher"), "auto-upgrade" if c.get("auto") else None)
     elif rtype == "microsoft.desktopvirtualization/hostpools":
         out["size"] = _join(c.get("pool"), c.get("lb"))
@@ -576,10 +580,11 @@ def _profile(row: Dict[str, Any]) -> Dict[str, str]:
     elif rtype == "microsoft.compute/virtualmachinescalesets":
         out["config"] = _join(f"{c['mode']} orchestration" if c.get("mode") else None, _zones(c.get("zones")))
     elif rtype == "microsoft.compute/virtualmachines":
-        out["config"] = _join(_zones(c.get("zones")), _count(c.get("data"), "data disk"), _count(c.get("nics"), "NIC"),
+        nics = c.get("nics") or 0
+        out["config"] = _join(_zones(c.get("zones")), _count(c.get("data"), "data disk") if c.get("data") else None,
+                              _count(nics, "NIC") if nics > 1 else None,
                               "Spot" if c.get("priority") == "Spot" else None,
-                              f"availability set {_leaf(c['avset'])}" if c.get("avset") else None,
-                              f"host {c['host']}" if c.get("host") else None)
+                              f"availability set {_leaf(c['avset'])}" if c.get("avset") else None)
     elif rtype == "microsoft.compute/images":
         out["config"] = f"from VM {_leaf(c['source'])}" if c.get("source") else ""
     elif rtype in ("microsoft.web/sites", "microsoft.web/sites/slots"):
@@ -770,16 +775,27 @@ def environment_of(row: Dict[str, Any]) -> str:
     return {"prod": "Production", "nonprod": "Non-production"}.get(env or "", "Unknown")
 
 
+def display_name(row: Dict[str, Any]) -> str:
+    """Child resources read like the Azure portal: 'vm-app-01 › DSC' instead of just 'DSC'."""
+    rtype = (row.get("type") or "").lower()
+    parts = (row.get("id") or "").rstrip("/").split("/")
+    if rtype.count("/") >= 2 and len(parts) >= 3 and parts[-1]:
+        return f"{parts[-3]} › {parts[-1]}"
+    return row.get("name") or ""
+
+
 def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
     rtype = (row.get("type") or "").lower()
-    sub_id = (row.get("subscriptionId") or (row.get("id") or "/subscriptions//").split("/")[2]).lower()
-    rg = row.get("resourceGroup") or ((row.get("id") or "").split("/")[4] if (row.get("id") or "").count("/") > 4 else "")
+    id_parts = (row.get("id") or "").split("/")
+    sub_id = (row.get("subscriptionId") or (id_parts[2] if len(id_parts) > 2 else "")).lower()
+    rg = row.get("resourceGroup") or (id_parts[4] if len(id_parts) > 4 else "")
     return {
         "id": row.get("id") or "",
-        "name": row.get("name") or "",
+        "name": display_name(row),
         "type": rtype,
         "typeLabel": type_label(rtype),
         "category": category_of(rtype),
+        "subResource": rtype in MACHINE_SUB_RESOURCES,
         "subscriptionId": sub_id,
         "subscription": sub_names.get(sub_id) or sub_id,
         "resourceGroup": rg,
@@ -792,6 +808,11 @@ def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
         "env": environment_of(row),
         "managedBy": row.get("managedBy") or "",
         "sizeGB": int(row["diskSizeGB"]) if str(row.get("diskSizeGB") or "").isdigit() else None,
+        "vcpu": row.get("vcpu"),
+        "ramGB": row.get("ramGB"),
+        "cpuAvg": row.get("cpuAvg"),
+        "cpuMax": row.get("cpuMax"),
+        "memAvg": row.get("memAvg"),
         "tags": row.get("tags") if isinstance(row.get("tags"), dict) else {},
     }
 
@@ -827,9 +848,69 @@ async def query_estate(credential: Any, subscription_ids: List[str], page_size: 
 def collect_inventory(credential: Any, subscriptions: List[Dict[str, Any]]) -> Dict[str, Any]:
     ids = [s["id"] for s in subscriptions]
     rows = asyncio.run(query_estate(credential, ids)) if ids else []
+    if rows:
+        asyncio.run(enrich_compute(credential, rows))
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "source": "resource-graph",
             "subscriptions": [{"id": s["id"].lower(), "name": s.get("name")} for s in subscriptions],
             "resources": rows}
+
+
+async def enrich_compute(credential: Any, rows: List[Dict[str, Any]], days: int = 30, concurrency: int = 8) -> None:
+    """
+    vCPU / RAM from the Compute SKU catalogue (one call per region) and the 30-day average CPU % and memory used %
+    from Azure Monitor platform metrics ('Percentage CPU', 'Available Memory Bytes') for VMs and scale sets.
+    Deallocated VMs have no metrics and are skipped. Failures leave the fields empty.
+    """
+    from scanners.base.azure_api import ArmClient, gather_limited
+
+    targets = [r for r in rows if (r.get("type") or "").lower() in METRIC_TYPES]
+    if not targets:
+        return
+    arm = ArmClient(credential)
+    try:
+        specs: Dict[Any, Any] = {}
+        regions: Dict[str, str] = {}
+        for r in targets:
+            regions.setdefault((r.get("location") or "").lower(), r.get("subscriptionId") or "")
+        for location, sub in regions.items():
+            try:
+                skus = await arm.get_all(f"/subscriptions/{sub}/providers/Microsoft.Compute/skus", "2021-07-01",
+                                         {"$filter": f"location eq '{location}'"})
+            except Exception:
+                continue
+            for s in skus:
+                if s.get("resourceType") != "virtualMachines":
+                    continue
+                caps = {c.get("name"): c.get("value") for c in s.get("capabilities") or []}
+                try:
+                    spec = (int(caps["vCPUs"]), float(caps["MemoryGB"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                specs[(location, s["name"].lower())] = spec
+                specs.setdefault(s["name"].lower(), spec)
+
+        async def one(r: Dict[str, Any]) -> None:
+            size = (r.get("vmSize") or (r.get("sku") or {}).get("name") or "").lower()
+            spec = specs.get(((r.get("location") or "").lower(), size)) or specs.get(size)
+            if spec:
+                r["vcpu"], r["ramGB"] = spec
+            if (r.get("powerState") or "").split("/")[-1] in ("deallocated", "stopped"):
+                return
+            try:
+                m = await arm.metrics_summary(r["id"], ["Percentage CPU", "Available Memory Bytes"], days=days,
+                                              interval="P1D", aggregation="Average,Maximum")
+            except Exception:
+                return
+            cpu = m.get("Percentage CPU") or {}
+            if cpu.get("average") is not None:
+                r["cpuAvg"], r["cpuMax"] = round(cpu["average"], 1), round(cpu.get("maximum") or 0.0, 1)
+            available = (m.get("Available Memory Bytes") or {}).get("average")
+            if available is not None and spec and spec[1]:
+                r["memAvg"] = round(min(100.0, max(0.0, 100 * (1 - available / (spec[1] * 1024 ** 3)))), 1)
+
+        await gather_limited(targets, one, concurrency)
+    finally:
+        arm.close()
 
 
 # ---------------------------------------------------------------------------
@@ -960,9 +1041,12 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
                "rg": r["resourceGroup"], "loc": r["location"], "kind": r["kind"], "size": r["size"],
                "cfg": r.get("config"), "os": r["os"],
                "state": r["state"], "env": r["env"], "mb": r["managedBy"], "gb": r.get("sizeGB"), "tags": r["tags"],
+               "vcpu": r.get("vcpu"), "ram": r.get("ramGB"), "cpu": r.get("cpuAvg"), "cpuMax": r.get("cpuMax"),
+               "mem": r.get("memAvg"), "sub": 1 if r.get("subResource") else None,
                "cost": r.get("cost30"), "cur": r.get("currency"), "n": r["suggestions"], "h": r.get("hygiene"),
                "sev": r["maxSeverity"]}
-        resources.append({k: v for k, v in row.items() if v not in (None, "", {}, 0) or k in ("s",)})
+        resources.append({k: v for k, v in row.items()
+                          if v not in (None, "", {}, 0) or k == "s" or (k in ("cpu", "cpuMax", "mem") and v is not None)})
     suggestions = []
     for s in estate["suggestions"]:
         link = s["link"]
@@ -1033,6 +1117,37 @@ def _sizes(resources: List[Dict[str, Any]], rtype: str, title: str, extra=None, 
             _table(headers, rows, ["---", "---:", "---:"] + ["---"] * len(extra or []) + ["---:"]), ""]
 
 
+CPU_BANDS = [(5, "under 5 %"), (20, "5-20 %"), (50, "20-50 %"), (80, "50-80 %"), (101, "80 % and more")]
+
+
+def cpu_band(value: Optional[float]) -> str:
+    if value is None:
+        return "no data"
+    return next(label for limit, label in CPU_BANDS if value < limit)
+
+
+def _utilisation(resources: List[Dict[str, Any]]) -> List[str]:
+    """Running VMs by 30-day average CPU, and the largest ones that barely use their CPU (right-sizing candidates)."""
+    vms = [r for r in resources if r["type"] == "microsoft.compute/virtualmachines" and r["state"] == "running"]
+    if not vms:
+        return []
+    bands = Counter(cpu_band(r.get("cpuAvg")) for r in vms)
+    order = [label for _, label in CPU_BANDS] + ["no data"]
+    idle = sorted((r for r in vms if r.get("cpuAvg") is not None and r["cpuAvg"] < 5 and (r.get("vcpu") or 0) >= 4),
+                  key=lambda r: (-(r.get("vcpu") or 0), r["cpuAvg"]))
+    lines = ["### Running VMs by average CPU (last 30 days)", "",
+             _table(["Average CPU", "VMs"], [[b, bands[b]] for b in order if bands.get(b)], ["---", "---:"]), ""]
+    if idle:
+        lines += [f"### Right-sizing candidates: {len(idle)} running VM(s) with 4+ vCPU and under 5 % average CPU", "",
+                  _table(["VM", "Size", "vCPU / RAM", "Avg CPU", "Peak CPU", "Avg memory", "Subscription"], [
+                      [r["name"], r["size"], f"{r['vcpu']} / {r['ramGB']:g} GB", f"{r['cpuAvg']} %",
+                       f"{r.get('cpuMax')} %" if r.get("cpuMax") is not None else "-",
+                       f"{r['memAvg']} %" if r.get("memAvg") is not None else "-", r["subscription"]]
+                      for r in idle[:25]], ["---", "---", "---", "---:", "---:", "---:", "---"]),
+                  "", "_Check the peak and memory before downsizing: a low average can hide batch jobs._", ""]
+    return lines
+
+
 def render_estate_markdown(estate: Dict[str, Any]) -> str:
     resources, suggestions = estate["resources"], estate["suggestions"]
     subs = estate["subscriptions"]
@@ -1092,10 +1207,22 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
     def unattached(group):
         return sum(1 for r in group if r["state"].lower() == "unattached")
 
+    def spec(group):
+        r = group[0]
+        return f"{r['vcpu']} vCPU / {r['ramGB']:g} GB" if r.get("vcpu") else "-"
+
+    def avg_of(key):
+        def fn(group):
+            values = [r[key] for r in group if r.get(key) is not None]
+            return f"{sum(values) / len(values):.1f} %" if values else "-"
+        return fn
+
     lines += ["## Sizing - what we run", ""]
     lines += _sizes(resources, "microsoft.compute/virtualmachines", "Virtual machines by size",
-                    [("Power state", running), ("OS", os_mix)])
-    lines += _sizes(resources, "microsoft.compute/virtualmachinescalesets", "VM scale sets by SKU × instances")
+                    [("vCPU / RAM", spec), ("Avg CPU (30 d)", avg_of("cpuAvg")), ("Avg memory (30 d)", avg_of("memAvg")),
+                     ("Power state", running), ("OS", os_mix)])
+    lines += _sizes(resources, "microsoft.compute/virtualmachinescalesets", "VM scale sets by SKU × instances",
+                    [("Avg CPU (30 d)", avg_of("cpuAvg"))])
     lines += _sizes(resources, "microsoft.containerservice/managedclusters", "AKS clusters")
     lines += _sizes(resources, "microsoft.web/serverfarms", "App Service plans by SKU × instances")
     lines += _sizes(resources, "microsoft.sql/servers/databases", "SQL databases by SKU")
@@ -1111,6 +1238,7 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
     lines += _sizes(resources, "microsoft.azurearcdata/sqlserverinstances",
                     "Arc SQL Server instances by version · edition · vCores")
     lines += _sizes(resources, "microsoft.sqlvirtualmachine/sqlvirtualmachines", "SQL Server on VMs by edition · license")
+    lines += _utilisation(resources)
 
     regions = Counter(r["location"] or "(none)" for r in resources)
     envs = Counter(r["env"] for r in resources)

@@ -88,7 +88,7 @@ Python equivalent (run from the repository root):
 ```bash
 python -m scripts.subscription_analysis --subscription <id-or-name> [--subscription <another>]
 python -m scripts.subscription_analysis --all --tenant <id> --parallel 3     # whole tenant, 3 at a time
-python -m scripts.subscription_analysis --all --tenant <id> --estate         # estate inventory only (~1-2 min)
+python -m scripts.subscription_analysis --all --tenant <id> --estate         # estate inventory + usage (~4-5 min)
 ```
 
 | Option | Meaning |
@@ -99,7 +99,7 @@ python -m scripts.subscription_analysis --all --tenant <id> --estate         # e
 | `--scanners a,b` | Run only these scanners (names in [scanner-catalog.md](./scanner-catalog.md)) |
 | `--config FILE` | JSON with threshold overrides, see [§7](#7-tuning-thresholds) |
 | `--skip-cost` | Skip the report's cost datasets (trend, breakdowns). Cost-aware scanners still query per-resource cost |
-| `--estate` | Only refresh the estate inventory (`reports/_estate/`) for `--all` / `-s` targets: one Resource Graph query plus VM size specs and 30-day CPU / memory metrics (about 1-2 minutes for 12,000 resources and 200 VMs), joined with the existing reports. No scanners, see [§5c](#5c-estate-inventory-all-subscriptions) |
+| `--estate` | Only refresh the estate inventory (`reports/_estate/`) for `--all` / `-s` targets: one Resource Graph query plus VM size specs and 30-day usage metrics (about 4-5 minutes for 12,000 resources), joined with the existing reports. No scanners, see [§5c](#5c-estate-inventory-all-subscriptions) |
 | `--parallel N` | Analyse up to N subscriptions at once (default 1). `--all --parallel 3` is a good balance; beyond that Cost Management throttling (429 retries) eats most of the gain |
 | `--auth default` | Use `DefaultAzureCredential` (env vars / managed identity) instead of az login, for automation |
 | `-v` | Verbose logging |
@@ -173,7 +173,7 @@ be made on the complete picture (e.g. "all deallocated D-series VMs", "every Pre
 
 | | |
 |---|---|
-| **Portal** | **Estate** in the top bar (`/estate`). Click **Refresh inventory** for a live Resource Graph query (plus VM specs and metrics) across every enabled subscription of the signed-in tenant (~1-2 min) |
+| **Portal** | **Estate** in the top bar (`/estate`). Click **Refresh inventory** for a live Resource Graph query plus VM specs and 30-day usage metrics across every enabled subscription of the signed-in tenant (~4-5 min) |
 | **CLI** | `python -m scripts.subscription_analysis --all --tenant <id> --estate` |
 | **Files** | `reports/_estate/README.md` (markdown overview, linked from `reports/README.md`), `estate.json` (portal data), `inventory.json` (raw inventory) |
 | **Kept current** | Every analysis (CLI or portal job) re-joins the estate offline, so new findings and costs appear without a new inventory query |
@@ -196,6 +196,38 @@ memory before downsizing.
 
 Child resources are named like the Azure portal (`vm-app-01 › DSC` for the DSC extension on `vm-app-01`). VM / Arc
 extensions and Arc license profiles are hidden unless you tick *Include VM / Arc extensions and license profiles*.
+
+**Usage - last 30 days (every type Azure Monitor reports on).** On refresh, ARG reads platform metrics for 31
+resource types through the Azure Monitor **metrics batch API** (`<region>.metrics.monitor.azure.com … metrics:getBatch`,
+up to 50 resources of one type / region / subscription per call, daily points, averaged or summed over 30 days). No
+agent is needed. The **Usage (30 d)** column shows the activity and extra facts; **CPU avg / Memory avg** appear for
+every type that reports them.
+
+| Type | Metrics → shown as |
+|---|---|
+| VMs, scale sets | `Percentage CPU` → CPU avg (+ peak); `Available Memory Bytes` ÷ RAM → memory used % |
+| App Service plans | `CpuPercentage`, `MemoryPercentage` |
+| Web / Function apps, slots | `Requests`, `Http5xx` (failed), `FunctionExecutionCount` |
+| Storage accounts | `Transactions`, `UsedCapacity` (latest), `Egress` (transferred) |
+| SQL databases / elastic pools | `cpu_percent`, `connection_successful`, `storage_percent` |
+| PostgreSQL / MySQL flexible | `cpu_percent`, `memory_percent`, `storage_percent` |
+| Cosmos DB | `TotalRequests` (Count), `NormalizedRUConsumption` peak |
+| Redis | `serverLoad` (as CPU), `usedmemorypercentage`, `connectedclients` |
+| AKS | `node_cpu_usage_percentage`, `node_memory_working_set_percentage` |
+| Container apps / registries | `Requests`, `Replicas` / `SuccessfulPullCount`, `StorageUsed` |
+| Key Vault, AI Services, AI Search | `ServiceApiHit` / `TotalCalls` + prompt/generated tokens / `SearchQueriesPerSecond` |
+| Service Bus, Event Hubs, IoT Hub, Event Grid, SignalR | incoming messages / events (+ bytes, active messages, devices) |
+| Data Factory, Logic apps, Automation | succeeded / failed runs, jobs |
+| Application Gateway, APIM, Front Door, Firewall, Load balancer | requests / capacity, data processed, bytes |
+| Data Explorer | `CPU`, `IngestionUtilization` |
+
+**Idle** means the type's activity metric was zero for 30 days - storage uses the same ≤ 200 transactions threshold
+as the idle-storage scanner (platform housekeeping), container apps must also have scaled to zero, and web apps must
+also have no function executions (timer/queue-triggered functions get no HTTP requests). Use the **Activity** breakdown
+to list idle resources; the markdown overview adds a usage table per type and the costliest idle resources. A batch
+that fails is retried with the type's primary metric only; global resources (Front Door) use the per-resource metrics
+API. Azure throttles metric reads per caller, so a full refresh of ~2,500 measured resources takes 3-4 minutes
+(more parallelism does not help). Treat idle as a strong hint and confirm with the owner before deleting.
 
 The **Estate** page:
 - **Tiles** per category and **breakdowns** (by type, size/SKU, average CPU band, region, subscription, environment,

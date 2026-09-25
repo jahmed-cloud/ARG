@@ -22,6 +22,9 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   public IPs, VNets, NSGs, route tables, private endpoints, DNS zones, load balancers, Key Vaults, alerts, action groups,
   availability tests, App Insights, Log Analytics, Arc machines and SQL databases, Cosmos DB and more. State now shows
   Attached / Unattached, Associated / Unassociated, expired certificates, disabled alerts and pending private endpoints.
+- Estate **vCPU, RAM, 30-day average CPU % and memory used %** for VMs and scale sets (Compute SKU catalogue + Azure
+  Monitor), a CPU-band breakdown and filter, and right-sizing candidates in the markdown overview. Child resources are
+  named like the Azure portal (`vm › extension`); VM / Arc extensions and license profiles are hidden by default.
 - Author credit "Author: Junaid Ahmed · jahmed.cloud · github.com/jahmed-cloud/ARG" in the local portal footer,
   report / index / estate footers and the PDF cover.
 - **Marketplace SaaS scanner** (`marketplace_saas_scanner`, 63 scanners in total): unsubscribed SaaS left behind,

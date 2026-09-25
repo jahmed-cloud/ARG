@@ -15,6 +15,7 @@ from scripts.subscription_analysis.estate import (
     category_of,
     compact,
     config_of,
+    normalise,
     os_of,
     refresh_estate,
     size_of,
@@ -75,7 +76,7 @@ def test_os_state_category_and_labels():
      "Pooled · BreadthFirst", "max 10 sessions · Desktop · private access only", "", ""),
     ({"type": "microsoft.compute/virtualmachines/extensions",
       "cfg": {"publisher": "Microsoft.Azure.Monitor", "ext": "AzureMonitorWindowsAgent", "ver": "1.2", "auto": True}},
-     "AzureMonitorWindowsAgent · 1.2", "Microsoft.Azure.Monitor · auto-upgrade", "", ""),
+     "extension AzureMonitorWindowsAgent · 1.2", "Microsoft.Azure.Monitor · auto-upgrade", "", ""),
     ({"type": "microsoft.network/networkinterfaces", "cfg": {"vm": None, "pe": None, "ip": "10.0.0.4", "accel": False}},
      "", "10.0.0.4", "", "Unattached"),
     ({"type": "microsoft.network/networkinterfaces",
@@ -104,7 +105,7 @@ def test_os_state_category_and_labels():
     ({"type": "microsoft.compute/virtualmachines", "vmSize": "Standard_D4s_v5", "osType": "Linux",
       "powerState": "PowerState/running",
       "cfg": {"zones": ["1"], "data": 2, "nics": 1, "priority": "Spot", "avset": None, "host": "web01"}},
-     "Standard_D4s_v5", "zone 1 · 2 data disks · 1 NIC · Spot · host web01", "Linux", "running"),
+     "Standard_D4s_v5", "zone 1 · 2 data disks · Spot", "Linux", "running"),
 ])
 def test_type_profiles_fill_size_configuration_runtime_and_state(row, size, config, os_label, state):
     assert (size_of(row), config_of(row), os_of(row), state_of(row)) == (size, config, os_label, state)
@@ -224,3 +225,67 @@ def test_estate_folder_is_not_mistaken_for_a_subscription_report(reports):
     assert {s["folder"] for s in read_summaries(reports)} == {"sub-a", "sub-b"}
     index = write_index(reports).read_text(encoding="utf-8")
     assert "_estate/README.md" in index
+
+def test_child_resources_are_named_like_the_azure_portal():
+    ext = {"type": "microsoft.compute/virtualmachines/extensions", "name": "DSC",
+           "id": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-app-01/extensions/DSC",
+           "cfg": {"ext": "DSC", "ver": "2.73", "publisher": "Microsoft.Powershell"}}
+    row = normalise(ext, {})
+    assert row["name"] == "vm-app-01 › DSC" and row["subResource"] is True
+    assert row["size"] == "extension DSC · 2.73"
+    vm = normalise({"type": "microsoft.compute/virtualmachines", "name": "vm-app-01", "id": ext["id"].rsplit("/extensions", 1)[0]}, {})
+    assert vm["name"] == "vm-app-01" and vm["subResource"] is False
+
+
+def test_vm_specs_and_30_day_utilisation(monkeypatch):
+    import asyncio
+
+    import scanners.base.azure_api as azure_api
+    from scripts.subscription_analysis import estate
+
+    class FakeArm:
+        def __init__(self, credential):
+            self.metric_calls = []
+
+        async def get_all(self, path, api_version, params=None):
+            return [{"resourceType": "virtualMachines", "name": "Standard_D4s_v5",
+                     "capabilities": [{"name": "vCPUs", "value": "4"}, {"name": "MemoryGB", "value": "16"}]},
+                    {"resourceType": "disks", "name": "Premium_LRS", "capabilities": []}]
+
+        async def metrics_summary(self, resource_id, names, **kwargs):
+            self.metric_calls.append(resource_id)
+            return {"Percentage CPU": {"average": 3.26, "maximum": 71.0},
+                    "Available Memory Bytes": {"average": 12 * 1024 ** 3}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(azure_api, "ArmClient", FakeArm)
+    rows = [
+        {"id": "/vm-running", "type": "microsoft.compute/virtualmachines", "location": "westeurope",
+         "subscriptionId": "s", "vmSize": "Standard_D4s_v5", "powerState": "PowerState/running"},
+        {"id": "/vm-off", "type": "microsoft.compute/virtualmachines", "location": "westeurope",
+         "subscriptionId": "s", "vmSize": "Standard_D4s_v5", "powerState": "PowerState/deallocated"},
+        {"id": "/disk", "type": "microsoft.compute/disks", "location": "westeurope", "subscriptionId": "s"},
+    ]
+    asyncio.run(estate.enrich_compute(object(), rows))
+    running, off, disk = rows
+    assert (running["vcpu"], running["ramGB"], running["cpuAvg"], running["cpuMax"], running["memAvg"]) == (4, 16.0, 3.3, 71.0, 25.0)
+    assert off["vcpu"] == 4 and "cpuAvg" not in off     # deallocated: specs yes, metrics no
+    assert "vcpu" not in disk
+    wire = compact(build_estate_from_rows([running]))
+    vm = wire["resources"][0]
+    assert (vm["vcpu"], vm["ram"], vm["cpu"], vm["mem"]) == (4, 16.0, 3.3, 25.0)
+
+
+def build_estate_from_rows(rows):
+    from pathlib import Path
+
+    return build_estate(Path("does-not-exist"), {"generated_at": None, "source": "resource-graph",
+                                                  "subscriptions": [], "resources": rows})
+
+
+def test_zero_cpu_survives_the_compact_format():
+    wire = compact(build_estate_from_rows([{"id": "/vm", "type": "microsoft.compute/virtualmachines", "name": "vm",
+                                            "cpuAvg": 0.0, "cpuMax": 0.0, "memAvg": 0.0}]))
+    assert wire["resources"][0]["cpu"] == 0.0 and wire["resources"][0]["mem"] == 0.0

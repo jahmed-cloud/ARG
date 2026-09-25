@@ -16,6 +16,12 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   as hygiene, separately from actionable suggestions. CLI `--estate`; the estate is re-joined after every analysis.
 - CLI `--parallel N` to analyse several subscriptions at once (launcher `-Parallel`, `-Estate`); `--all` honours `--tenant`.
 - Per-subscription resource inventory shows size / SKU and state; the VM table adds size, OS image, power state and cost.
+- Estate **Configuration** column and filled Size / SKU for types without a SKU: VMs (zones, data disks, NICs, Spot,
+  availability set), AVD host pools / app groups / workspaces / scaling plans, VM and Arc extensions, gallery images,
+  restore points, web apps (plan, HTTPS, runtime), container apps and instances (vCPU / memory, scale, image), NICs,
+  public IPs, VNets, NSGs, route tables, private endpoints, DNS zones, load balancers, Key Vaults, alerts, action groups,
+  availability tests, App Insights, Log Analytics, Arc machines and SQL databases, Cosmos DB and more. State now shows
+  Attached / Unattached, Associated / Unassociated, expired certificates, disabled alerts and pending private endpoints.
 - Author credit "Author: Junaid Ahmed · jahmed.cloud · github.com/jahmed-cloud/ARG" in the local portal footer,
   report / index / estate footers and the PDF cover.
 - **Marketplace SaaS scanner** (`marketplace_saas_scanner`, 63 scanners in total): unsubscribed SaaS left behind,

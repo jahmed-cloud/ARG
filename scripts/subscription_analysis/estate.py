@@ -58,9 +58,132 @@ RESOURCE_DETAILS = """
          edition = tostring(coalesce(properties.edition, properties.sqlImageSku)),
          productVersion = tostring(properties.version),
          vCores = tostring(properties.vCore)
+""" + """
+| extend cfg = case(
+    type in~ ('microsoft.compute/virtualmachines/extensions', 'microsoft.hybridcompute/machines/extensions'),
+        pack('publisher', properties.publisher, 'ext', properties.type, 'ver', properties.typeHandlerVersion,
+             'auto', properties.enableAutomaticUpgrade),
+    type =~ 'microsoft.desktopvirtualization/hostpools',
+        pack('pool', properties.hostPoolType, 'lb', properties.loadBalancerType, 'max', properties.maxSessionLimit,
+             'app', properties.preferredAppGroupType, 'pna', properties.publicNetworkAccess),
+    type =~ 'microsoft.desktopvirtualization/applicationgroups',
+        pack('agtype', properties.applicationGroupType, 'hostpool', properties.hostPoolArmPath),
+    type =~ 'microsoft.desktopvirtualization/workspaces',
+        pack('groups', array_length(properties.applicationGroupReferences), 'pna', properties.publicNetworkAccess),
+    type =~ 'microsoft.desktopvirtualization/scalingplans',
+        pack('pool', properties.hostPoolType, 'tz', properties.timeZone, 'schedules', array_length(properties.schedules),
+             'pools', array_length(properties.hostPoolReferences)),
+    type =~ 'microsoft.compute/restorepointcollections', pack('source', properties.source.id),
+    type =~ 'microsoft.compute/galleries/images/versions',
+        pack('regions', array_length(properties.publishingProfile.targetRegions),
+             'replicas', properties.publishingProfile.replicaCount, 'gb', properties.storageProfile.osDiskImage.sizeInGB,
+             'eol', properties.publishingProfile.endOfLifeDate),
+    type =~ 'microsoft.compute/galleries/images',
+        pack('os', properties.osType, 'osState', properties.osState, 'gen', properties.hyperVGeneration),
+    type =~ 'microsoft.compute/virtualmachinescalesets', pack('mode', properties.orchestrationMode, 'zones', zones),
+    type =~ 'microsoft.compute/virtualmachines',
+        pack('zones', zones, 'data', array_length(properties.storageProfile.dataDisks),
+             'nics', array_length(properties.networkProfile.networkInterfaces), 'priority', properties.priority,
+             'avset', properties.availabilitySet.id, 'host', properties.osProfile.computerName),
+    type =~ 'microsoft.compute/images', pack('source', properties.sourceVirtualMachine.id),
+    type in~ ('microsoft.web/sites', 'microsoft.web/sites/slots'),
+        pack('plan', properties.serverFarmId, 'fx', coalesce(properties.siteConfig.linuxFxVersion,
+             properties.siteConfig.windowsFxVersion), 'https', properties.httpsOnly),
+    type =~ 'microsoft.web/certificates',
+        pack('expires', properties.expirationDate, 'subject', properties.subjectName),
+    type =~ 'microsoft.web/connections', pack('api', properties.api.name, 'status', properties.statuses[0].status),
+    type in~ ('microsoft.app/containerapps', 'microsoft.app/jobs'),
+        pack('cpu', properties.template.containers[0].resources.cpu, 'mem', properties.template.containers[0].resources.memory,
+             'image', properties.template.containers[0].image, 'min', properties.template.scale.minReplicas,
+             'max', properties.template.scale.maxReplicas, 'wp', properties.workloadProfileName,
+             'trigger', properties.configuration.triggerType, 'running', properties.runningStatus),
+    type =~ 'microsoft.app/managedenvironments',
+        pack('profiles', array_length(properties.workloadProfiles), 'zr', properties.zoneRedundant),
+    type =~ 'microsoft.containerinstance/containergroups',
+        pack('cpu', properties.containers[0].properties.resources.requests.cpu,
+             'mem', properties.containers[0].properties.resources.requests.memoryInGB,
+             'n', array_length(properties.containers), 'image', properties.containers[0].properties.image,
+             'st', properties.instanceView.state, 'restart', properties.restartPolicy),
+    type =~ 'microsoft.sql/servers',
+        pack('ver', properties.version, 'pna', properties.publicNetworkAccess, 'tls', properties.minimalTlsVersion),
+    type =~ 'microsoft.documentdb/databaseaccounts',
+        pack('cons', properties.consistencyPolicy.defaultConsistencyLevel, 'caps', properties.capabilities,
+             'locs', array_length(properties.locations)),
+    type =~ 'microsoft.azurearcdata/sqlserverinstances/databases',
+        pack('mb', properties.sizeMB, 'rec', properties.recoveryMode, 'compat', properties.compatibilityLevel),
+    type =~ 'microsoft.hybridcompute/machines/licenseprofiles',
+        pack('sa', properties.softwareAssurance.softwareAssuranceCustomer, 'esu', properties.esuProfile.esuEligibility,
+             'product', properties.productProfile.productType),
+    type =~ 'microsoft.hybridcompute/machines',
+        pack('agent', properties.agentVersion, 'cores', properties.detectedProperties.logicalCoreCount,
+             'mfr', properties.detectedProperties.manufacturer, 'model', properties.detectedProperties.model),
+    type =~ 'microsoft.network/networkinterfaces',
+        pack('vm', properties.virtualMachine.id, 'pe', properties.privateEndpoint.id,
+             'ip', properties.ipConfigurations[0].properties.privateIPAddress, 'accel', properties.enableAcceleratedNetworking),
+    type =~ 'microsoft.network/publicipaddresses',
+        pack('ip', properties.ipAddress, 'alloc', properties.publicIPAllocationMethod, 'cfg', properties.ipConfiguration.id,
+             'nat', properties.natGateway.id),
+    type =~ 'microsoft.network/virtualnetworks',
+        pack('space', properties.addressSpace.addressPrefixes, 'subnets', array_length(properties.subnets),
+             'peerings', array_length(properties.virtualNetworkPeerings)),
+    type =~ 'microsoft.network/networksecuritygroups',
+        pack('rules', array_length(properties.securityRules), 'subnets', array_length(properties.subnets),
+             'nics', array_length(properties.networkInterfaces)),
+    type =~ 'microsoft.network/privateendpoints',
+        pack('target', coalesce(properties.privateLinkServiceConnections[0].properties.privateLinkServiceId,
+                                properties.manualPrivateLinkServiceConnections[0].properties.privateLinkServiceId),
+             'group', coalesce(properties.privateLinkServiceConnections[0].properties.groupIds[0],
+                               properties.manualPrivateLinkServiceConnections[0].properties.groupIds[0]),
+             'status', coalesce(properties.privateLinkServiceConnections[0].properties.privateLinkServiceConnectionState.status,
+                                properties.manualPrivateLinkServiceConnections[0].properties.privateLinkServiceConnectionState.status)),
+    type =~ 'microsoft.network/privatednszones',
+        pack('records', properties.numberOfRecordSets, 'links', properties.numberOfVirtualNetworkLinks),
+    type =~ 'microsoft.network/dnszones', pack('records', properties.numberOfRecordSets),
+    type =~ 'microsoft.network/privatednszones/virtualnetworklinks',
+        pack('vnet', properties.virtualNetwork.id, 'reg', properties.registrationEnabled, 'st', properties.virtualNetworkLinkState),
+    type =~ 'microsoft.network/routetables',
+        pack('routes', array_length(properties.routes), 'subnets', array_length(properties.subnets)),
+    type =~ 'microsoft.network/loadbalancers',
+        pack('fe', array_length(properties.frontendIPConfigurations), 'be', array_length(properties.backendAddressPools),
+             'rules', array_length(properties.loadBalancingRules)),
+    type =~ 'microsoft.network/applicationgateways',
+        pack('min', properties.autoscaleConfiguration.minCapacity, 'maxc', properties.autoscaleConfiguration.maxCapacity,
+             'waf', properties.firewallPolicy.id),
+    type =~ 'microsoft.network/privatelinkservices', pack('conns', array_length(properties.privateEndpointConnections)),
+    type =~ 'microsoft.keyvault/vaults',
+        pack('rbac', properties.enableRbacAuthorization, 'purge', properties.enablePurgeProtection),
+    type in~ ('microsoft.insights/metricalerts', 'microsoft.insights/scheduledqueryrules'),
+        pack('sev', properties.severity, 'on', properties.enabled, 'freq', properties.evaluationFrequency),
+    type =~ 'microsoft.insights/activitylogalerts', pack('on', properties.enabled),
+    type =~ 'microsoft.insights/actiongroups',
+        pack('on', properties.enabled, 'email', array_length(properties.emailReceivers),
+             'sms', array_length(properties.smsReceivers), 'hook', array_length(properties.webhookReceivers),
+             'arm', array_length(properties.armRoleReceivers), 'logic', array_length(properties.logicAppReceivers)),
+    type =~ 'microsoft.insights/webtests',
+        pack('kind', properties.Kind, 'freq', properties.Frequency, 'locs', array_length(properties.Locations),
+             'on', properties.Enabled),
+    type =~ 'microsoft.insights/components',
+        pack('mode', properties.IngestionMode, 'ws', properties.WorkspaceResourceId, 'ret', properties.RetentionInDays,
+             'app', properties.Application_Type),
+    type =~ 'microsoft.operationalinsights/workspaces',
+        pack('ret', properties.retentionInDays, 'cap', properties.workspaceCapping.dailyQuotaGb),
+    type =~ 'microsoft.alertsmanagement/smartdetectoralertrules', pack('sev', properties.severity),
+    type =~ 'microsoft.insights/datacollectionrules', pack('flows', array_length(properties.dataFlows)),
+    type =~ 'microsoft.eventgrid/systemtopics', pack('topic', properties.topicType),
+    type =~ 'microsoft.dataprotection/backupvaults', pack('redundancy', properties.storageSettings[0].type),
+    type =~ 'microsoft.recoveryservices/vaults',
+        pack('redundancy', properties.redundancySettings.standardTierStorageRedundancy),
+    type =~ 'microsoft.storage/storageaccounts', pack('hns', properties.isHnsEnabled),
+    type =~ 'microsoft.automation/automationaccounts/runbooks', pack('rtype', properties.runbookType),
+    type =~ 'microsoft.devtestlab/schedules',
+        pack('task', properties.taskType, 'at', properties.dailyRecurrence['time'], 'tz', properties.timeZoneId,
+             'target', properties.targetResourceId),
+    type =~ 'microsoft.datafactory/factories', pack('git', properties.repoConfiguration.type),
+    type =~ 'microsoft.logic/workflows', pack('lsku', properties.sku.name),
+    dynamic(null))
 """
 DETAIL_COLUMNS = ("vmSize, osType, imageOffer, imageSku, powerState, diskSizeGB, diskState, accessTier, k8sVersion, "
-                  "agentPools, innerSku, resourceState, licenseType, osSku, edition, productVersion, vCores")
+                  "agentPools, innerSku, resourceState, licenseType, osSku, edition, productVersion, vCores, cfg")
 ESTATE_QUERY = ("Resources" + RESOURCE_DETAILS
                 + f"| project id, name, type, location, kind, sku, tags, resourceGroup, subscriptionId, managedBy, "
                   f"{DETAIL_COLUMNS}")
@@ -320,7 +443,7 @@ def _sku(row: Dict[str, Any]) -> Dict[str, Any]:
     return row.get("sku") if isinstance(row.get("sku"), dict) else {}
 
 
-def size_of(row: Dict[str, Any]) -> str:
+def _base_size(row: Dict[str, Any]) -> str:
     """The sizing that matters for each type: VM size, disk SKU + GB, storage SKU/kind/tier, plan SKU × instances..."""
     rtype = (row.get("type") or "").lower()
     sku = _sku(row)
@@ -356,14 +479,275 @@ def size_of(row: Dict[str, Any]) -> str:
     return " / ".join(x for x in parts if x)
 
 
+def size_of(row: Dict[str, Any]) -> str:
+    """Groupable "what is it / how big": the SKU sizing, else the type's key setting (host pool type, extension...)."""
+    base, extra = _base_size(row), _profile(row)["size"]
+    return " · ".join(x for x in (base, extra) if x) if extra and extra not in base else base
+
+
+def config_of(row: Dict[str, Any]) -> str:
+    """Per-resource configuration details (attachment, counts, expiry, scale range...)."""
+    config = _profile(row)["config"]
+    if not config and (row.get("type") or "").lower() in KIND_IS_CONFIG and row.get("kind"):
+        config = KIND_LABELS.get(str(row["kind"]).lower(), row["kind"])
+    return config
+
+
+# Types whose 'kind' is the key configuration fact (OpenAI vs AI Services, hub vs project, Linux vs Windows plan).
+KIND_IS_CONFIG = {"microsoft.cognitiveservices/accounts", "microsoft.machinelearningservices/workspaces",
+                  "microsoft.web/serverfarms", "microsoft.search/searchservices", "microsoft.botservice/botservices"}
+KIND_LABELS = {"linux": "Linux", "app": "Windows", "windows": "Windows", "functionapp": "Functions (Windows)",
+               "functionapp,linux": "Functions (Linux)", "elastic": "Functions Premium (elastic)",
+               "workflowapp": "Logic Apps Standard", "hub": "Foundry hub", "project": "Foundry project",
+               "default": "ML workspace", "openai": "Azure OpenAI", "aiservices": "AI Services (Foundry)"}
+
+
+def _leaf(resource_id: Any) -> str:
+    return str(resource_id or "").rstrip("/").split("/")[-1]
+
+
+def _join(*parts: Any) -> str:
+    return " · ".join(str(p) for p in parts if p not in (None, "", [], False))
+
+
+def _count(n: Any, word: str) -> Optional[str]:
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return None
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _zones(zones: Any) -> Optional[str]:
+    if isinstance(zones, list) and zones:
+        return ("zone " if len(zones) == 1 else "zones ") + ", ".join(str(z) for z in zones)
+    return None
+
+
+RUNTIME_NAMES = {"dotnetcore": ".NET", "dotnet": ".NET", "node": "Node", "python": "Python", "php": "PHP",
+                 "java": "Java", "tomcat": "Tomcat", "docker": "Container", "compose": "Compose", "powershell": "PowerShell"}
+
+
+def _runtime(fx: Any, kind: str) -> str:
+    """'DOTNETCORE|8.0' -> '.NET 8.0'; 'DOCKER|acr.io/app:1' -> 'Container acr.io/app:1'."""
+    fx = str(fx or "")
+    os_name = "Linux" if "linux" in (kind or "").lower() else "Windows"
+    if "|" in fx:
+        stack, version = fx.split("|", 1)
+        return f"{os_name} · {RUNTIME_NAMES.get(stack.lower(), stack)} {version}"
+    return os_name
+
+
+def _profile(row: Dict[str, Any]) -> Dict[str, str]:
+    """size / config / runtime / state for types whose key facts are not in the SKU (see RESOURCE_DETAILS 'cfg')."""
+    rtype = (row.get("type") or "").lower()
+    c = row.get("cfg") if isinstance(row.get("cfg"), dict) else {}
+    out = {"size": "", "config": "", "runtime": "", "state": ""}
+    if not c:
+        return out
+    if rtype in ("microsoft.compute/virtualmachines/extensions", "microsoft.hybridcompute/machines/extensions"):
+        out["size"] = _join(c.get("ext"), c.get("ver"))
+        out["config"] = _join(c.get("publisher"), "auto-upgrade" if c.get("auto") else None)
+    elif rtype == "microsoft.desktopvirtualization/hostpools":
+        out["size"] = _join(c.get("pool"), c.get("lb"))
+        sessions = c.get("max")
+        out["config"] = _join(f"max {sessions} sessions" if sessions and int(sessions) < 999999 else None, c.get("app"),
+                              "private access only" if c.get("pna") == "Disabled" else None)
+    elif rtype == "microsoft.desktopvirtualization/applicationgroups":
+        out["size"] = c.get("agtype") or ""
+        out["config"] = f"host pool {_leaf(c.get('hostpool'))}" if c.get("hostpool") else ""
+    elif rtype == "microsoft.desktopvirtualization/workspaces":
+        out["config"] = _join(_count(c.get("groups"), "application group"),
+                              "private access only" if c.get("pna") == "Disabled" else None)
+        out["state"] = "No application groups" if not c.get("groups") else ""
+    elif rtype == "microsoft.desktopvirtualization/scalingplans":
+        out["size"] = c.get("pool") or ""
+        out["config"] = _join(_count(c.get("schedules"), "schedule"), _count(c.get("pools"), "host pool"), c.get("tz"))
+        out["state"] = "No schedules" if not c.get("schedules") else ""
+    elif rtype == "microsoft.compute/restorepointcollections":
+        out["config"] = f"source VM {_leaf(c.get('source'))}" if c.get("source") else ""
+    elif rtype == "microsoft.compute/galleries/images/versions":
+        out["size"] = f"{c['gb']} GB" if c.get("gb") else ""
+        out["config"] = _join(_count(c.get("regions"), "region"), _count(c.get("replicas"), "replica"),
+                              f"end of life {str(c['eol'])[:10]}" if c.get("eol") else None)
+    elif rtype == "microsoft.compute/galleries/images":
+        out["size"] = _join(c.get("os"), c.get("gen"))
+        out["config"] = c.get("osState") or ""
+    elif rtype == "microsoft.compute/virtualmachinescalesets":
+        out["config"] = _join(f"{c['mode']} orchestration" if c.get("mode") else None, _zones(c.get("zones")))
+    elif rtype == "microsoft.compute/virtualmachines":
+        out["config"] = _join(_zones(c.get("zones")), _count(c.get("data"), "data disk"), _count(c.get("nics"), "NIC"),
+                              "Spot" if c.get("priority") == "Spot" else None,
+                              f"availability set {_leaf(c['avset'])}" if c.get("avset") else None,
+                              f"host {c['host']}" if c.get("host") else None)
+    elif rtype == "microsoft.compute/images":
+        out["config"] = f"from VM {_leaf(c['source'])}" if c.get("source") else ""
+    elif rtype in ("microsoft.web/sites", "microsoft.web/sites/slots"):
+        out["size"] = f"plan {_leaf(c.get('plan'))}" if c.get("plan") else ""
+        out["config"] = "HTTPS only" if c.get("https") else "HTTP allowed"
+        out["runtime"] = _runtime(c.get("fx"), row.get("kind") or "")
+    elif rtype == "microsoft.web/certificates":
+        expires = str(c.get("expires") or "")[:10]
+        out["config"] = _join(f"expires {expires}" if expires else None, c.get("subject"))
+        if expires:
+            days = (datetime.fromisoformat(expires).date() - datetime.now(timezone.utc).date()).days
+            out["state"] = "Expired" if days < 0 else ("Expires within 30 days" if days <= 30 else "")
+    elif rtype == "microsoft.web/connections":
+        out["size"] = c.get("api") or ""
+        status = c.get("status") or ""
+        out["state"] = "" if status in ("Connected", "Ready") else status
+    elif rtype in ("microsoft.app/containerapps", "microsoft.app/jobs"):
+        out["size"] = f"{c['cpu']} vCPU / {c['mem']}" if c.get("cpu") else ""
+        scale = f"scale {c.get('min') or 0}-{c['max']}" if c.get("max") is not None else None
+        out["config"] = _join(scale, c.get("wp"), f"{c['trigger']} trigger" if c.get("trigger") else None)
+        out["runtime"] = f"Container {c['image']}" if c.get("image") else ""
+        running = c.get("running") or ""
+        out["state"] = "" if running in ("", "Running", "Ready") else running
+    elif rtype == "microsoft.app/managedenvironments":
+        out["config"] = _join(_count(c.get("profiles"), "workload profile"),
+                              "zone-redundant" if c.get("zr") else None)
+    elif rtype == "microsoft.containerinstance/containergroups":
+        out["size"] = f"{c['cpu']} vCPU / {c['mem']} GB" if c.get("cpu") else ""
+        out["config"] = _join(_count(c.get("n"), "container"),
+                              f"restart {c['restart']}" if c.get("restart") else None)
+        out["runtime"] = f"Container {c['image']}" if c.get("image") else ""
+        out["state"] = "" if (c.get("st") or "Running") == "Running" else c["st"]
+    elif rtype == "microsoft.sql/servers":
+        out["size"] = f"v{c['ver']}" if c.get("ver") else ""
+        out["config"] = _join(f"public access {c['pna']}" if c.get("pna") else None,
+                              f"TLS {c['tls']}" if c.get("tls") else None)
+    elif rtype == "microsoft.documentdb/databaseaccounts":
+        caps = {str(x.get("name")) for x in (c.get("caps") or []) if isinstance(x, dict)}
+        api = {"MongoDB": "MongoDB", "GlobalDocumentDB": "NoSQL", "Parse": "Parse"}.get(row.get("kind") or "", row.get("kind"))
+        if "EnableCassandra" in caps:
+            api = "Cassandra"
+        elif "EnableTable" in caps:
+            api = "Table"
+        elif "EnableGremlin" in caps:
+            api = "Gremlin"
+        out["size"] = _join(api, "Serverless" if "EnableServerless" in caps else "Provisioned")
+        out["config"] = _join(f"{c['cons']} consistency" if c.get("cons") else None, _count(c.get("locs"), "region"))
+    elif rtype == "microsoft.azurearcdata/sqlserverinstances/databases":
+        mb = c.get("mb")
+        out["config"] = _join(f"{float(mb) / 1024:,.1f} GB" if mb else None,
+                              f"{c['rec']} recovery" if c.get("rec") else None,
+                              f"compat {c['compat']}" if c.get("compat") else None)
+        out["size"] = f"{c['rec']} recovery" if c.get("rec") else ""
+    elif rtype == "microsoft.hybridcompute/machines/licenseprofiles":
+        out["size"] = c.get("product") or ""
+        out["config"] = _join("Software Assurance" if c.get("sa") else "no Software Assurance",
+                              f"ESU {c['esu']}" if c.get("esu") else None)
+    elif rtype == "microsoft.hybridcompute/machines":
+        out["size"] = f"{c['cores']} cores" if c.get("cores") else ""
+        out["config"] = _join(" ".join(x for x in (c.get("mfr"), c.get("model")) if x),
+                              f"agent {c['agent']}" if c.get("agent") else None)
+    elif rtype == "microsoft.network/networkinterfaces":
+        attached = c.get("vm") or c.get("pe")
+        out["size"] = "Accelerated networking" if c.get("accel") else ""
+        out["config"] = _join(f"VM {_leaf(c['vm'])}" if c.get("vm") else (f"private endpoint {_leaf(c['pe'])}"
+                              if c.get("pe") else None), c.get("ip"))
+        out["state"] = "Attached" if attached else "Unattached"
+    elif rtype == "microsoft.network/publicipaddresses":
+        out["config"] = _join(c.get("ip"), c.get("alloc"),
+                              f"on {_leaf(str(c['cfg']).split('/ipConfigurations/')[0])}" if c.get("cfg") else None,
+                              f"NAT gateway {_leaf(c['nat'])}" if c.get("nat") else None)
+        out["state"] = "Associated" if c.get("cfg") or c.get("nat") else "Unassociated"
+    elif rtype == "microsoft.network/virtualnetworks":
+        space = c.get("space") or []
+        out["config"] = _join(", ".join(space) if isinstance(space, list) else space,
+                              _count(c.get("subnets"), "subnet"), _count(c.get("peerings"), "peering"))
+    elif rtype == "microsoft.network/networksecuritygroups":
+        out["config"] = _join(_count(c.get("rules"), "custom rule"), _count(c.get("subnets"), "subnet"),
+                              _count(c.get("nics"), "NIC"))
+        out["state"] = "Unassociated" if not c.get("subnets") and not c.get("nics") else "Associated"
+    elif rtype == "microsoft.network/privateendpoints":
+        out["size"] = c.get("group") or ""
+        out["config"] = f"→ {_leaf(c['target'])}" if c.get("target") else ""
+        status = c.get("status") or ""
+        out["state"] = "" if status in ("", "Approved") else status
+    elif rtype == "microsoft.network/privatednszones":
+        out["config"] = _join(_count(c.get("records"), "record set"), _count(c.get("links"), "VNet link"))
+        out["state"] = "No VNet links" if not c.get("links") else ""
+    elif rtype == "microsoft.network/dnszones":
+        out["config"] = _count(c.get("records"), "record set") or ""
+    elif rtype == "microsoft.network/privatednszones/virtualnetworklinks":
+        out["size"] = "Auto-registration" if c.get("reg") else ""
+        out["config"] = f"VNet {_leaf(c['vnet'])}" if c.get("vnet") else ""
+        out["state"] = "" if (c.get("st") or "Completed") == "Completed" else c["st"]
+    elif rtype == "microsoft.network/routetables":
+        out["config"] = _join(_count(c.get("routes"), "route"), _count(c.get("subnets"), "subnet"))
+        out["state"] = "Unassociated" if not c.get("subnets") else ""
+    elif rtype == "microsoft.network/loadbalancers":
+        out["config"] = _join(_count(c.get("fe"), "frontend"), _count(c.get("be"), "backend pool"),
+                              _count(c.get("rules"), "rule"))
+        out["state"] = "No backend pools" if not c.get("be") else ""
+    elif rtype == "microsoft.network/applicationgateways":
+        out["config"] = _join(f"autoscale {c.get('min') or 0}-{c['maxc']}" if c.get("maxc") else None,
+                              f"WAF policy {_leaf(c['waf'])}" if c.get("waf") else None)
+    elif rtype == "microsoft.network/privatelinkservices":
+        out["config"] = _count(c.get("conns"), "connection") or ""
+    elif rtype == "microsoft.keyvault/vaults":
+        out["config"] = _join("RBAC" if c.get("rbac") else "access policies",
+                              "purge protection" if c.get("purge") else None)
+    elif rtype in ("microsoft.insights/metricalerts", "microsoft.insights/scheduledqueryrules"):
+        out["size"] = f"Sev {c['sev']}" if c.get("sev") is not None else ""
+        out["config"] = f"every {str(c['freq']).replace('PT', '').lower()}" if c.get("freq") else ""
+        out["state"] = "Disabled" if c.get("on") is False else ""
+    elif rtype == "microsoft.insights/activitylogalerts":
+        out["state"] = "Disabled" if c.get("on") is False else ""
+    elif rtype == "microsoft.insights/actiongroups":
+        receivers = [(_count(c.get(k), label)) for k, label in (("email", "email"), ("sms", "SMS"), ("hook", "webhook"),
+                                                                  ("arm", "ARM role"), ("logic", "logic app")) if c.get(k)]
+        out["config"] = _join(*receivers) or "no receivers"
+        out["state"] = "Disabled" if c.get("on") is False else ("No receivers" if not receivers else "")
+    elif rtype == "microsoft.insights/webtests":
+        out["size"] = (c.get("kind") or "").title()
+        out["config"] = _join(f"every {int(c['freq']) // 60} min" if c.get("freq") else None,
+                              _count(c.get("locs"), "location"))
+        out["state"] = "Disabled" if c.get("on") is False else ""
+    elif rtype == "microsoft.insights/components":
+        out["size"] = "Workspace-based" if c.get("ws") else "Classic"
+        out["config"] = _join(c.get("app"), f"{c['ret']} days" if c.get("ret") else None,
+                              f"workspace {_leaf(c['ws'])}" if c.get("ws") else None)
+    elif rtype == "microsoft.operationalinsights/workspaces":
+        cap = c.get("cap")
+        out["config"] = _join(f"{c['ret']} days retention" if c.get("ret") else None,
+                              f"daily cap {cap} GB" if cap not in (None, -1, -1.0) else None)
+    elif rtype == "microsoft.alertsmanagement/smartdetectoralertrules":
+        out["size"] = str(c.get("sev") or "").replace("Sev", "Sev ")
+    elif rtype == "microsoft.insights/datacollectionrules":
+        out["config"] = _count(c.get("flows"), "data flow") or ""
+    elif rtype == "microsoft.eventgrid/systemtopics":
+        out["size"] = c.get("topic") or ""
+    elif rtype == "microsoft.dataprotection/backupvaults":
+        out["size"] = c.get("redundancy") or ""
+    elif rtype == "microsoft.recoveryservices/vaults":
+        out["config"] = c.get("redundancy") or ""
+    elif rtype == "microsoft.storage/storageaccounts":
+        out["config"] = "ADLS Gen2 (hierarchical namespace)" if c.get("hns") else ""
+    elif rtype == "microsoft.automation/automationaccounts/runbooks":
+        out["size"] = c.get("rtype") or ""
+    elif rtype == "microsoft.devtestlab/schedules":
+        at = str(c.get("at") or "")
+        out["size"] = c.get("task") or ""
+        out["config"] = _join(f"{at[:2]}:{at[2:]}" if len(at) == 4 else at or None, c.get("tz"),
+                              _leaf(c.get("target")) if c.get("target") else None)
+    elif rtype == "microsoft.datafactory/factories":
+        out["config"] = f"Git: {c['git']}" if c.get("git") else "no Git integration"
+    elif rtype == "microsoft.logic/workflows":
+        out["size"] = c.get("lsku") or "Consumption"
+    return out
+
+
 def os_of(row: Dict[str, Any]) -> str:
+    """OS image (+ Azure Hybrid Benefit) for machines; runtime stack or container image for apps."""
     offer, sku = row.get("imageOffer") or "", row.get("imageSku") or ""
     image = " ".join(x for x in (offer, sku) if x) or row.get("osSku") or ""
     os_type = row.get("osType") or ""
     label = f"{os_type} ({image})" if image and os_type else (os_type or image)
     if label and (row.get("licenseType") or "").lower() in AHB_LICENSES:
         label += " · AHB"
-    return label
+    return label or _profile(row)["runtime"]
 
 
 def state_of(row: Dict[str, Any]) -> str:
@@ -372,8 +756,11 @@ def state_of(row: Dict[str, Any]) -> str:
         return power.split("/")[-1]
     if row.get("diskState"):
         return row["diskState"]
+    derived = _profile(row)["state"]
+    if derived:
+        return derived
     state = row.get("resourceState") or ""
-    return "" if state.lower() == "succeeded" else state
+    return "" if state.lower() in ("succeeded", "ready", "running", "online") else state
 
 
 def environment_of(row: Dict[str, Any]) -> str:
@@ -399,6 +786,7 @@ def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
         "location": (row.get("location") or "").lower(),
         "kind": row.get("kind") or "",
         "size": size_of(row),
+        "config": config_of(row),
         "os": os_of(row),
         "state": state_of(row),
         "env": environment_of(row),
@@ -569,7 +957,8 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
         res_index[r["id"].lower()] = i
         types.setdefault(r["type"], {"label": r["typeLabel"], "category": r["category"]})
         row = {"id": r["id"], "name": r["name"], "type": r["type"], "s": sub_index.get(r["subscriptionId"], -1),
-               "rg": r["resourceGroup"], "loc": r["location"], "kind": r["kind"], "size": r["size"], "os": r["os"],
+               "rg": r["resourceGroup"], "loc": r["location"], "kind": r["kind"], "size": r["size"],
+               "cfg": r.get("config"), "os": r["os"],
                "state": r["state"], "env": r["env"], "mb": r["managedBy"], "gb": r.get("sizeGB"), "tags": r["tags"],
                "cost": r.get("cost30"), "cur": r.get("currency"), "n": r["suggestions"], "h": r.get("hygiene"),
                "sev": r["maxSeverity"]}

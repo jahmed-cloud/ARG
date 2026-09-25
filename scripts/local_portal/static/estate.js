@@ -8,8 +8,8 @@
   const FILTER_KEYS = ["q", "category", "type", "size", "sub", "region", "env", "state", "has", "stype", "sev", "hyg"];
   const RESOURCE_COLUMNS = [
     { key: "name", label: "Name" }, { key: "typeLabel", label: "Type" }, { key: "size", label: "Size / SKU" },
-    { key: "os", label: "OS" }, { key: "state", label: "State" }, { key: "env", label: "Environment" },
-    { key: "location", label: "Region" }, { key: "subscription", label: "Subscription" },
+    { key: "config", label: "Configuration" }, { key: "os", label: "OS / runtime" }, { key: "state", label: "State" },
+    { key: "env", label: "Environment" }, { key: "location", label: "Region" }, { key: "subscription", label: "Subscription" },
     { key: "resourceGroup", label: "Resource group" }, { key: "cost30", label: "Last 30 d", num: true },
     { key: "suggestions", label: "Suggestions", num: true },
   ];
@@ -47,7 +47,8 @@
       return {
         id: r.id, name: r.name, type: r.type, typeLabel: t.label || r.type, category: t.category || "Other",
         subscriptionId: sub.id || "", subscription: sub.name || sub.id || "", folder: sub.folder || "",
-        resourceGroup: r.rg || "", location: r.loc || "", kind: r.kind || "", size: r.size || "", os: r.os || "",
+        resourceGroup: r.rg || "", location: r.loc || "", kind: r.kind || "", size: r.size || "", config: r.cfg || "",
+        os: r.os || "",
         state: r.state || "", env: r.env || "Unknown", managedBy: r.mb || "", sizeGB: r.gb || null, tags: r.tags || {},
         cost30: r.cost || 0, currency: r.cur || "", suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
       };
@@ -88,7 +89,7 @@
     estate.resources.forEach((r) => {
       r._key = r.id.toLowerCase();
       const tags = Object.entries(r.tags || {}).map(([k, v]) => k + "=" + v).join(" ");
-      r._text = [r.name, r.resourceGroup, r.typeLabel, r.size, r.os, r.kind, r.subscription, tags].join(" ").toLowerCase();
+      r._text = [r.name, r.resourceGroup, r.typeLabel, r.size, r.config, r.os, r.state, r.kind, r.subscription, tags].join(" ").toLowerCase();
     });
     const source = estate.source === "resource-graph"
       ? "live Resource Graph inventory from " + String(estate.inventory_at || "").slice(0, 16).replace("T", " ") + " UTC"
@@ -316,7 +317,7 @@
     const name = el("td");
     name.appendChild(el("strong", null, r.name));
     tr.appendChild(name);
-    ["typeLabel", "size", "os", "state", "env", "location", "subscription", "resourceGroup"].forEach((k) => tr.appendChild(el("td", null, r[k])));
+    ["typeLabel", "size", "config", "os", "state", "env", "location", "subscription", "resourceGroup"].forEach((k) => tr.appendChild(el("td", null, r[k])));
     tr.appendChild(el("td", { class: "num" }, r.cost30 ? fmt(r.cost30) + " " + (r.currency || "") : ""));
     const sugg = el("td", { class: "num" });
     if (r.suggestions) sugg.appendChild(el("span", { class: "pill sev-" + r.maxSeverity }, r.suggestions));
@@ -452,7 +453,7 @@
 
   function csv() {
     const columns = state.view === "resources"
-      ? ["name", "typeLabel", "category", "size", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
+      ? ["name", "typeLabel", "category", "size", "config", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
       : ["severity", "ref", "title", "type", "resourceName", "typeLabel", "category", "subscription", "savingsUsd", "wave", "resourceId"];
     const escape = (v) => {
       let text = v === undefined || v === null ? "" : String(v);

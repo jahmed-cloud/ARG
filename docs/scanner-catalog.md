@@ -4,7 +4,7 @@ Every scanner registered in ARG, generated from the scanner registry. The **Loca
 scanner runs in the CLI / local portal (`az login`). Microsoft Graph scanners need the Docker stack with a
 service principal and Graph consent.
 
-Total: **62 scanners**.
+Total: **63 scanners**.
 
 
 ## Compute
@@ -27,6 +27,7 @@ Total: **62 scanners**.
 | `budget_scanner` | Budget Coverage & Overrun | high | `budget_consistently_exceeded`<br>`budget_missing` | Cost Management, ARM REST | yes |
 | `commitment_discount_scanner` | Commitment Discount Opportunities | medium | `commitment_discount_opportunity` | Resource Graph, Advisor | yes |
 | `idle_iot_hub_scanner` | Idle IoT Hubs | medium | `idle_iot_hub` | Resource Graph, Azure Monitor metrics | yes |
+| `marketplace_saas_scanner` | Marketplace SaaS Subscriptions | medium | `marketplace_saas_commitment`<br>`marketplace_saas_inactive`<br>`marketplace_saas_term_ending`<br>`marketplace_saas_unsubscribed` | Resource Graph, Cost Management | yes |
 | `sql_hyperscale_legacy_pricing_scanner` | Hyperscale Legacy Storage Pricing | medium | `sql_hyperscale_legacy_storage_pricing` | Resource Graph, Cost Management | yes |
 | `storage_account_sprawl_scanner` | Storage Account Sprawl | low | `storage_account_sprawl` | Resource Graph, Defender for Cloud | yes |
 | `storage_transaction_hotspot_scanner` | Storage Transaction Hotspot | low | `storage_transaction_hotspot` | Resource Graph, Azure Monitor metrics, Cost Management | yes |
@@ -159,6 +160,10 @@ How the subscription analysis report files each finding type (gap-analysis area,
 | `log_analytics_workspace_sprawl` | Operational / Observability | `observability-operations` | Wave 2 - Optimisation |
 | `low_secure_score` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
 | `managed_disk_public_network_access` | Security & Identity | `compute-appservice` | Wave 1 - No-regret cleanup |
+| `marketplace_saas_commitment` | FinOps / Governance | `cost-finops` | Wave 2 - Optimisation |
+| `marketplace_saas_inactive` | FinOps / Governance | `cost-finops` | Wave 1 - No-regret cleanup |
+| `marketplace_saas_term_ending` | FinOps / Governance | `cost-finops` | Wave 1 - No-regret cleanup |
+| `marketplace_saas_unsubscribed` | FinOps / Governance | `cost-finops` | Wave 1 - No-regret cleanup |
 | `mfa_not_enabled` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
 | `missing_diagnostic_settings` | Operational / Observability | `observability-operations` | Wave 2 - Optimisation |
 | `missing_required_tags` | FinOps / Governance | `observability-operations` | Wave 2 - Optimisation |

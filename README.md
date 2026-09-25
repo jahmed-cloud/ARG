@@ -19,7 +19,7 @@
 | Question | ARG's Answer |
 |---|---|
 | What resources are costing money unnecessarily? | Cost Optimization Engine with Azure Cost Management integration |
-| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (62 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
+| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (63 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
 | Which resources violate governance standards? | Governance Module with CAF + Zero Trust scoring |
 | Which Entra ID objects are security risks? | Full Microsoft Graph hygiene analysis |
 | What resources are unmanaged by Terraform? | Terraform drift detection engine |
@@ -86,6 +86,7 @@
 - Azure OpenAI / Foundry spend without an AI gateway, and AI account sprawl
 - Storage account sprawl and transaction hotspots
 - Budgets exceeded month after month, and Advisor reservation / savings-plan opportunities
+- Marketplace SaaS plans: unsubscribed leftovers, suspended or never-activated plans, terms ending or auto-renewing
 
 ### 🆔 Entra ID Hygiene
 - Stale/unused applications and service principals
@@ -188,7 +189,8 @@ reports/
 
 Your account needs **Reader**, **Cost Management Reader** and **Security Reader** on each subscription.
 Savings estimates are calculated in USD (list prices or actual `CostUSD`) and shown in the billing
-currency at the subscription's implied exchange rate. Re-running a subscription replaces its folder.
+currency at the subscription's implied exchange rate. Re-running a subscription replaces its folder; subscriptions
+that share a display name get `<name>_<first 8 of ID>/` so they never overwrite each other.
 Reports contain resource IDs and principal IDs - `reports/` is git-ignored. Entra ID (Graph) scanners
 are skipped in this mode.
 

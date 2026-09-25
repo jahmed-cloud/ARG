@@ -5,13 +5,16 @@ Scanners in this module:
 1. IdleIoTHubScanner              - IoT Hubs with no connected devices and no messages
 2. AISpendGovernanceScanner       - Foundry / Azure OpenAI spend with no gateway; AI account sprawl
 3. CommitmentDiscountScanner      - Advisor reservation / savings-plan opportunities
+4. MarketplaceSaaSScanner         - Marketplace SaaS: unsubscribed leftovers, suspended/unactivated plans,
+                                    terms ending or auto-renewing, material SaaS commitments
 """
 
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from typing import Any, Dict, List
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional
 
 from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, cached_metrics, cost_for, get_resource_costs
 from scanners.base.base_scanner import (
@@ -262,3 +265,172 @@ class CommitmentDiscountScanner(PostureScanner):
             {"solution": "Consider purchasing a savings plan to unlock lower prices",
              "impact": "High", "annual": 1647.0, "currency": "USD", "term": "P1Y", "sku": ""},
         ]
+
+
+def _parse_date(value: Any) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+@register_scanner
+class MarketplaceSaaSScanner(PostureScanner):
+    """
+    Azure Marketplace SaaS subscriptions (microsoft.saas/resources) are billed to the Azure subscription
+    - often as large up-front charges - but none of the resource-level rules apply to them. This scanner
+    reads the SaaS status and term from Resource Graph and the 12-month cost per SaaS resource from
+    Cost Management, and reports:
+
+    - Unsubscribed SaaS resources left behind (no longer billing, but clutter inventory and cost views)
+    - Suspended (usually a failed payment) or never-activated (PendingFulfillmentStart) plans
+    - Terms ending soon: auto-renew on (renewal decision / re-negotiation due) or off (service stops)
+    - Material SaaS commitments, so the spend has an owner and a review date
+    """
+
+    scanner_name = "marketplace_saas_scanner"
+    display_name = "Marketplace SaaS Subscriptions"
+    description = "Reviews Azure Marketplace SaaS plans: leftovers, suspended plans, renewals and material commitments"
+    category = ScannerCategory.COST
+    severity = SeverityLevel.MEDIUM
+
+    RENEWAL_WINDOW_DAYS = 90
+    URGENT_DAYS = 30
+    COMMITMENT_MIN_USD = 1000.0
+    COST_DAYS = 364  # Cost Management rejects custom periods longer than one year
+
+    async def scan(self, context: ScanContext) -> ScanOutput:
+        query = """
+        Resources
+        | where type =~ 'microsoft.saas/resources'
+        | project id, name, type, resourceGroup, subscriptionId, location, tags,
+                  status = tostring(properties.status), autoRenew = tobool(properties.autoRenew),
+                  isFreeTrial = tobool(properties.isFreeTrial),
+                  offerName = tostring(properties.offerName), planName = tostring(properties.planName),
+                  publisherName = tostring(properties.publisherName), offerId = tostring(properties.offerId),
+                  termUnit = tostring(properties.term.termUnit),
+                  termStart = tostring(properties.term.startDate), termEnd = tostring(properties.term.endDate),
+                  purchaserEmail = tostring(properties.purchaserEmail),
+                  created = tostring(properties.created)
+        """
+        try:
+            rows = await self.arg(context, query)
+        except Exception as e:
+            return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
+        if not rows:
+            return ScanOutput(resources_scanned=0)
+
+        warnings = []
+        if self.is_live(context):
+            costs = await get_resource_costs(context, days=self.COST_DAYS)
+            if costs is None:
+                warnings.append("12-month SaaS cost unavailable (Cost Management query failed); commitments not assessed.")
+            for r in rows:
+                entry = cost_for(costs, r["id"]) or {}
+                r["cost_12m"], r["cost_usd_12m"], r["currency"] = entry.get("cost"), entry.get("cost_usd"), entry.get("currency")
+
+        today = date.today()
+        window = int(self.setting("saas_renewal_window_days", self.RENEWAL_WINDOW_DAYS))
+        min_usd = float(self.setting("saas_commitment_min_usd", self.COMMITMENT_MIN_USD))
+        findings = []
+        for r in rows:
+            status = (r.get("status") or "").lower()
+            end = _parse_date(r.get("termEnd"))
+            days_left = (end - today).days if end else None
+            offer = r.get("offerName") or r.get("offerId") or "SaaS offer"
+            plan = f"plan '{r['planName']}'" if r.get("planName") else "plan"
+            publisher = r.get("publisherName") or "the publisher"
+            cost = r.get("cost_12m")
+            spend = (f" It was charged {cost:,.0f} {r.get('currency') or ''} in the last 12 months." if cost else "")
+            evidence = {k: r.get(k) for k in ("status", "autoRenew", "isFreeTrial", "offerName", "planName",
+                                                "publisherName", "termUnit", "termStart", "termEnd",
+                                                "cost_12m", "cost_usd_12m", "currency")}
+            evidence["days_to_term_end"] = days_left
+            common = dict(resource_type="microsoft.saas/resources", evidence=evidence, caf_control="Cost Optimization")
+
+            if status == "unsubscribed":
+                findings.append(self.resource_finding(
+                    r, finding_type="marketplace_saas_unsubscribed",
+                    title=f"Unsubscribed Marketplace SaaS left behind: {r['name']}",
+                    description=(f"{offer} ({plan}, {publisher}) is Unsubscribed"
+                                 + (f" since its term ended on {end.isoformat()}" if end else "")
+                                 + ". The resource no longer bills but still shows up in inventory, cost views and "
+                                   "access reviews." + spend),
+                    severity=SeverityLevel.LOW,
+                    remediation_steps="Confirm with the owner that nothing depends on it, then delete the SaaS resource.",
+                    azure_cli_script=f'az resource delete --ids "{r["id"]}"',
+                    estimated_monthly_savings_usd=0.0, **common,
+                ))
+            elif status in ("suspended", "pendingfulfillmentstart"):
+                suspended = status == "suspended"
+                findings.append(self.resource_finding(
+                    r, finding_type="marketplace_saas_inactive",
+                    title=(f"Marketplace SaaS suspended: {r['name']}" if suspended
+                           else f"Marketplace SaaS purchased but never activated: {r['name']}"),
+                    description=(f"{offer} ({plan}, {publisher}) is "
+                                 + ("Suspended - usually a failed payment; users lose the service and the plan is "
+                                    "cancelled if it is not reinstated." if suspended else
+                                    "PendingFulfillmentStart - it was bought but the publisher's landing page was "
+                                    "never completed, so the service is not in use.") + spend),
+                    severity=SeverityLevel.HIGH if suspended else SeverityLevel.MEDIUM,
+                    remediation_steps=("Check the payment method / billing account and reinstate or cancel the plan."
+                                       if suspended else
+                                       "Complete activation on the publisher's landing page, or cancel the purchase."),
+                    estimated_monthly_savings_usd=0.0, **common,
+                ))
+            elif status == "subscribed" and days_left is not None and days_left <= window:
+                auto = bool(r.get("autoRenew"))
+                findings.append(self.resource_finding(
+                    r, finding_type="marketplace_saas_term_ending",
+                    title=(f"Marketplace SaaS auto-renews in {max(days_left, 0)} days: {r['name']}" if auto
+                           else f"Marketplace SaaS term ends in {max(days_left, 0)} days (auto-renew off): {r['name']}"),
+                    description=(f"{offer} ({plan}, {publisher}) term {r.get('termUnit') or ''} ends on "
+                                 f"{end.isoformat()}. "
+                                 + ("Auto-renew is on, so the next term is charged automatically - review seats, "
+                                    "usage and price before then." if auto else
+                                    "Auto-renew is off, so the service stops at term end unless it is renewed.")
+                                 + spend),
+                    severity=(SeverityLevel.HIGH if not auto and days_left <= self.URGENT_DAYS else SeverityLevel.MEDIUM),
+                    remediation_steps=("Agree with the owner whether to renew, change plan/quantity or cancel before "
+                                       "the term end; for private offers, re-negotiate early."),
+                    estimated_monthly_savings_usd=0.0, **common,
+                ))
+            elif status == "subscribed" and (r.get("cost_usd_12m") or 0) >= min_usd and not r.get("isFreeTrial"):
+                findings.append(self.resource_finding(
+                    r, finding_type="marketplace_saas_commitment",
+                    title=f"Marketplace SaaS commitment: {offer} ({r['name']})",
+                    description=(f"{offer} ({plan}, {publisher}) is an active Marketplace commitment"
+                                 + (f" until {end.isoformat()}" if end else "")
+                                 + f", auto-renew {'on' if r.get('autoRenew') else 'off'}." + spend
+                                 + " Up-front SaaS charges make the subscription's monthly cost lumpy; the plan needs "
+                                   "a named owner and a review date before the term ends."),
+                    severity=SeverityLevel.LOW,
+                    remediation_steps=("Record the owner and renewal date, compare licensed quantity with real usage, "
+                                       "and add a budget that expects the up-front charge."),
+                    estimated_monthly_savings_usd=None, **common,
+                ))
+        return ScanOutput(findings=findings, resources_scanned=len(rows), warnings=warnings)
+
+    def _mock_data(self) -> List[Dict[str, Any]]:
+        from datetime import timedelta
+
+        today = date.today()
+        base = "/subscriptions/sub-1/resourceGroups/rg-saas/providers/Microsoft.SaaS/resources"
+        common = {"type": "microsoft.saas/resources", "resourceGroup": "rg-saas", "subscriptionId": "sub-1",
+                  "location": "global", "publisherName": "Contoso Security", "offerName": "Contoso Mail Shield",
+                  "termUnit": "P1Y", "isFreeTrial": False, "currency": "USD"}
+        return [
+            {**common, "id": f"{base}/mail-shield-2024", "name": "mail-shield-2024", "status": "Unsubscribed",
+             "autoRenew": False, "planName": "Year 1", "termEnd": (today - timedelta(days=200)).isoformat()},
+            {**common, "id": f"{base}/mail-shield", "name": "mail-shield", "status": "Subscribed", "autoRenew": True,
+             "planName": "Year 2", "termEnd": (today + timedelta(days=45)).isoformat(),
+             "cost_12m": 120000.0, "cost_usd_12m": 120000.0},
+            {**common, "id": f"{base}/backup-saas", "name": "backup-saas", "status": "Subscribed", "autoRenew": False,
+             "planName": "3-year", "termUnit": "P3Y", "termEnd": (today + timedelta(days=600)).isoformat(),
+             "cost_12m": 24000.0, "cost_usd_12m": 24000.0},
+            {**common, "id": f"{base}/analytics-saas", "name": "analytics-saas", "status": "Suspended", "autoRenew": True,
+             "planName": "Monthly", "termUnit": "P1M", "termEnd": (today + timedelta(days=10)).isoformat()},
+        ]
+

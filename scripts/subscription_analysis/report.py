@@ -9,6 +9,7 @@ regenerated for any subscription.
 import json
 import re
 import shutil
+import threading
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +107,68 @@ class Model:
             self.service_months[r.get("ServiceName") or "Other"][month] += cost
         self.month_keys = sorted(self.months)
         self.total_12m = sum(self.months.values())
+        self.lumpy = self._is_lumpy()
+
+    LUMPY_SHARE = 0.5
+    LUMPY_PEAK_RATIO = 3.0
+
+    def _is_lumpy(self) -> bool:
+        """
+        True when one month carries most of the year's charges (annual Marketplace SaaS, reservation purchases)
+        and the subscription existed for the whole window - so a young or fast-growing subscription, whose early
+        months are small simply because little was deployed yet, is not mistaken for one-off spend.
+        """
+        positive = sorted((v for v in self.months.values() if v > 0), reverse=True)
+        if len(self.month_keys) < 2 or not positive or positive[0] / sum(positive) < self.LUMPY_SHARE:
+            return False
+        others = positive[1:]
+        if others and positive[0] < self.LUMPY_PEAK_RATIO * others[len(others) // 2]:
+            return False
+        window_start = str((self.data.cost.get("window_12m") or {}).get("from") or "")
+        created = sorted(str(r.get("createdTime") or "")[:10] for r in self.data.resources if r.get("createdTime"))
+        return bool(window_start and created and created[0] <= window_start)
+
+    @property
+    def run_rate(self) -> float:
+        """Monthly run-rate: last 30 days, or the 12-month average when one-off charges dominate."""
+        return self.total_12m / 12 if self.lumpy else self.total_30
+
+    @property
+    def run_rate_label(self) -> str:
+        return "12-month average; spend is lumpy" if self.lumpy else "last 30 days run-rate"
+
+    def trend_summary(self) -> str:
+        """
+        One sentence on the monthly trend: first and last *full* month (the window's end month is
+        month-to-date), the peak, credits/refunds, and a warning when one month dominates the year
+        (annual Marketplace SaaS or reservation charges), because then 30 days is not a run-rate.
+        """
+        cur = self.currency
+        current = str((self.data.cost.get("window_12m") or {}).get("to") or "")[:7]
+        full = [k for k in self.month_keys if k != current]
+        parts = []
+        if len(full) >= 2:
+            parts.append(f"monthly spend went from {money(self.months[full[0]], cur)} ({full[0]}) to "
+                         f"{money(self.months[full[-1]], cur)} ({full[-1]}, last full month)")
+        elif full:
+            parts.append(f"{money(self.months[full[0]], cur)} in {full[0]} (the only full month with cost)")
+        if current in self.months:
+            parts.append(f"{money(self.months[current], cur)} so far in {current}")
+        positive = {k: v for k, v in self.months.items() if v > 0}
+        if len(positive) > 1:
+            peak = max(positive, key=positive.get)
+            parts.append(f"peak {money(positive[peak], cur)} in {peak}")
+        credits = {k: v for k, v in self.months.items() if v < 0}
+        if credits:
+            parts.append(f"includes credits/refunds of {money(sum(credits.values()), cur)} ("
+                         + ", ".join(sorted(credits)) + ")")
+        total_positive = sum(positive.values())
+        if self.lumpy:
+            month = max(positive, key=positive.get)
+            parts.append(f"{positive[month] / total_positive:.0%} of the charges fall in {month} - one-off or "
+                         f"up-front charges (e.g. Marketplace SaaS, reservations), so the last 30 days are not a "
+                         f"monthly run-rate")
+        return "; ".join(parts)
 
     def _last30(self) -> None:
         rows = self.data.cost.get("last30_by_rg_service") or []
@@ -164,7 +227,7 @@ def render_readme(m: Model) -> str:
                if ((b.get("properties") or {}).get("timeGrain") or "").lower() == "monthly"]
     amounts = sorted((float((b.get("properties") or {}).get("amount") or 0) for b in budgets), reverse=True)
     budget_amount = amounts[0] if amounts else 0.0
-    first, last = (m.month_keys[0], m.month_keys[-1]) if m.month_keys else (None, None)
+    first = m.month_keys[0] if m.month_keys else None
 
     lines = [
         f"# Subscription Analysis - `{sub['name']}`", "",
@@ -184,8 +247,7 @@ def render_readme(m: Model) -> str:
         f"- **Resources:** {len(m.data.resources)} in {len(m.data.resource_groups)} resource groups, "
         f"{len({(r.get('location') or '').lower() for r in m.data.resources})} regions.",
         f"- **Cost:** {money(m.total_12m, cur)} over 12 months; {money(m.total_30, cur)} in the last 30 days"
-        + (f"; monthly spend moved from {money(m.months[first], cur)} ({first}) to {money(m.months[last], cur)} "
-           f"({last}, possibly partial)." if first else "."),
+        + (f"; {m.trend_summary()}." if first else "."),
     ]
     if budget_amount:
         over = sum(1 for k in m.month_keys if m.months[k] > budget_amount)
@@ -417,7 +479,7 @@ def render_cost_drivers(m: Model) -> Tuple[str, str]:
                               rows, ["---", "---:", "---:", "---"]))
         lines += ["", "```mermaid", "xychart-beta", f'  title "Monthly actual cost ({cur})"',
                   "  x-axis [" + ", ".join(k[2:] for k in m.month_keys) + "]",
-                  f'  y-axis "{cur}" 0 --> {int(max(m.months.values()) * 1.15) + 1}',
+                  f'  y-axis "{cur}" {min(0, int(min(m.months.values()) * 1.15) - 1)} --> {int(max(m.months.values()) * 1.15) + 1}',
                   "  bar [" + ", ".join(str(int(m.months[k])) for k in m.month_keys) + "]", "```", ""]
 
     lines += ["## 2. Cost by Service", ""]
@@ -454,9 +516,9 @@ def render_cost_drivers(m: Model) -> Tuple[str, str]:
     else:
         lines.append("No finding carries a savings estimate.")
     waves = m.savings_by_wave()
-    run_rate = m.total_30
+    run_rate = m.run_rate
     lines += ["", "## 6. Forecast", "", md_table(["Scenario", f"Monthly {cur}", f"Annual {cur}"], [
-        ["Status quo (last 30 days run-rate)", money(run_rate), money(run_rate * 12)],
+        [f"Status quo ({m.run_rate_label})", money(run_rate), money(run_rate * 12)],
         ["After wave 1", money(run_rate - (m.to_billing(waves[1]) or 0)), money((run_rate - (m.to_billing(waves[1]) or 0)) * 12)],
         ["After waves 1 + 2", money(run_rate - (m.to_billing(waves[1] + waves[2]) or 0)),
          money((run_rate - (m.to_billing(waves[1] + waves[2]) or 0)) * 12)],
@@ -543,8 +605,8 @@ def render_critique(m: Model) -> str:
               '  subgraph LZ["Landing-zone subscriptions per workload & environment (IaC-managed)"]',
               "    APP", "    NP", "    DATA", "  end", "```", "",
               md_table(["", f"{m.currency} / month"], [
-                  ["Current (last 30 days)", money(m.total_30)],
-                  ["After waves 1 + 2 (estimate)", money(m.total_30 - (m.to_billing(waves[1] + waves[2]) or 0))],
+                  [f"Current ({m.run_rate_label})", money(m.run_rate)],
+                  ["After waves 1 + 2 (estimate)", money(m.run_rate - (m.to_billing(waves[1] + waves[2]) or 0))],
               ], ["---", "---:"]), "", "## 4. Roadmap", ""]
     lines.append(md_table(["Phase", "Scope", "Findings", "Exit criteria"], [
         ["0 - Stop the bleeding (2 weeks)", WAVE_NAMES[1], sum(1 for f in m.findings if f["wave"] == 1),
@@ -668,9 +730,56 @@ GENERATED_ENTRIES = ("README.md", SUMMARY_FILE, "01-current-findings", "02-gap-a
                      "report-summary.html", "report-summary.pdf", "report-full.html", "report-full.pdf")
 
 
+OWNER_FILE = ".subscription-id"
+_FOLDER_LOCK = threading.Lock()
+
+
 def report_folder_name(subscription: Dict[str, Any]) -> str:
     """Folder name for a subscription's report: its display name made filesystem-safe (falls back to the ID)."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", subscription.get("name") or subscription["id"]).strip("._") or subscription["id"]
+
+
+def _folder_owner(folder: Path) -> Optional[str]:
+    """Subscription ID a report folder belongs to (owner marker, else its summary.json), or None if unclaimed."""
+    marker = folder / OWNER_FILE
+    if marker.is_file():
+        return marker.read_text(encoding="utf-8").strip().lower() or None
+    summary = folder / SUMMARY_FILE
+    if summary.is_file():
+        try:
+            return ((json.loads(summary.read_text(encoding="utf-8")).get("subscription") or {}).get("id") or "").lower() or None
+        except ValueError:
+            return None
+    return None
+
+
+def resolve_report_folder(reports_dir: Path, subscription: Dict[str, Any]) -> Path:
+    """
+    reports_dir/<name>, unless that folder belongs to another subscription with the same display name
+    (e.g. several "Visual Studio Professional Subscription"s) - then reports_dir/<name>_<first 8 of ID>.
+    The folder is claimed with an owner marker so concurrent runs never share it.
+    """
+    sub_id = str(subscription["id"]).lower()
+    base = report_folder_name(subscription)
+    with _FOLDER_LOCK:
+        for candidate in (reports_dir / base, reports_dir / f"{base}_{sub_id[:8]}", reports_dir / f"{base}_{sub_id}"):
+            owner = _folder_owner(candidate)
+            if owner in (None, sub_id):
+                candidate.mkdir(parents=True, exist_ok=True)
+                (candidate / OWNER_FILE).write_text(sub_id, encoding="utf-8")
+                return candidate
+    raise RuntimeError(f"No free report folder for subscription {sub_id}")
+
+
+def display_names(summaries: List[Dict[str, Any]]) -> Dict[str, str]:
+    """folder -> label; subscriptions sharing a display name get their short ID appended."""
+    names = Counter((s.get("subscription") or {}).get("name") or s["folder"] for s in summaries)
+    labels = {}
+    for s in summaries:
+        sub = s.get("subscription") or {}
+        name = sub.get("name") or s["folder"]
+        labels[s["folder"]] = f"{name} ({str(sub.get('id', ''))[:8]})" if names[name] > 1 and sub.get("id") else name
+    return labels
 
 
 def clean_generated(output: Path) -> None:
@@ -724,13 +833,15 @@ def read_summaries(reports_dir: Path) -> List[Dict[str, Any]]:
 def write_index(reports_dir: Path) -> Path:
     """reports/README.md - one row per analysed subscription, linking into its folder."""
     rows = []
-    for s in read_summaries(reports_dir):
+    summaries = read_summaries(reports_dir)
+    labels = display_names(summaries)
+    for s in summaries:
         sev = s.get("findings_by_severity") or {}
         saving = s.get("savings_billing") or {}
         cur = s.get("currency") or ""
         total_saving = (saving.get("wave_1") or 0) + (saving.get("wave_2") or 0) if saving.get("wave_1") is not None else None
         rows.append([
-            f"[{(s.get('subscription') or {}).get('name') or s['folder']}](./{s['folder']}/README.md)",
+            f"[{labels[s['folder']]}](./{s['folder']}/README.md)",
             f"`{(s.get('subscription') or {}).get('id', '')}`",
             str(s.get("generated_at") or "")[:10],
             s.get("resources"),

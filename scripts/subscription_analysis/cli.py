@@ -8,7 +8,8 @@ DefaultAzureCredential (env vars / managed identity) for automation.
 
 The identity needs Reader, Cost Management Reader and Security Reader on
 each subscription. Each subscription is written to
-<reports-dir>/<subscription-name>/ and <reports-dir>/README.md indexes them.
+<reports-dir>/<subscription-name>/ (<subscription-name>_<first 8 of ID>/ when
+several subscriptions share a name) and <reports-dir>/README.md indexes them.
 """
 
 import argparse
@@ -23,7 +24,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts.subscription_analysis.collector import list_subscriptions, run  # noqa: E402
 from scripts.subscription_analysis.report import (  # noqa: E402
     clean_generated,
-    report_folder_name,
+    resolve_report_folder,
     write_index,
     write_report,
 )
@@ -72,7 +73,7 @@ def default_config(path: str = None) -> dict:
 
 def analyse_one(credential, subscription: str, reports_dir: Path, output: Path = None, **kwargs):
     data = run(credential, subscription, **kwargs)
-    target = output or reports_dir / report_folder_name(data.subscription)
+    target = output or resolve_report_folder(reports_dir, data.subscription)
     clean_generated(target)
     model = write_report(data, target)
     return data, model, target

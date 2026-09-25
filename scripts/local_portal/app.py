@@ -29,7 +29,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from scripts.local_portal.azure_session import AzureCliSession, friendly_error
 from scripts.local_portal.jobs import JobManager
 from scripts.local_portal.render import render_markdown
-from scripts.subscription_analysis.report import read_summaries, write_index
+from scripts.subscription_analysis.report import display_names, read_summaries, write_index
 
 HERE = Path(__file__).resolve().parent
 COOKIE = "arg_portal_session"
@@ -157,9 +157,10 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
     def sidebar(target: Path) -> Dict[str, Any]:
         rel = target.relative_to(reports_dir)
         if not rel.parts or (len(rel.parts) == 1 and target.is_file()):
+            summaries = read_summaries(reports_dir)
+            labels = display_names(summaries)
             return {"title": "Subscriptions", "entries": [
-                {"href": f"/reports/{s['folder']}/README.md", "label": (s.get("subscription") or {}).get("name") or s["folder"]}
-                for s in read_summaries(reports_dir)]}
+                {"href": f"/reports/{s['folder']}/README.md", "label": labels[s["folder"]]} for s in summaries]}
         root = reports_dir / rel.parts[0]
         entries = [{"href": f"/reports/{p.relative_to(reports_dir).as_posix()}",
                     "label": p.relative_to(root).as_posix()}

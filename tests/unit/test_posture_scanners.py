@@ -81,6 +81,8 @@ EXPECTED = {
     "idle_iot_hub_scanner": {"idle_iot_hub"},
     "ai_spend_governance_scanner": {"ai_spend_without_gateway", "ai_account_sprawl"},
     "commitment_discount_scanner": {"commitment_discount_opportunity"},
+    "marketplace_saas_scanner": {"marketplace_saas_unsubscribed", "marketplace_saas_term_ending",
+                                 "marketplace_saas_commitment", "marketplace_saas_inactive"},
 }
 
 
@@ -154,6 +156,70 @@ def test_budget_only_counts_months_since_budget_start():
 def test_commitment_scanner_keeps_best_term_per_recommendation():
     finding = _run("commitment_discount_scanner").findings[0]
     assert finding.estimated_monthly_savings_usd == pytest.approx((3311.0 + 1647.0) / 12, rel=1e-3)
+
+
+def test_budget_missing_is_high_when_spend_is_material():
+    cls = ScannerRegistry.get("budget_scanner")
+
+    class NoBudget(cls):
+        def _mock_sets(self):
+            _, monthly = super()._mock_sets()
+            monthly[-1]["cost_usd"] = 218000.0
+            return [], monthly
+
+    finding = asyncio.run(NoBudget(config={}).execute(_context())).findings[0]
+    assert finding.finding_type == "budget_missing"
+    assert finding.severity == SeverityLevel.HIGH
+    assert "Peak monthly spend" in finding.description
+
+    class SmallNoBudget(cls):
+        def _mock_sets(self):
+            return [], [{"month": "2026-08", "cost": 50.0, "cost_usd": 60.0, "currency": "CHF"}]
+
+    assert asyncio.run(SmallNoBudget(config={}).execute(_context())).findings[0].severity == SeverityLevel.MEDIUM
+
+
+def test_marketplace_saas_rules():
+    by_name = {f.resource_name: f for f in _run("marketplace_saas_scanner").findings}
+    assert by_name["mail-shield-2024"].finding_type == "marketplace_saas_unsubscribed"
+    assert by_name["mail-shield-2024"].severity == SeverityLevel.LOW
+    renew = by_name["mail-shield"]
+    assert renew.finding_type == "marketplace_saas_term_ending" and "auto-renews in 45 days" in renew.title
+    assert renew.severity == SeverityLevel.MEDIUM
+    assert by_name["backup-saas"].finding_type == "marketplace_saas_commitment"
+    assert by_name["analytics-saas"].finding_type == "marketplace_saas_inactive"
+    assert by_name["analytics-saas"].severity == SeverityLevel.HIGH
+    assert "marketplace_saas_unsubscribed" in ORPHAN_FINDING_TYPES
+
+
+def test_marketplace_saas_term_ending_without_auto_renew_is_urgent():
+    cls = ScannerRegistry.get("marketplace_saas_scanner")
+
+    class Expiring(cls):
+        def _mock_data(self):
+            row = super()._mock_data()[1]
+            row.update(autoRenew=False, termEnd=date.today().isoformat())
+            return [row]
+
+    finding = asyncio.run(Expiring(config={}).execute(_context())).findings[0]
+    assert "auto-renew off" in finding.title and finding.severity == SeverityLevel.HIGH
+
+
+def test_defender_titles_name_the_recommendation_not_a_guid():
+    cls = ScannerRegistry.get("defender_recommendations_scanner")
+    guid = "08d95146-8626-4f76-8334-c9faf7d4369b"
+
+    class Entities(cls):
+        def _mock_data(self):
+            return [{"resource_id": f"/subscriptions/sub-1/providers/Microsoft.Security/pricings/CloudPosture/securityentitydata/{guid}",
+                     "assessment": "Guest accounts with read permissions on Azure resources should be removed",
+                     "severity": "high", "category": "IdentityAndAccess"}] + super()._mock_data()
+
+    findings = asyncio.run(Entities(config={}).execute(_context())).findings
+    titles = {f.title for f in findings}
+    assert "Defender: Guest accounts with read permissions on Azure resources should be removed (subscription)" in titles
+    assert "Defender: Role-Based Access Control should be used on Azure Keyvault Services (AKV) (kv-legacy-1)" in titles
+    assert not any(guid in t or "sub-1" in t for t in titles)
 
 
 def test_os_scanner_respects_as_of_date():

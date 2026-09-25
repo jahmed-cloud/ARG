@@ -110,7 +110,8 @@ The exit code is non-zero if any subscription failed. The others are still writt
 ```
 reports/
 ├── README.md                        index: one row per analysed subscription
-└── <subscription-name>/             display name made filesystem-safe
+└── <subscription-name>/             display name made filesystem-safe; <name>_<first 8 of ID>/ when another
+    │                                subscription with the same name already owns <name>/
     ├── README.md                    executive summary, headline savings, top risks, prioritised actions
     ├── summary.json                 totals used by the index and the portal
     ├── 01-current-findings/         baseline, workloads, architecture diagram, resource-inventory.md
@@ -129,12 +130,39 @@ reports/
 - **Currency:** savings are computed in USD (list prices or actual `CostUSD`) and shown in the billing currency at the
   subscription's implied rate.
 - Re-running a subscription **replaces** its generated files. Copy the folder first if you want history.
+- **Same display name:** each folder records its owner in `.subscription-id`, so subscriptions that share a name
+  (e.g. several "Visual Studio Professional Subscription"s) never overwrite each other. The index and the portal show
+  their short ID next to the name.
+- **Lumpy spend:** when one month carries at least half of the year's charges, is at least 3× the other months and the
+  subscription existed for the whole window (e.g. an annual Marketplace SaaS or reservation charge), the summary says so
+  and the forecast uses the 12-month average instead of the last 30 days, which are not a monthly run-rate then.
+  Negative months (credits/refunds) are called out.
+
+---
+
+## 5a. Marketplace SaaS (`marketplace_saas_scanner`)
+
+Marketplace SaaS plans (`microsoft.saas/resources`, e.g. email security or backup services bought in the Azure portal)
+are billed to the subscription, often as one large up-front charge, but have no metrics. The scanner reads the SaaS
+status and term from Resource Graph and the **12-month** cost per SaaS resource from Cost Management.
+
+| Finding | Rule | Severity |
+|---|---|---|
+| `marketplace_saas_unsubscribed` | Status `Unsubscribed`: the plan no longer bills but the resource is left behind | Low |
+| `marketplace_saas_inactive` | Status `Suspended` (usually a failed payment) or `PendingFulfillmentStart` (bought, never activated) | High / Medium |
+| `marketplace_saas_term_ending` | `Subscribed` and the term ends within `saas_renewal_window_days` (90). Auto-renew on: renewal decision due. Off: the service stops | Medium; High if auto-renew is off and ≤ 30 days remain |
+| `marketplace_saas_commitment` | `Subscribed`, not a free trial, ≥ `saas_commitment_min_usd` (1,000) charged in 12 months | Low (owner and review date) |
+
+No saving is estimated: whether to renew, resize or cancel is a business decision for the plan owner.
+
+A missing budget (`budget_missing`) is **High** instead of Medium when the peak monthly spend in the last six full months
+is at least `budget_missing_high_monthly_usd` (10,000 USD).
 
 ---
 
 ## 6. What it analyses
 
-62 scanners across network, compute/App Service, database, storage, security, identity, governance/observability
+63 scanners across network, compute/App Service, database, storage, security, identity, governance/observability
 and cost. See [scanner-catalog.md](./scanner-catalog.md). The five Microsoft Graph (Entra ID) scanners are **skipped**
 locally; they need the Docker stack with a service principal and Graph consent. Terraform drift is skipped unless state
 was imported into the Docker stack.

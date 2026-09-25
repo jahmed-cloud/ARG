@@ -514,6 +514,7 @@ class BudgetScanner(PostureScanner):
 
     MONTHS = 6
     OVERRUN_MONTHS = 3
+    MISSING_HIGH_MONTHLY_USD = 10000.0
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         if not self.is_live(context):
@@ -527,14 +528,19 @@ class BudgetScanner(PostureScanner):
                 return ScanOutput(warnings=[f"Budget/cost query failed: {e}"])
 
         if not budgets:
+            peak = max(monthly, key=lambda x: x.get("cost_usd") or 0.0) if monthly else None
+            peak_usd = (peak or {}).get("cost_usd") or 0.0
+            high_usd = float(self.setting("budget_missing_high_monthly_usd", self.MISSING_HIGH_MONTHLY_USD))
+            spend = (f" Peak monthly spend in the last {len(monthly)} full months was "
+                     f"{peak['cost']:,.0f} {peak.get('currency') or ''} ({peak['month']})." if peak and peak["cost"] else "")
             return ScanOutput(findings=[self.subscription_finding(
                 context, finding_type="budget_missing", title="No budget on subscription",
-                description="The subscription has no Cost Management budget, so overspend raises no alert.",
-                severity=SeverityLevel.MEDIUM,
+                description="The subscription has no Cost Management budget, so overspend raises no alert." + spend,
+                severity=SeverityLevel.HIGH if peak_usd >= high_usd else SeverityLevel.MEDIUM,
                 remediation_steps="Create a monthly budget with actual and forecast alerts to the workload owners.",
                 azure_cli_script=(f"az consumption budget create --budget-name monthly --amount <amount> --time-grain Monthly "
                                   f"--start-date {date.today().replace(day=1).isoformat()} --end-date 2030-12-31 --category Cost"),
-                evidence={},
+                evidence={"months": monthly, "peak_monthly_usd": peak_usd, "high_threshold_usd": high_usd},
             )])
 
         findings = []
@@ -589,7 +595,12 @@ class BudgetScanner(PostureScanner):
         months = []
         for r in rows:
             month = str(r.get("BillingMonth") or r.get("UsageDate") or "")[:7]
-            months.append({"month": month, "cost": float(r.get("Cost") or 0.0), "currency": r.get("Currency")})
+            cost = float(r.get("Cost") or 0.0)
+            usd = r.get("CostUSD")
+            if usd is None and (r.get("Currency") or "").upper() == "USD":
+                usd = cost
+            months.append({"month": month, "cost": cost, "cost_usd": float(usd) if usd is not None else None,
+                           "currency": r.get("Currency")})
         return sorted(months, key=lambda m: m["month"])
 
     def _mock_sets(self):

@@ -149,9 +149,12 @@ with a customer, reviewed in a pull request or read offline.
   is refreshed from the portal or `--estate`.
 - **Usage metrics:** a declarative table (`USAGE_SPECS`, metric → role) for 31 resource types, fetched with the Azure
   Monitor metrics batch API (token scope `https://metrics.monitor.azure.com/.default`, 50 resources of one type /
-  region / subscription per call, P1D over 30 days, `average,maximum,total,count`). A failing batch is retried with the
-  primary metric only; global resources use the per-resource ARM metrics API; deallocated VMs are skipped. Idle =
-  activity metric zero (storage ≤ 200, container apps also scaled to zero, web apps also no function executions).
+  region / subscription per call, P1D over 30 days, `average,maximum,total,count`). A failing batch is retried metric by
+  metric; global resources use the per-resource ARM metrics API; deallocated VMs are skipped. Idle =
+  activity metric zero (storage ≤ 10 data operations after subtracting housekeeping - `Transactions` split by
+  `ApiName` - and idle accounts holding data reported as dormant, container apps also scaled to zero, web apps also
+  no function executions; SQL `master` and geo / standby replicas never idle). Right-sizing needs < 5 % CPU and
+  < 40 % memory and skips network virtual appliances.
 - **Estate page:** static HTML + `estate.js` (no inline script, all Azure text via `textContent`), filters in the URL
   hash, client-side facets and breakdowns, paged table, CSV export with formula-injection guard; the API is gzip'd.
 - **Report folders** are claimed with a `.subscription-id` owner marker; a second subscription with the same display
@@ -180,8 +183,8 @@ with a customer, reviewed in a pull request or read offline.
 
 - **Estate** is tested offline: size / configuration / runtime / state per type (parametrised), environment tag
   values, the join with report findings and costs, the compact format, the markdown sections, portal-style child
-  names, SKU-catalogue specs with a fake ARM client, and usage via a fake batch fetcher (batching by 50, retry with the
-  primary metric, idle rules, Cosmos Count fallback, formatting). Portal tests cover the Estate page, `/api/estate`
+  names, SKU-catalogue specs with a fake ARM client, and usage via a fake batch fetcher (batching by 50, retry metric by
+  metric, idle rules, Cosmos Count fallback, formatting). Portal tests cover the Estate page, `/api/estate`
   and the refresh endpoint.
 
 ## Out of Scope

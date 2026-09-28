@@ -35,7 +35,10 @@ in the same change that makes an entry wrong.
   reservations) switch the forecast to the 12-month average.
 - **Usage** is Azure Monitor platform metrics, last 30 days, daily points (no agents). Scanners use per-resource
   calls; the estate uses the **metrics batch API** for 31 types (`USAGE_SPECS` in `estate.py`). Idle = zero activity
-  (storage ≤ 200 transactions, container apps also scaled to zero, web apps also no function executions).
+  (storage ≤ 10 data operations after subtracting housekeeping by `ApiName`; idle + > 1 GB = dormant data, not
+  delete; container apps also scaled to zero, web apps also no function executions; never idle: SQL master, DR
+  replicas, failed runs). Right-sizing needs < 5 % CPU **and** < 40 % memory and skips NVAs (image offer). VM cost
+  is actual cost, so savings-plan / reservation-covered compute shows ~0.
 - **Estate** = one Resource Graph query + Compute SKU catalogue + usage, joined with report findings and cost. Tag /
   naming findings are "hygiene", counted apart from actionable suggestions. VM / Arc extensions are hidden by default
   and named `vm › extension`. New per-type facts go into `RESOURCE_DETAILS` (`cfg` pack) → `_profile()`.
@@ -48,6 +51,10 @@ in the same change that makes an entry wrong.
 - KQL: `time` is reserved - `pack('time', ...)` gives a bare `ParserFailure`; bisect `case()` branches to find it.
 - Cosmos DB `TotalRequests` supports only the Count aggregation.
 - The metrics batch API is throttled per caller (~6 s per call); more than ~16 in parallel does not help.
-- Network virtual appliances report ~0 available memory, so they show ~100 % memory used.
+- Network virtual appliances report ~0 available memory, so they show ~100 % memory used; `estate.is_nva` keeps
+  them out of right-sizing.
+- Storage `Transactions` totals hide real use: ~120 housekeeping calls a month on every account. Split by `ApiName`
+  (`azure_api.storage_data_operations`, `top=100`); heavy `Unknown` traffic is real.
+- SQL `master` and geo / standby replicas have zero connections by design - never idle.
 - PowerShell `$args` is automatic - a local `$args = @(...)` passed to `Start-Process` becomes empty.
 - Resource Graph queries must page with skip tokens (`query_resource_graph`), otherwise results stop at 100 / 1,000.

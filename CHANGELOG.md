@@ -5,6 +5,32 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Idle storage accounts that were in use.** `unused_storage_account_scanner` and the estate counted every
+  transaction against a flat 200-per-30-days threshold, so accounts with real reads and writes (static websites,
+  `GetBlob` / `PutBlob` traffic) hidden under ~120 housekeeping calls were reported as idle and "delete". The 30-day
+  `Transactions` metric is now split by `ApiName`; Defender / portal / inventory calls (`GetBlobServiceProperties`,
+  `ListContainers`, ...) are subtracted, and an account is idle only with at most 10 real data operations. Heavy
+  `Unknown` (anonymous / failed-auth) traffic counts as activity. The total-based threshold stays as a fallback.
+- **Idle accounts that hold data are no longer deletion candidates.** An idle account with more than 1 GB is reported
+  as `dormant_storage_data` (tier to Cold / Archive, confirm retention with the owner) with the saving estimated
+  against the Cold tier, instead of the full cost. Premium page-blob accounts (VHDs) get copy-to-Standard guidance.
+- Storage accounts whose VHDs back a VM (unmanaged disks) are no longer reported; boot-diagnostics targets get a note.
+- **AI deep dive showed no spend.** The page promised "accounts, deployments, spend" but only listed findings (whose
+  saving is "-" for security findings). It now opens with every AI account (kind, SKU, region, 30-day cost, top
+  meters, model deployments incl. SKU and capacity) and AI spend on resources deleted within the window. Every other
+  deep-dive page gets a "Spend in scope" table, and finding tables show the resource's 30-day cost next to the saving.
+  Deployments are collected per report (`05-deep-dive/raw/inventory/ai-deployments.json`).
+- **Estate recommendations.** Right-sizing candidates now also need under 40 % memory used (one size down halves the
+  RAM) and never include network virtual appliances (FortiGate, Palo Alto, ... detected from the image; they report
+  ~100 % memory and are licensed per vCPU); excluded counts, burst peaks and missing memory data are shown per VM,
+  with a note that savings-plan / reservation-covered compute shows ~0 cost. The idle list no longer includes SQL
+  `master` databases or geo / standby replicas, nor resources with failed runs or 5xx errors or registries that
+  received pushes; idle storage holding data is shown as **Dormant data** on the Estate page and in the overview.
+  The estate splits storage `Transactions` by `ApiName` like the scanner.
+- `idle_sql_database` skips geo / standby secondaries: a DR replica takes no connections by design and was reported
+  as "delete".
+
 ### Added
 - **Estate inventory** across all subscriptions: portal **Estate** page (`/estate`) and `reports/_estate/`
   (markdown overview + `estate.json`). One Resource Graph query (~30 s for 12,000 resources) gives every resource's

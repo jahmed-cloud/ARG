@@ -26,6 +26,24 @@ DEEP_DIVE_FOLDERS = {
     "cost-finops": "Cost & FinOps - budgets, commitments, idle services",
 }
 
+# Resource types (by "namespace/" or "namespace/type" prefix) whose 30-day spend each deep-dive page shows.
+DEEP_DIVE_RESOURCE_TYPES = {
+    "networking": ("microsoft.network/", "microsoft.cdn/"),
+    "compute-appservice": ("microsoft.compute/", "microsoft.web/", "microsoft.app/", "microsoft.containerservice/",
+                           "microsoft.containerinstance/", "microsoft.containerregistry/", "microsoft.batch/",
+                           "microsoft.hybridcompute/"),
+    "data-sql-storage": ("microsoft.storage/", "microsoft.sql/", "microsoft.documentdb/", "microsoft.dbfor",
+                         "microsoft.cache/", "microsoft.synapse/", "microsoft.kusto/", "microsoft.datafactory/",
+                         "microsoft.databricks/", "microsoft.recoveryservices/", "microsoft.dataprotection/",
+                         "microsoft.eventhub/", "microsoft.servicebus/"),
+    "ai-foundry": ("microsoft.cognitiveservices/", "microsoft.machinelearningservices/", "microsoft.search/",
+                   "microsoft.botservice/"),
+    "security-identity": ("microsoft.keyvault/", "microsoft.managedidentity/", "microsoft.security/"),
+    "observability-operations": ("microsoft.operationalinsights/", "microsoft.insights/", "microsoft.automation/",
+                                 "microsoft.alertsmanagement/", "microsoft.operationsmanagement/",
+                                 "microsoft.dashboard/", "microsoft.monitor/"),
+}
+
 WAVE_NO_REGRET, WAVE_OPTIMISE, WAVE_STRUCTURAL = 1, 2, 3
 WAVE_NAMES = {
     WAVE_NO_REGRET: "Wave 1 - No-regret cleanup",
@@ -94,6 +112,7 @@ FINDING_CLASSIFICATION: Dict[str, Classification] = {
     "storage_account_sprawl": Classification(STRUCTURAL, "data-sql-storage", WAVE_OPTIMISE, "storage"),
     "storage_transaction_hotspot": Classification(PERFORMANCE, "data-sql-storage", WAVE_OPTIMISE, "storage"),
     "unused_storage_account": Classification(FINOPS, "data-sql-storage", WAVE_NO_REGRET, "storage"),
+    "dormant_storage_data": Classification(FINOPS, "data-sql-storage", WAVE_OPTIMISE, "storage"),
     "orphaned_backup_vault": Classification(FINOPS, "data-sql-storage", WAVE_NO_REGRET),
     # AI
     "ai_services_local_auth_enabled": Classification(SECURITY, "ai-foundry", WAVE_OPTIMISE, "ai"),

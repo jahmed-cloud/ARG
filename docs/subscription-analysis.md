@@ -191,8 +191,12 @@ data disks, Spot; NIC attachment and IP; private endpoint target; certificate ex
 `Available Memory Bytes`; memory used = 1 - available / RAM). Hover the CPU value for the 30-day peak. Deallocated
 VMs have no metrics. Network virtual appliances (firewalls) often report almost no available memory, so they show
 ~100 % memory used - that is how the appliance reserves memory, not a problem. The markdown overview lists running
-VMs by average-CPU band and the **right-sizing candidates** (4+ vCPU, under 5 % average CPU) - check the peak and
-memory before downsizing.
+VMs by average-CPU band and the **right-sizing candidates**: running, 4+ vCPU, under 5 % average CPU **and** under
+40 % memory used (one size down halves the RAM). Network virtual appliances (FortiGate, Palo Alto, Check Point, Cisco,
+... detected from the Marketplace image) are never listed - they are vendor-sized and licensed per vCPU - and the
+excluded counts are shown. A peak of 80 % or more, or missing memory data, is noted per VM. VM costs are what Cost
+Management attributes to the VM: compute covered by a reservation or savings plan shows close to 0, so check the
+commitment before counting a saving.
 
 Child resources are named like the Azure portal (`vm-app-01 › DSC` for the DSC extension on `vm-app-01`). VM / Arc
 extensions and Arc license profiles are hidden unless you tick *Include VM / Arc extensions and license profiles*.
@@ -208,26 +212,37 @@ every type that reports them.
 | VMs, scale sets | `Percentage CPU` → CPU avg (+ peak); `Available Memory Bytes` ÷ RAM → memory used % |
 | App Service plans | `CpuPercentage`, `MemoryPercentage` |
 | Web / Function apps, slots | `Requests`, `Http5xx` (failed), `FunctionExecutionCount` |
-| Storage accounts | `Transactions`, `UsedCapacity` (latest), `Egress` (transferred) |
+| Storage accounts | `Transactions` (plus a second batch split by `ApiName` to subtract housekeeping), `UsedCapacity` (latest), `Egress` (transferred) |
 | SQL databases / elastic pools | `cpu_percent`, `connection_successful`, `storage_percent` |
 | PostgreSQL / MySQL flexible | `cpu_percent`, `memory_percent`, `storage_percent` |
 | Cosmos DB | `TotalRequests` (Count), `NormalizedRUConsumption` peak |
 | Redis | `serverLoad` (as CPU), `usedmemorypercentage`, `connectedclients` |
 | AKS | `node_cpu_usage_percentage`, `node_memory_working_set_percentage` |
-| Container apps / registries | `Requests`, `Replicas` / `SuccessfulPullCount`, `StorageUsed` |
+| Container apps / registries | `Requests`, `Replicas` / `SuccessfulPullCount`, `SuccessfulPushCount` |
 | Key Vault, AI Services, AI Search | `ServiceApiHit` / `TotalCalls` + prompt/generated tokens / `SearchQueriesPerSecond` |
 | Service Bus, Event Hubs, IoT Hub, Event Grid, SignalR | incoming messages / events (+ bytes, active messages, devices) |
 | Data Factory, Logic apps, Automation | succeeded / failed runs, jobs |
 | Application Gateway, APIM, Front Door, Firewall, Load balancer | requests / capacity, data processed, bytes |
 | Data Explorer | `CPU`, `IngestionUtilization` |
 
-**Idle** means the type's activity metric was zero for 30 days - storage uses the same ≤ 200 transactions threshold
-as the idle-storage scanner (platform housekeeping), container apps must also have scaled to zero, and web apps must
-also have no function executions (timer/queue-triggered functions get no HTTP requests). Use the **Activity** breakdown
+**Idle** means the type's activity metric was zero for 30 days. Storage uses the same rule as the idle-storage
+scanner: `Transactions` split by `ApiName`, platform housekeeping (`GetBlobServiceProperties`, `ListContainers`,
+preflight, ~120 calls a month on every account) subtracted, at most 10 real data operations (at most 200 transactions
+when the split is unavailable); an idle account holding more than 1 GB is **Dormant data** (tier or archive it, don't
+delete it). Container apps must also have scaled to zero, and web apps must also have no function executions
+(timer/queue-triggered functions get no HTTP requests). Never idle: SQL `master` / system databases and geo / standby
+replicas (DR copies take no connections until a failover); resources with failed runs or 5xx errors (something still
+calls them); registries that received pushes. Use the **Activity** breakdown
 to list idle resources; the markdown overview adds a usage table per type and the costliest idle resources. A batch
-that fails is retried with the type's primary metric only; global resources (Front Door) use the per-resource metrics
+that fails is retried metric by metric; global resources (Front Door) use the per-resource metrics
 API. Azure throttles metric reads per caller, so a full refresh of ~2,500 measured resources takes 3-4 minutes
 (more parallelism does not help). Treat idle as a strong hint and confirm with the owner before deleting.
+
+The report scanner `unused_storage_account_scanner` applies the storage rule per account: empty idle accounts are
+`unused_storage_account` (saving = the account's 30-day cost), idle accounts with data are `dormant_storage_data`
+(saving = cost minus the same data in the Cold tier, an estimate), and accounts holding the VHDs of a VM are skipped.
+The **AI** deep-dive page lists every AI account with its 30-day cost, top meters and model deployments; every other
+deep-dive page shows the area's costliest resources.
 
 The **Estate** page:
 - **Tiles** per category and **breakdowns** (by type, size/SKU, average CPU band, region, subscription, environment,

@@ -21,6 +21,7 @@ from scripts.subscription_analysis.knowledge import (
     AREAS,
     CRITIQUES,
     DEEP_DIVE_FOLDERS,
+    DEEP_DIVE_RESOURCE_TYPES,
     WAVE_NAMES,
     WAVE_NO_REGRET,
     WAVE_OPTIMISE,
@@ -624,6 +625,108 @@ def render_critique(m: Model) -> str:
     return "\n".join(lines)
 
 
+def type_of_id(resource_id: str) -> str:
+    """'/subscriptions/s/resourceGroups/rg/providers/Microsoft.X/y/name' -> 'microsoft.x/y'."""
+    parts = (resource_id or "").lower().split("/providers/")[-1].split("/")
+    return "/".join(parts[:2]) if len(parts) >= 2 else ""
+
+
+def _cost30(m: Model, resource_id: Optional[str]) -> Dict[str, Any]:
+    return (m.data.cost.get("last30_by_resource") or {}).get((resource_id or "").lower()) or {}
+
+
+def _cost_cell(value: Optional[float]) -> str:
+    return money(value, "", 2) if value else "-"
+
+
+def _folder_spend(m: Model, folder: str) -> List[Dict[str, Any]]:
+    """Resources in the folder's scope with 30-day cost, costliest first (includes resources deleted since)."""
+    prefixes = DEEP_DIVE_RESOURCE_TYPES.get(folder)
+    if not prefixes:
+        return []
+    inventory = {(r.get("id") or "").lower(): r for r in m.data.resources}
+    rows = []
+    for rid, entry in m.top_resources:
+        rtype = type_of_id(rid)
+        if not rtype.startswith(prefixes) or not entry.get("cost"):
+            continue
+        rows.append({"id": rid, "type": rtype, "cost": entry["cost"], "meters": entry.get("meters") or {},
+                     "resource": inventory.get(rid)})
+    return rows
+
+
+def _meters_label(meters: Dict[str, float], limit: int = 3) -> str:
+    top = [(k, v) for k, v in sorted(meters.items(), key=lambda kv: -kv[1]) if round(v, 2)][:limit]
+    return ", ".join(f"{k} {money(v, '', 2)}" for k, v in top) or "-"
+
+
+def _deployments_label(deployments: List[Dict[str, Any]], limit: int = 6) -> str:
+    labels = []
+    for d in deployments[:limit]:
+        label = d.get("model") or d.get("name") or "?"
+        if d.get("sku"):
+            label += f" {d['sku']}"
+        if d.get("capacity"):
+            label += f" x{d['capacity']}"
+        labels.append(label)
+    if not labels:
+        return "none"
+    more = len(deployments) - limit
+    return ", ".join(labels) + (f" (+{more} more)" if more > 0 else "")
+
+
+AI_TYPES = ("microsoft.cognitiveservices/accounts", "microsoft.machinelearningservices/workspaces",
+            "microsoft.search/searchservices")
+
+
+def _ai_overview(m: Model) -> List[str]:
+    """AI accounts with kind, SKU, model deployments and 30-day spend by meter - shown even without findings."""
+    cur = m.currency
+    deployments = m.data.ai_deployments or {}
+    accounts = [r for r in m.data.resources if (r.get("type") or "").lower() in AI_TYPES]
+    spend = _folder_spend(m, "ai-foundry")
+    if not accounts and not spend:
+        return []
+    lines = [f"## AI accounts, deployments and spend ({len(accounts)})", "",
+             f"Last 30 days, {cur}. AI spend in scope: **{money(sum(e['cost'] for e in spend), cur, 2)}**. "
+             f"Deployments are listed for Azure OpenAI / AI Services (Foundry) accounts.", ""]
+    rows = []
+    for r in sorted(accounts, key=lambda r: (-(_cost30(m, r.get("id")).get("cost") or 0), r.get("name") or "")):
+        entry = _cost30(m, r.get("id"))
+        deps = deployments.get((r.get("id") or "").lower())
+        rows.append([r.get("name"), (r.get("id") or "").split("/")[4] if r.get("id") else "",
+                     r.get("kind") or re.sub(r"(?i)^microsoft\.", "", r.get("type") or ""),
+                     (r.get("sku") or {}).get("name") or "", r.get("location"), _cost_cell(entry.get("cost")),
+                     _meters_label(entry.get("meters") or {}),
+                     _deployments_label(deps) if deps is not None else "-"])
+    lines += [md_table(["Account", "RG", "Kind", "SKU", "Location", f"30 d {cur}", "Top meters", "Deployments"],
+                       rows, ["---", "---", "---", "---", "---", "---:", "---", "---"]), ""]
+    gone = [e for e in spend if e["resource"] is None]
+    if gone:
+        lines += ["Spend on AI resources no longer in the inventory (deleted within the window):", "",
+                  md_table(["Resource", f"30 d {cur}", "Top meters"],
+                           [[short_id(e["id"], m.sub["id"]), money(e["cost"], "", 2), _meters_label(e["meters"])]
+                            for e in gone[:15]], ["---", "---:", "---"]), ""]
+    return lines
+
+
+def _spend_section(m: Model, folder: str, limit: int = 15) -> List[str]:
+    """Per-area 30-day spend, so a page shows cost even where its findings carry no saving."""
+    if folder == "ai-foundry":
+        return _ai_overview(m)
+    rows = _folder_spend(m, folder)
+    if not rows:
+        return []
+    cur = m.currency
+    return ["## Spend in scope (last 30 days)", "",
+            f"{len(rows)} resource(s) in this area cost **{money(sum(r['cost'] for r in rows), cur, 2)}** in the "
+            f"last 30 days" + (f"; the {limit} costliest:" if len(rows) > limit else ":"), "",
+            md_table(["Resource", "Type", f"30 d {cur}", "Top meters"],
+                     [[short_id(r["id"], m.sub["id"]), r["type"].replace("microsoft.", ""), money(r["cost"], "", 2),
+                       _meters_label(r["meters"])] for r in rows[:limit]],
+                     ["---", "---", "---:", "---"]), ""]
+
+
 def render_deep_dives(m: Model) -> Dict[str, str]:
     pages: Dict[str, str] = {}
     index_rows = []
@@ -633,15 +736,19 @@ def render_deep_dives(m: Model) -> Dict[str, str]:
         index_rows.append([f"[{folder}](./{folder}/README.md)", title, len(items),
                            ", ".join(f"{sev[s]} {s}" for s in SEVERITIES if sev.get(s)) or "-"])
         lines = [f"# Deep Dive - {title}", "", "[← Deep-dive index](../README.md)", ""]
+        lines += _spend_section(m, folder)
         if not items:
             lines.append("No findings in this area.")
             pages[folder] = "\n".join(lines)
             continue
-        lines.append(md_table(["Ref", "Severity", "Finding", "Resource", "Monthly impact"], [
+        if len(lines) > 4:
+            lines += ["## Findings", ""]
+        lines.append(md_table(["Ref", "Severity", "Finding", "Resource", f"30 d {m.currency}", "Monthly saving"], [
             [f"[{f['ref']}](#{f['ref'].lower()})", SEV_LABEL[f["severity"]], f["title"],
-             short_id(f.get("resource_id"), m.sub["id"]), m.savings_label(f.get("estimated_monthly_savings_usd"))]
+             short_id(f.get("resource_id"), m.sub["id"]), _cost_cell(_cost30(m, f.get("resource_id")).get("cost")),
+             m.savings_label(f.get("estimated_monthly_savings_usd"))]
             for f in items
-        ]))
+        ], ["---", "---", "---", "---", "---:", "---"]))
         lines.append("")
         for f in items:
             lines += [f"## {f['ref']}", "", f"**{f['title']}** - {SEV_LABEL[f['severity']]} · `{f['finding_type']}` · "
@@ -714,6 +821,8 @@ def write_report(data: AnalysisData, output: Path) -> Model:
     dump("inventory/resource-groups.json", data.resource_groups)
     dump("findings.json", m.findings)
     dump("scanner-runs.json", data.scanner_runs)
+    if data.ai_deployments:
+        dump("inventory/ai-deployments.json", data.ai_deployments)
     for key, value in data.cost.items():
         dump(f"cost/{key}.json", value)
     dump("metadata.json", {"subscription": data.subscription, "generated_at": data.generated_at,

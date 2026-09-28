@@ -21,7 +21,8 @@
   const cpuBand = (v) => (v === null || v === undefined ? "no data" : CPU_BANDS.find(([limit]) => v < limit)[1]);
   const hasCompute = (r) => r.type === "microsoft.compute/virtualmachines" || r.type === "microsoft.compute/virtualmachinescalesets";
   const hasCpu = (r) => hasCompute(r) || r.cpuAvg !== null || r.memAvg !== null;
-  const activityBand = (r) => (r.idle ? "Idle - no activity in 30 d" : (r.activity !== null ? "Active" : null));
+  const activityBand = (r) => (r.dormant ? "Dormant data - no reads / writes in 30 d"
+    : r.idle ? "Idle - no activity in 30 d" : (r.activity !== null ? "Active" : null));
   const SUGGESTION_COLUMNS = [
     { key: "severity", label: "Severity" }, { key: "title", label: "Suggestion" }, { key: "type", label: "Suggestion type" },
     { key: "resourceName", label: "Resource" }, { key: "typeLabel", label: "Resource type" },
@@ -62,7 +63,8 @@
         cost30: r.cost || 0, currency: r.cur || "", suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
         vcpu: r.vcpu || null, ramGB: r.ram || null, cpuAvg: r.cpu === undefined ? null : r.cpu,
         cpuMax: r.cpuMax === undefined ? null : r.cpuMax, memAvg: r.mem === undefined ? null : r.mem, subResource: !!r.sub,
-        activity: r.act === undefined ? null : r.act, usage: r.use || "", idle: !!r.idle,
+        activity: r.act === undefined ? null : r.act, usage: r.use || "", idle: !!r.idle, dormant: !!r.dor,
+        nva: !!r.nva,
       };
     });
     const suggestions = (data.suggestions || []).map((s) => {
@@ -377,7 +379,9 @@
         r.cpuAvg !== null ? "CPU average " + r.cpuAvg.toFixed(1) + " %, peak " + (r.cpuMax || 0).toFixed(1) + " %"
           : (hasCompute(r) ? "no CPU data (not running in the last 30 days)" : null),
         r.memAvg !== null ? "memory used " + r.memAvg.toFixed(1) + " % on average" : null,
-        r.usage ? "usage: " + r.usage + (r.idle ? " (idle)" : "") : null,
+        r.usage ? "usage: " + r.usage + (r.dormant ? " (idle, holds data: tier or archive it, don't delete it)"
+          : r.idle ? " (idle)" : "") : null,
+        r.nva ? "network virtual appliance: vendor-sized, ~100 % memory is normal" : null,
       ].filter(Boolean).join(" · ") + " - last 30 days, Azure Monitor"));
     }
     const links = el("p", { class: "small" });

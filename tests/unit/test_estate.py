@@ -108,6 +108,35 @@ def test_os_state_category_and_labels():
      "Standard_D4s_v5", "zone 1 · 2 data disks · Spot", "Linux", "running"),
     ({"type": "microsoft.sql/servers/databases", "sku": {"name": "S0"}, "cfg": {"secondary": "Geo", "pool": True}},
      "S0", "Geo secondary · in elastic pool", "", ""),
+    ({"type": "microsoft.sql/servers/databases", "sku": {"name": "GP_S_Gen5", "tier": "GeneralPurpose", "capacity": 2},
+      "cfg": {"secondary": None, "pool": False, "maxb": 34359738368, "zr": True, "bkp": "Geo", "pause": 60}},
+     "GP_S_Gen5 / GeneralPurpose / 2", "max 32 GB · zone redundant · Geo backups · auto-pause after 60 min", "", ""),
+    ({"type": "microsoft.storage/storageaccounts", "sku": {"name": "Standard_LRS"}, "kind": "StorageV2",
+      "cfg": {"hns": True, "pna": "Enabled", "acl": "Deny", "pe": 2, "shared": False, "blobpub": False, "tls": "TLS1_2"}},
+     "Standard_LRS · StorageV2", "ADLS Gen2 · firewall: selected networks · 2 private endpoints · shared key off · TLS 1.2",
+     "", ""),
+    ({"type": "microsoft.storage/storageaccounts", "sku": {"name": "Standard_GRS"}, "kind": "StorageV2",
+      "cfg": {"pna": "Enabled", "acl": "Allow", "blobpub": True, "tls": "TLS1_0"}},
+     "Standard_GRS · StorageV2", "open to all networks · blob public access on · TLS 1.0", "", ""),
+    ({"type": "microsoft.compute/disks", "sku": {"name": "Premium_LRS"}, "diskSizeGB": 128, "diskState": "Attached",
+      "managedBy": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1",
+      "cfg": {"os": "Linux", "zones": ["2"], "tier": "P10", "net": "AllowAll", "burst": False, "shares": 1}},
+     "Premium_LRS 128 GB", "OS disk (Linux) · VM vm1 · zone 2 · tier P10 · public network access", "", "Attached"),
+    ({"type": "microsoft.compute/snapshots", "sku": {"name": "Standard_LRS"}, "diskSizeGB": 64,
+      "cfg": {"inc": True, "src": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/disks/os1",
+              "created": "2025-03-04T10:00:00Z"}},
+     "Standard_LRS 64 GB", "incremental · from os1 · taken 2025-03-04", "", ""),
+    ({"type": "microsoft.alertsmanagement/smartdetectoralertrules",
+      "cfg": {"sev": "Sev3", "st": "Disabled", "freq": "PT1M",
+              "det": "/subscriptions/s/providers/microsoft.alertsmanagement/smartdetectors/FailureAnomaliesDetector"}},
+     "Sev 3", "every 1m · FailureAnomalies", "", "Disabled"),
+    ({"type": "microsoft.containerregistry/registries", "sku": {"name": "Premium", "tier": "Premium"},
+      "cfg": {"admin": True, "pna": "Disabled", "zr": "Enabled", "pe": 1}},
+     "Premium", "admin user on · public network disabled · zone redundant · 1 private endpoint", "", ""),
+    ({"type": "microsoft.azurearcdata/sqlserverinstances", "productVersion": "SQL Server 2019", "edition": "Standard",
+      "vCores": "8", "cfg": {"lic": "PAYG", "host": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.HybridCompute/machines/srv1",
+                             "st": "Disconnected"}},
+     "SQL Server 2019 · Standard · 8 vCores", "license PAYG · host srv1", "", "Disconnected"),
 ])
 def test_type_profiles_fill_size_configuration_runtime_and_state(row, size, config, os_label, state):
     assert (size_of(row), config_of(row), os_of(row), state_of(row)) == (size, config, os_label, state)
@@ -203,7 +232,7 @@ def test_compact_format_and_written_files(reports):
     assert wire["format"] == 2 and wire == json.loads(json.dumps(compact(estate), default=str))
     assert wire["types"]["microsoft.compute/disks"] == {"label": "Managed disk", "category": "Storage"}
     disk = next(r for r in wire["resources"] if r["name"] == "disk-old")
-    assert disk["n"] == 1 and disk["sev"] == "high" and "cost" not in disk
+    assert disk["n"] == 1 and disk["sev"] == "high" and disk["cost"] == 0.0   # analysed, no charge: 0, not blank
     unattached = next(s for s in wire["suggestions"] if s["type"] == "unattached_managed_disk")
     assert wire["resources"][unattached["r"]]["name"] == "disk-old" and unattached["af"] == "compute-appservice"
     tags = next(s for s in wire["suggestions"] if s["type"] == "missing_required_tags")
@@ -427,3 +456,12 @@ def test_dormant_storage_in_compact_format_and_overview():
     md = render_estate_markdown(estate)
     assert "1 of them are storage accounts that still hold data (dormant)" in md
     assert "dormant data - tier / archive" in md
+
+
+def test_environment_falls_back_to_the_subscription_name():
+    from scripts.subscription_analysis.estate import environment_of
+
+    row = {"name": "st1", "resourceGroup": "rg-shared", "tags": {}}
+    assert environment_of(row) == "Unknown"
+    assert environment_of(row, "sandbox-team-a") == "Non-production"
+    assert environment_of(dict(row, tags={"environment": "prod"}), "sandbox-team-a") == "Production"   # tags win

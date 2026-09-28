@@ -121,6 +121,7 @@ reports/
     ├── 01-current-findings/         baseline, workloads, architecture diagram, resource-inventory.md
     ├── 02-gap-analysis/             gaps by area × severity (structural, security, operational, performance, FinOps)
     ├── 03-cost-drivers/             12-month trend, service/RG/resource breakdown, forecast, savings-register.md
+    │                                (per wave: actions with a saving, other actions, tag / naming hygiene counts)
     ├── 04-architectural-critique/   inferred evolution, decision-by-decision critique, target architecture, roadmap
     └── 05-deep-dive/
         ├── README.md                index, scanner runs, collection warnings
@@ -256,6 +257,10 @@ The **Estate** page:
   `tag_key_typo`) sit on almost every resource, so they are counted separately and hidden unless you tick
   *Include tag / naming hygiene findings* or pick that suggestion type.
 - **Download CSV** exports the filtered rows (all pages); **Copy link** shares the filtered view (filters live in the URL).
+- **Empty cells** show a muted `-`; hover it for the reason (no SKU for this type, no activity metric, not a VM...).
+  **Last 30 d** is `0` for resources of analysed subscriptions that had no charge, and `-` only where the
+  subscription has no report yet. **Environment** comes from tags, then the resource / resource-group name, then
+  the subscription name.
 
 Suggestions and cost come from the latest report of each subscription; subscriptions that were never analysed
 still appear in the inventory, without suggestions.

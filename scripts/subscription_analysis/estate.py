@@ -20,6 +20,7 @@ join can be rebuilt offline whenever a report changes.
 
 import asyncio
 import json
+import re
 import threading
 import time
 from collections import Counter, defaultdict
@@ -85,7 +86,14 @@ RESOURCE_DETAILS = """
     type =~ 'microsoft.compute/virtualmachines',
         pack('zones', zones, 'data', array_length(properties.storageProfile.dataDisks),
              'nics', array_length(properties.networkProfile.networkInterfaces), 'priority', properties.priority,
-             'avset', properties.availabilitySet.id, 'host', properties.osProfile.computerName),
+             'avset', properties.availabilitySet.id, 'host', properties.osProfile.computerName,
+             'osdisk', properties.storageProfile.osDisk.managedDisk.storageAccountType),
+    type =~ 'microsoft.compute/disks',
+        pack('os', properties.osType, 'zones', zones, 'tier', properties.tier, 'net', properties.networkAccessPolicy,
+             'burst', properties.burstingEnabled, 'shares', properties.maxShares),
+    type =~ 'microsoft.compute/snapshots',
+        pack('inc', properties.incremental, 'src', properties.creationData.sourceResourceId,
+             'created', properties.timeCreated),
     type =~ 'microsoft.compute/images', pack('source', properties.sourceVirtualMachine.id),
     type in~ ('microsoft.web/sites', 'microsoft.web/sites/slots'),
         pack('plan', properties.serverFarmId, 'fx', coalesce(properties.siteConfig.linuxFxVersion,
@@ -108,7 +116,9 @@ RESOURCE_DETAILS = """
     type =~ 'microsoft.sql/servers',
         pack('ver', properties.version, 'pna', properties.publicNetworkAccess, 'tls', properties.minimalTlsVersion),
     type =~ 'microsoft.sql/servers/databases',
-        pack('secondary', properties.secondaryType, 'pool', isnotempty(properties.elasticPoolId)),
+        pack('secondary', properties.secondaryType, 'pool', isnotempty(properties.elasticPoolId),
+             'maxb', properties.maxSizeBytes, 'zr', properties.zoneRedundant,
+             'bkp', properties.currentBackupStorageRedundancy, 'pause', properties.autoPauseDelay),
     type =~ 'microsoft.documentdb/databaseaccounts',
         pack('cons', properties.consistencyPolicy.defaultConsistencyLevel, 'caps', properties.capabilities,
              'locs', array_length(properties.locations)),
@@ -170,14 +180,24 @@ RESOURCE_DETAILS = """
              'app', properties.Application_Type),
     type =~ 'microsoft.operationalinsights/workspaces',
         pack('ret', properties.retentionInDays, 'cap', properties.workspaceCapping.dailyQuotaGb),
-    type =~ 'microsoft.alertsmanagement/smartdetectoralertrules', pack('sev', properties.severity),
+    type =~ 'microsoft.alertsmanagement/smartdetectoralertrules',
+        pack('sev', properties.severity, 'st', properties.state, 'freq', properties.frequency,
+             'det', properties.detector.id),
     type =~ 'microsoft.insights/datacollectionrules', pack('flows', array_length(properties.dataFlows)),
-    type =~ 'microsoft.eventgrid/systemtopics', pack('topic', properties.topicType),
+    type =~ 'microsoft.eventgrid/systemtopics', pack('topic', properties.topicType, 'src', properties.source),
     type =~ 'microsoft.dataprotection/backupvaults', pack('redundancy', properties.storageSettings[0].type),
     type =~ 'microsoft.recoveryservices/vaults',
         pack('redundancy', properties.redundancySettings.standardTierStorageRedundancy),
-    type =~ 'microsoft.storage/storageaccounts', pack('hns', properties.isHnsEnabled),
-    type =~ 'microsoft.automation/automationaccounts/runbooks', pack('rtype', properties.runbookType),
+    type =~ 'microsoft.storage/storageaccounts',
+        pack('hns', properties.isHnsEnabled, 'pna', properties.publicNetworkAccess, 'acl', properties.networkAcls.defaultAction,
+             'pe', array_length(properties.privateEndpointConnections), 'shared', properties.allowSharedKeyAccess,
+             'blobpub', properties.allowBlobPublicAccess, 'tls', properties.minimumTlsVersion, 'sftp', properties.isSftpEnabled),
+    type =~ 'microsoft.automation/automationaccounts/runbooks', pack('rtype', properties.runbookType, 'st', properties.state),
+    type =~ 'microsoft.containerregistry/registries',
+        pack('admin', properties.adminUserEnabled, 'pna', properties.publicNetworkAccess, 'zr', properties.zoneRedundancy,
+             'pe', array_length(properties.privateEndpointConnections)),
+    type =~ 'microsoft.azurearcdata/sqlserverinstances',
+        pack('lic', properties.licenseType, 'host', properties.containerResourceId, 'st', properties.status),
     type =~ 'microsoft.devtestlab/schedules',
         pack('task', properties.taskType, 'at', properties.dailyRecurrence['time'], 'tz', properties.timeZoneId,
              'target', properties.targetResourceId),
@@ -587,7 +607,19 @@ def _profile(row: Dict[str, Any]) -> Dict[str, str]:
         out["config"] = _join(_zones(c.get("zones")), _count(c.get("data"), "data disk") if c.get("data") else None,
                               _count(nics, "NIC") if nics > 1 else None,
                               "Spot" if c.get("priority") == "Spot" else None,
-                              f"availability set {_leaf(c['avset'])}" if c.get("avset") else None)
+                              f"availability set {_leaf(c['avset'])}" if c.get("avset") else None,
+                              f"OS disk {c['osdisk']}" if c.get("osdisk") else None)
+    elif rtype == "microsoft.compute/disks":
+        shares = c.get("shares") or 0
+        out["config"] = _join(f"OS disk ({c['os']})" if c.get("os") else "data disk",
+                              f"VM {_leaf(row['managedBy'])}" if row.get("managedBy") else None, _zones(c.get("zones")),
+                              f"tier {c['tier']}" if c.get("tier") else None,
+                              "public network access" if c.get("net") == "AllowAll" else None,
+                              "bursting" if c.get("burst") else None, f"shared x{shares}" if shares > 1 else None)
+    elif rtype == "microsoft.compute/snapshots":
+        out["config"] = _join("incremental" if c.get("inc") else "full",
+                              f"from {_leaf(c['src'])}" if c.get("src") else None,
+                              f"taken {str(c['created'])[:10]}" if c.get("created") else None)
     elif rtype == "microsoft.compute/images":
         out["config"] = f"from VM {_leaf(c['source'])}" if c.get("source") else ""
     elif rtype in ("microsoft.web/sites", "microsoft.web/sites/slots"):
@@ -625,8 +657,14 @@ def _profile(row: Dict[str, Any]) -> Dict[str, str]:
         out["config"] = _join(f"public access {c['pna']}" if c.get("pna") else None,
                               f"TLS {c['tls']}" if c.get("tls") else None)
     elif rtype == "microsoft.sql/servers/databases":
+        max_gb = (c.get("maxb") or 0) / 1024 ** 3
+        pause = c.get("pause") or 0
         out["config"] = _join(f"{c['secondary']} secondary" if c.get("secondary") else None,
-                              "in elastic pool" if c.get("pool") else None)
+                              "in elastic pool" if c.get("pool") else None,
+                              f"max {max_gb:,.0f} GB" if max_gb >= 1 else None,
+                              "zone redundant" if c.get("zr") else None,
+                              f"{c['bkp']} backups" if c.get("bkp") else None,
+                              f"auto-pause after {pause} min" if pause > 0 else None)
     elif rtype == "microsoft.documentdb/databaseaccounts":
         caps = {str(x.get("name")) for x in (c.get("caps") or []) if isinstance(x, dict)}
         api = {"MongoDB": "MongoDB", "GlobalDocumentDB": "NoSQL", "Parse": "Parse"}.get(row.get("kind") or "", row.get("kind"))
@@ -726,18 +764,45 @@ def _profile(row: Dict[str, Any]) -> Dict[str, str]:
                               f"daily cap {cap} GB" if cap not in (None, -1, -1.0) else None)
     elif rtype == "microsoft.alertsmanagement/smartdetectoralertrules":
         out["size"] = str(c.get("sev") or "").replace("Sev", "Sev ")
+        detector = str(c.get("det") or "").split("/")[-1]
+        out["config"] = _join(f"every {str(c['freq']).replace('PT', '').lower()}" if c.get("freq") else None,
+                              re.sub(r"(?i)detector$", "", detector) or None)
+        out["state"] = "Disabled" if str(c.get("st") or "").lower() == "disabled" else ""
     elif rtype == "microsoft.insights/datacollectionrules":
         out["config"] = _count(c.get("flows"), "data flow") or ""
     elif rtype == "microsoft.eventgrid/systemtopics":
         out["size"] = c.get("topic") or ""
+        out["config"] = f"source {_leaf(c['src'])}" if c.get("src") else ""
     elif rtype == "microsoft.dataprotection/backupvaults":
         out["size"] = c.get("redundancy") or ""
     elif rtype == "microsoft.recoveryservices/vaults":
         out["config"] = c.get("redundancy") or ""
     elif rtype == "microsoft.storage/storageaccounts":
-        out["config"] = "ADLS Gen2 (hierarchical namespace)" if c.get("hns") else ""
+        if str(c.get("pna") or "").lower() == "disabled":
+            network = "public network disabled"
+        elif str(c.get("acl") or "").lower() == "deny":
+            network = "firewall: selected networks"
+        else:
+            network = "open to all networks"
+        tls = str(c.get("tls") or "").replace("TLS", "TLS ").replace("_", ".")
+        out["config"] = _join("ADLS Gen2" if c.get("hns") else None, network,
+                              _count(c.get("pe"), "private endpoint") if c.get("pe") else None,
+                              "blob public access on" if c.get("blobpub") else None,
+                              "shared key off" if c.get("shared") is False else None, tls or None,
+                              "SFTP" if c.get("sftp") else None)
     elif rtype == "microsoft.automation/automationaccounts/runbooks":
         out["size"] = c.get("rtype") or ""
+        out["config"] = c.get("st") or ""
+    elif rtype == "microsoft.containerregistry/registries":
+        out["config"] = _join("admin user on" if c.get("admin") else None,
+                              "public network disabled" if str(c.get("pna") or "").lower() == "disabled" else None,
+                              "zone redundant" if str(c.get("zr") or "").lower() == "enabled" else None,
+                              _count(c.get("pe"), "private endpoint") if c.get("pe") else None) or "defaults"
+    elif rtype == "microsoft.azurearcdata/sqlserverinstances":
+        out["config"] = _join(f"license {c['lic']}" if c.get("lic") else None,
+                              f"host {_leaf(c['host'])}" if c.get("host") else None)
+        status = c.get("st") or ""
+        out["state"] = "" if status.lower() in ("", "connected") else status
     elif rtype == "microsoft.devtestlab/schedules":
         at = str(c.get("at") or "")
         out["size"] = c.get("task") or ""
@@ -774,10 +839,10 @@ def state_of(row: Dict[str, Any]) -> str:
     return "" if state.lower() in ("succeeded", "ready", "running", "online") else state
 
 
-def environment_of(row: Dict[str, Any]) -> str:
+def environment_of(row: Dict[str, Any], subscription: str = "") -> str:
     env = env_from_tags(row.get("tags")) or env_from_name(row.get("name") or "")
     if not env:
-        env = env_from_name(row.get("resourceGroup") or "")
+        env = env_from_name(row.get("resourceGroup") or "") or env_from_name(subscription)
     return {"prod": "Production", "nonprod": "Non-production"}.get(env or "", "Unknown")
 
 
@@ -811,7 +876,7 @@ def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
         "config": config_of(row),
         "os": os_of(row),
         "state": state_of(row),
-        "env": environment_of(row),
+        "env": environment_of(row, sub_names.get(sub_id) or ""),
         "managedBy": row.get("managedBy") or "",
         "sizeGB": int(row["diskSizeGB"]) if str(row.get("diskSizeGB") or "").isdigit() else None,
         "vcpu": row.get("vcpu"),
@@ -1344,6 +1409,10 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
     by_id = {r["id"].lower(): r for r in resources}
 
     suggestions: List[Dict[str, Any]] = []
+    for r in resources:  # analysed subscription without a cost row = no charge in 30 days
+        rep = reports.get(r["subscriptionId"])
+        if rep is not None:
+            r["cost30"], r["currency"] = 0.0, rep["currency"]
     for sub_id, rep in reports.items():
         costs = {k.lower(): v for k, v in (rep["costs"] or {}).items()}
         for rid, entry in costs.items():
@@ -1414,7 +1483,7 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
                "sev": r["maxSeverity"]}
         resources.append({k: v for k, v in row.items()
                           if v not in (None, "", {}, 0) or k == "s"
-                          or (k in ("cpu", "cpuMax", "mem", "act") and v is not None)})
+                          or (k in ("cpu", "cpuMax", "mem", "act", "cost") and v is not None)})
     suggestions = []
     for s in estate["suggestions"]:
         link = s["link"]

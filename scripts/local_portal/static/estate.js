@@ -60,7 +60,7 @@
         resourceGroup: r.rg || "", location: r.loc || "", kind: r.kind || "", size: r.size || "", config: r.cfg || "",
         os: r.os || "",
         state: r.state || "", env: r.env || "Unknown", managedBy: r.mb || "", sizeGB: r.gb || null, tags: r.tags || {},
-        cost30: r.cost || 0, currency: r.cur || "", suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
+        cost30: r.cost === undefined ? null : r.cost, currency: r.cur || "", suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
         vcpu: r.vcpu || null, ramGB: r.ram || null, cpuAvg: r.cpu === undefined ? null : r.cpu,
         cpuMax: r.cpuMax === undefined ? null : r.cpuMax, memAvg: r.mem === undefined ? null : r.mem, subResource: !!r.sub,
         activity: r.act === undefined ? null : r.act, usage: r.use || "", idle: !!r.idle, dormant: !!r.dor,
@@ -342,9 +342,19 @@
 
   const sevPill = (s) => el("span", { class: "pill sev-" + s }, s);
 
+  // Why a cell is empty: shown as a muted "-" with this explanation instead of a blank.
+  const BLANK_REASON = {
+    cost30: "No cost data: the subscription has not been analysed yet",
+    usage: "Azure Monitor has no activity metric for this type, or no data in 30 days",
+    vcpu: "Only for VMs and scale sets", ramGB: "Only for VMs and scale sets",
+    cpuAvg: "No CPU metric (not a VM, or not running in 30 days)", memAvg: "No memory metric (not a VM, or not running in 30 days)",
+    size: "This type has no SKU or size", config: "Nothing to configure beyond the defaults for this type",
+    os: "Only for machines, apps and containers", state: "No state reported: running / provisioned normally",
+  };
+
   function cellValue(r, c) {
     const v = r[c.key];
-    if (c.key === "cost30") return v ? fmt(v) + " " + (r.currency || "") : "";
+    if (c.key === "cost30") return v === null || v === undefined ? "" : (v ? fmt(v) : "0") + " " + (r.currency || "");
     if (c.pct) return v === null || v === undefined ? "" : v.toFixed(1) + " %";
     if (c.key === "ramGB") return v ? String(v) : "";
     return v === null || v === undefined ? "" : v;
@@ -356,7 +366,11 @@
       const td = el("td", c.num ? { class: "num" } : null);
       if (c.key === "name") td.appendChild(el("strong", null, r.name));
       else if (c.key === "suggestions") { if (r.suggestions) td.appendChild(el("span", { class: "pill sev-" + r.maxSeverity }, r.suggestions)); }
-      else td.textContent = cellValue(r, c);
+      else {
+        const text = cellValue(r, c);
+        td.textContent = text === "" ? "-" : text;
+        if (text === "") { td.classList.add("muted"); td.title = BLANK_REASON[c.key] || "Not reported for this resource"; }
+      }
       if (c.key === "cpuAvg" && r.cpuMax !== null) td.title = "Peak " + r.cpuMax.toFixed(1) + " % (highest 1-minute value in 30 days)";
       if (c.key === "cpuAvg" && r.cpuAvg !== null && r.cpuAvg < 5) td.classList.add("low-util");
       if (c.key === "usage" && r.idle) td.classList.add("low-util");

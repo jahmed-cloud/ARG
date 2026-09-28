@@ -19,9 +19,9 @@
 #   ./build-push.sh --arm --no-push  # multi-arch, local only
 #
 # Images pushed:
-#   jahmed22/azure-resource-guardian-backend:0.1   + :latest
-#   jahmed22/azure-resource-guardian-worker:0.1    + :latest
-#   jahmed22/azure-resource-guardian-frontend:0.1  + :latest
+#   jahmed22/azure-resource-guardian-backend:0.2   + :latest
+#   jahmed22/azure-resource-guardian-worker:0.2    + :latest
+#   jahmed22/azure-resource-guardian-frontend:0.2  + :latest
 #
 # =============================================================================
 
@@ -32,7 +32,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 REGISTRY="jahmed22"
 APP_NAME="azure-resource-guardian"
-VERSION="0.1"
+VERSION="0.2"
 BUILDER_NAME="arg-builder"
 
 # ---------------------------------------------------------------------------

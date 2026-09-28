@@ -106,6 +106,8 @@ def test_os_state_category_and_labels():
       "powerState": "PowerState/running",
       "cfg": {"zones": ["1"], "data": 2, "nics": 1, "priority": "Spot", "avset": None, "host": "web01"}},
      "Standard_D4s_v5", "zone 1 · 2 data disks · Spot", "Linux", "running"),
+    ({"type": "microsoft.sql/servers/databases", "sku": {"name": "S0"}, "cfg": {"secondary": "Geo", "pool": True}},
+     "S0", "Geo secondary · in elastic pool", "", ""),
 ])
 def test_type_profiles_fill_size_configuration_runtime_and_state(row, size, config, os_label, state):
     assert (size_of(row), config_of(row), os_of(row), state_of(row)) == (size, config, os_label, state)
@@ -327,7 +329,7 @@ def test_usage_metrics_via_the_batch_api(monkeypatch):
     assert sorted(n for *_, n in storage_batches) == [11, 50]                    # 61 accounts -> 2 batches of <= 50
 
 
-def test_failed_batch_is_retried_with_the_primary_metric():
+def test_failed_batch_is_retried_metric_by_metric():
     import asyncio
 
     from scripts.subscription_analysis import estate
@@ -336,7 +338,7 @@ def test_failed_batch_is_retried_with_the_primary_metric():
 
     def fetch(token, sub, region, namespace, names, ids, start, end):
         seen.append(names)
-        if len(names) > 1:
+        if len(names) > 1 or names == ["GeneratedTokens"]:
             raise RuntimeError("400 metric not supported")
         return {ids[0].lower(): estate._summarize([dict(_series(total=5.0)[0], name={"value": names[0]})])}
 
@@ -349,8 +351,9 @@ def test_failed_batch_is_retried_with_the_primary_metric():
 
     row = {"id": "/ai", "type": "microsoft.cognitiveservices/accounts", "location": "westeurope", "subscriptionId": "s"}
     asyncio.run(estate.collect_usage(Cred(), [row], fetch=fetch))
-    assert seen == [["TotalCalls", "ProcessedPromptTokens", "GeneratedTokens"], ["TotalCalls"]]
-    assert row["activity"] == 150.0
+    assert seen == [["TotalCalls", "ProcessedPromptTokens", "GeneratedTokens"], ["TotalCalls"],
+                    ["ProcessedPromptTokens"], ["GeneratedTokens"]]
+    assert row["activity"] == 150.0 and row["tokens30"] == 150.0          # one bad metric no longer drops the rest
 
 
 def test_human_readable_usage():
@@ -370,3 +373,57 @@ def test_zero_cpu_survives_the_compact_format():
     wire = compact(build_estate_from_rows([{"id": "/vm", "type": "microsoft.compute/virtualmachines", "name": "vm",
                                             "cpuAvg": 0.0, "cpuMax": 0.0, "memAvg": 0.0}]))
     assert wire["resources"][0]["cpu"] == 0.0 and wire["resources"][0]["mem"] == 0.0
+
+
+def test_idle_excludes_system_databases_replicas_and_resources_still_called():
+    from scripts.subscription_analysis.estate import is_dormant, is_idle
+
+    db = {"type": "microsoft.sql/servers/databases", "activity": 0.0}
+    assert is_idle(dict(db, name="appdb"))
+    assert not is_idle(dict(db, name="master", sku={"name": "GP_SYSTEM", "tier": "System"}))
+    assert not is_idle(dict(db, name="appdb-dr", cfg={"secondary": "Geo", "pool": False}))
+    assert is_idle(dict(db, name="appdb-read", cfg={"secondary": "Named", "pool": False}))   # read replica: waste
+    assert not is_idle({"type": "microsoft.logic/workflows", "activity": 0.0, "errors30": 12.0})  # runs, but fail
+    assert not is_idle({"type": "microsoft.containerregistry/registries", "activity": 0.0, "otherActivity30": 4.0})
+    sa = {"type": "microsoft.storage/storageaccounts", "activity": 0.0, "activitySplit": True}
+    assert is_dormant(dict(sa, usedGB=3180.7)) and not is_dormant(dict(sa, usedGB=0.2)) and is_idle(dict(sa, usedGB=0.2))
+
+
+def test_rightsizing_skips_appliances_and_memory_bound_vms():
+    from scripts.subscription_analysis.estate import render_estate_markdown
+
+    def vm(name, **kw):
+        return dict({"id": f"/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/{name}",
+                     "name": name, "type": "microsoft.compute/virtualmachines", "subscriptionId": "s",
+                     "powerState": "PowerState/running", "vmSize": "Standard_D8s_v5", "vcpu": 8, "ramGB": 32.0,
+                     "cpuAvg": 1.5, "cpuMax": 20.0, "memAvg": 10.0}, **kw)
+
+    estate = build_estate_from_rows([
+        vm("app01"), vm("burst01", cpuMax=98.0), vm("nomem01", memAvg=None),
+        vm("fw01", imageOffer="fortinet_fortigate-vm_v5", imageSku="fortinet_fg-vm", memAvg=100.0),
+        vm("search01", memAvg=87.3), vm("busy01", cpuAvg=35.0),
+    ])
+    by = {r["name"]: r for r in estate["resources"]}
+    assert by["fw01"]["nva"] and not by["app01"]["nva"]
+    md = render_estate_markdown(estate)
+    section = md.split("### Right-sizing candidates")[1].split("###")[0]
+    assert ": 3 running VM(s)" in section
+    assert "| app01 |" in section and "| burst01 |" in section and "| nomem01 |" in section
+    assert "fw01" not in section and "search01" not in section and "busy01" not in section
+    assert "peaks at 98 % - check bursts" in section and "no memory data - check RAM first" in section
+    assert "1 network appliances" in section and "1 memory-bound" in section
+    assert compact(estate)["resources"][[r["name"] for r in estate["resources"]].index("fw01")]["nva"] == 1
+
+
+def test_dormant_storage_in_compact_format_and_overview():
+    from scripts.subscription_analysis.estate import render_estate_markdown
+
+    rows = [{"id": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/archive",
+             "name": "archive", "type": "microsoft.storage/storageaccounts", "subscriptionId": "s",
+             "activity": 0.0, "activitySplit": True, "activityUnit": "data operations", "transactions30": 129.0,
+             "usedGB": 3180.7, "usedBytes": 3180.7 * 1024 ** 3}]
+    estate = build_estate_from_rows(rows)
+    assert compact(estate)["resources"][0]["dor"] == 1
+    md = render_estate_markdown(estate)
+    assert "1 of them are storage accounts that still hold data (dormant)" in md
+    assert "dormant data - tier / archive" in md

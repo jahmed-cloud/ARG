@@ -107,7 +107,7 @@ Total: **63 scanners**.
 | Scanner | What it detects | Default severity | Finding types | Data sources | Local |
 |---|---|---|---|---|---|
 | `orphaned_backup_vault_scanner` | Potentially Empty Recovery Services Vaults | low | `orphaned_backup_vault` | Resource Graph | yes |
-| `unused_storage_account_scanner` | Potentially Unused Storage Accounts | medium | `unused_storage_account` | Resource Graph, Azure Monitor metrics, Cost Management | yes |
+| `unused_storage_account_scanner` | Potentially Unused Storage Accounts | medium | `dormant_storage_data`<br>`unused_storage_account` | Resource Graph, Azure Monitor metrics, Cost Management | yes |
 
 ## Terraform
 
@@ -140,6 +140,7 @@ How the subscription analysis report files each finding type (gap-analysis area,
 | `defender_plan_disabled` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
 | `defender_recommendations` | Security & Identity | `security-identity` | Wave 2 - Optimisation |
 | `dormant_member_user` | Operational / Observability | `observability-operations` | Wave 3 - Structural |
+| `dormant_storage_data` | FinOps / Governance | `data-sql-storage` | Wave 2 - Optimisation |
 | `empty_application_gateway` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
 | `empty_load_balancer` | FinOps / Governance | `networking` | Wave 1 - No-regret cleanup |
 | `empty_resource_group` | FinOps / Governance | `observability-operations` | Wave 1 - No-regret cleanup |

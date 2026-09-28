@@ -193,6 +193,25 @@ class ArmClient:
         )
         return summarize_metrics(payload)
 
+    async def metric_totals_by(self, resource_id: str, metric: str, dimension: str, *,
+                               days: int = 30) -> Dict[str, float]:
+        """{dimension value: total over the window} for one metric split by one dimension (e.g. ApiName)."""
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        payload = await self.get(
+            f"{resource_id}/providers/Microsoft.Insights/metrics",
+            "2023-10-01",
+            {
+                "metricnames": metric,
+                "aggregation": "Total",
+                "interval": "P1D",
+                "timespan": f"{start:%Y-%m-%dT%H:%M:%SZ}/{end:%Y-%m-%dT%H:%M:%SZ}",
+                "$filter": f"{dimension} eq '*'",
+                "top": str(METRIC_SPLIT_TOP),
+            },
+        )
+        return totals_by_dimension(payload.get("value") or [])
+
     async def cost_query(self, scope: str, body: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Cost Management query; rows are returned as dicts keyed by column name."""
         payload = await self.post(f"{scope}/providers/Microsoft.CostManagement/query", "2023-11-01", body)
@@ -224,6 +243,45 @@ def summarize_metrics(payload: Dict[str, Any]) -> Dict[str, Dict[str, Optional[f
             "points": float(len(points)),
         }
     return summary
+
+
+METRIC_SPLIT_TOP = 100  # Azure Monitor returns only 10 series per split unless asked for more
+
+# Requests the platform makes against every storage account on its own (Defender for Storage, the portal, ARM
+# inventory, CORS preflight, anonymous probes). About 120 a month with nobody using the account, so they say
+# nothing about whether the data is read or written.
+STORAGE_HOUSEKEEPING_APIS = frozenset(a.lower() for a in (
+    "GetBlobServiceProperties", "GetFileServiceProperties", "GetQueueServiceProperties", "GetTableServiceProperties",
+    "GetBlobServiceStats", "GetAccountInformation", "ListContainers", "ListShares", "ListQueues", "ListTables",
+    "QueryTables", "GetContainerProperties", "GetContainerACL", "GetContainerServiceMetadata",
+    "GetShareProperties", "GetShareStats", "BlobPreflightRequest", "FilePreflightRequest",
+    "QueuePreflightRequest", "TablePreflightRequest",
+))
+# "Unknown" is anonymous or failed-auth traffic: a few dozen probes a month on any account, but a client that keeps
+# calling (classic diagnostics, an app with a stale key) can make hundreds of thousands - only the excess counts.
+STORAGE_UNKNOWN_ALLOWANCE = 50
+
+
+def totals_by_dimension(values: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Sum each split series of a metrics response: {dimension value: total}."""
+    out: Dict[str, float] = {}
+    for metric in values:
+        for series in metric.get("timeseries") or []:
+            meta = series.get("metadatavalues") or []
+            key = str(meta[0].get("value")) if meta else ""
+            out[key] = out.get(key, 0.0) + sum(p.get("total") or 0.0 for p in series.get("data") or [])
+    return out
+
+
+def storage_data_operations(by_api: Dict[str, float]) -> float:
+    """Transactions that actually read or write data: the ApiName split minus platform housekeeping."""
+    total = 0.0
+    for api, value in by_api.items():
+        if api.lower() == "unknown":
+            total += max(0.0, value - STORAGE_UNKNOWN_ALLOWANCE)
+        elif api.lower() not in STORAGE_HOUSEKEEPING_APIS:
+            total += value
+    return total
 
 
 def _cost_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:

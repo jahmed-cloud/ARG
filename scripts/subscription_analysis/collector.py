@@ -54,6 +54,8 @@ class AnalysisData:
     scanner_runs: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
     cost: Dict[str, Any] = dataclasses.field(default_factory=dict)
     warnings: List[str] = dataclasses.field(default_factory=list)
+    # {lower(account id): [{"name", "model", "version", "sku", "capacity"}]} for OpenAI / AI Services accounts
+    ai_deployments: Dict[str, List[Dict[str, Any]]] = dataclasses.field(default_factory=dict)
 
 
 def to_jsonable(value: Any) -> Any:
@@ -177,6 +179,34 @@ async def collect_inventory(context: ScanContext, arm: ArmClient, data: Analysis
     data.resources = rows
 
 
+AI_DEPLOYMENT_KINDS = ("openai", "aiservices")
+AI_DEPLOYMENT_CONCURRENCY = 8
+
+
+async def collect_ai_deployments(arm: ArmClient, data: AnalysisData) -> None:
+    """Model deployments of every Azure OpenAI / AI Services (Foundry) account, for the AI deep dive."""
+    accounts = [r for r in data.resources
+                if (r.get("type") or "").lower() == "microsoft.cognitiveservices/accounts"
+                and (r.get("kind") or "").lower() in AI_DEPLOYMENT_KINDS and r.get("id")]
+    gate = asyncio.Semaphore(AI_DEPLOYMENT_CONCURRENCY)
+
+    async def fetch(account: Dict[str, Any]) -> None:
+        async with gate:
+            try:
+                items = await arm.get_all(f"{account['id']}/deployments", "2024-10-01")
+            except Exception as exc:
+                data.warnings.append(f"AI deployments unavailable for {account.get('name')}: {exc}")
+                return
+        rows = []
+        for d in items:
+            model, sku = (d.get("properties") or {}).get("model") or {}, d.get("sku") or {}
+            rows.append({"name": d.get("name"), "model": model.get("name"), "version": model.get("version"),
+                         "sku": sku.get("name"), "capacity": sku.get("capacity")})
+        data.ai_deployments[account["id"].lower()] = rows
+
+    await asyncio.gather(*(fetch(a) for a in accounts))
+
+
 async def collect_costs(context: ScanContext, data: AnalysisData, months: int = 12, days: int = 30) -> None:
     today = date.today()
     start_12m = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
@@ -247,6 +277,7 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
         logger.info("Collecting inventory for %s (%s)", sub["name"], sub["id"])
         progress("Collecting resource inventory", 1, total)
         await collect_inventory(context, arm, data)
+        await collect_ai_deployments(arm, data)
         if include_cost:
             progress("Querying Cost Management (throttled API, can take a minute)", 2, total)
             logger.info("Querying Cost Management")

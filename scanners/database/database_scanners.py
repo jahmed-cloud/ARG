@@ -385,6 +385,7 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
 
     SATURATED_MAX = 95.0
     SATURATED_MIN_AVG = 10.0  # a lone spike on an otherwise idle database is not saturation
+    DR_SECONDARY_TYPES = ("geo", "standby")
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
@@ -392,7 +393,8 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
         | where type =~ 'microsoft.sql/servers/databases'
         | where name !~ 'master' and tostring(sku.tier) !~ 'System'
         | project id, name, type, resourceGroup, subscriptionId, location, tags,
-                  sku_name = tostring(sku.name), sku_tier = tostring(sku.tier), capacity = toint(sku.capacity)
+                  sku_name = tostring(sku.name), sku_tier = tostring(sku.tier), capacity = toint(sku.capacity),
+                  secondary_type = tostring(properties.secondaryType)
         """
         try:
             dbs = await self.arg(context, query)
@@ -429,6 +431,8 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
             connections = db.get("connections_30d")
             evidence = {"metric": db.get("metric"), "max_30d": peak, "avg_30d": avg,
                         "successful_connections_30d": connections}
+            if peak < 1.0 and (db.get("secondary_type") or "").lower() in self.DR_SECONDARY_TYPES:
+                continue  # geo / standby replicas take no connections until a failover - that is their job
             if peak < 1.0 and not connections:
                 basis = ("no successful connections" if connections == 0
                          else "connection metric unavailable, CPU only")
@@ -478,6 +482,9 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
         return [
             {**common, "id": f"{base}/db-analysis", "name": "sql-app-1/db-analysis", "sku_name": "Standard",
              "sku_tier": "Standard", "capacity": 10, "metric": "dtu_consumption_percent",
+             "util_avg": 0.0, "util_max": 0.0, "connections_30d": 0.0, "cost_usd_30d": 14.7},
+            {**common, "id": f"{base}/db-analysis-dr", "name": "sql-app-1/db-analysis-dr", "sku_name": "Standard",
+             "sku_tier": "Standard", "capacity": 10, "metric": "dtu_consumption_percent", "secondary_type": "Geo",
              "util_avg": 0.0, "util_max": 0.0, "connections_30d": 0.0, "cost_usd_30d": 14.7},
             {**common, "id": f"{base}/db-reports", "name": "sql-app-1/db-reports", "sku_name": "Standard",
              "sku_tier": "Standard", "capacity": 50, "metric": "dtu_consumption_percent",

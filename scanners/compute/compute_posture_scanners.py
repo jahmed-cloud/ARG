@@ -23,7 +23,14 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, HOURS_PER_MONTH, get_retail_price
+from scanners.base.azure_api import (
+    DEFAULT_ARM_CONCURRENCY,
+    HOURS_PER_MONTH,
+    cost_for,
+    gather_limited,
+    get_resource_costs,
+    get_retail_price,
+)
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -343,16 +350,25 @@ class AppServicePlanGenerationScanner(PostureScanner):
 
 @register_scanner
 class AppServicePlanUtilizationScanner(PostureScanner):
-    """30-day CpuPercentage average/maximum on each plan (live mode)."""
+    """
+    30-day CpuPercentage per plan at an hourly grain (live mode). Saturated means a busy *hour* (or a busy month),
+    not a one-minute spike: plans that idle with short nightly bursts show 100 % as their daily maximum while no
+    hour averages above a few percent. Plans that stay far below their size are reported as over-provisioned.
+
+    Emits finding_type="app_service_plan_cpu_saturated" and finding_type="app_service_plan_underutilized".
+    """
 
     scanner_name = "app_service_plan_utilization_scanner"
-    display_name = "App Service Plan CPU Saturation"
-    description = "Detects App Service plans whose CPU is saturated over the last 30 days"
+    display_name = "App Service Plan CPU Utilisation"
+    description = "Detects App Service plans whose CPU is saturated, or far below their size, over the last 30 days"
     category = ScannerCategory.COMPUTE
     severity = SeverityLevel.HIGH
 
-    AVG_CPU_THRESHOLD = 60.0
-    MAX_CPU_THRESHOLD = 95.0
+    AVG_CPU_THRESHOLD = 60.0        # 30-day average
+    PEAK_HOUR_THRESHOLD = 80.0      # busiest hour's average
+    IDLE_P95_THRESHOLD = 10.0       # 95 % of hours below this ...
+    IDLE_PEAK_HOUR_THRESHOLD = 30.0  # ... and no hour above this = over-provisioned
+    MAX_MEMORY_FOR_DOWNSIZE = 40.0  # one size down halves the RAM
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
@@ -370,56 +386,142 @@ class AppServicePlanUtilizationScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
+            costs = await get_resource_costs(context)
+
             async def _enrich(plan):
                 try:
-                    m = await context.arm_client.metrics_summary(plan["id"], ["CpuPercentage", "MemoryPercentage"])
-                    plan["cpu_avg"] = (m.get("CpuPercentage") or {}).get("average")
-                    plan["cpu_max"] = (m.get("CpuPercentage") or {}).get("maximum")
-                    plan["mem_avg"] = (m.get("MemoryPercentage") or {}).get("average")
+                    m = await context.arm_client.metrics_summary(plan["id"], ["CpuPercentage", "MemoryPercentage"],
+                                                                 interval="PT1H", aggregation="Average,Maximum")
+                    cpu = m.get("CpuPercentage") or {}
+                    plan.update(cpu_avg=cpu.get("average"), cpu_max=cpu.get("maximum"),
+                                cpu_peak_hour=cpu.get("peak_average"), cpu_p95=cpu.get("p95_average"),
+                                burst_hours=cpu.get("burst_points"),
+                                mem_avg=(m.get("MemoryPercentage") or {}).get("average"))
                 except Exception as exc:
                     warnings.append(f"Metrics unavailable for {plan['name']}: {exc}")
+                plan["cost_usd_30d"] = (cost_for(costs, plan["id"]) or {}).get("cost_usd")
             await gather_limited(plans, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
-        avg_limit = float(self.setting("cpu_avg_threshold", self.AVG_CPU_THRESHOLD))
-        max_limit = float(self.setting("cpu_max_threshold", self.MAX_CPU_THRESHOLD))
         findings = []
         for plan in plans:
-            avg, peak = plan.get("cpu_avg"), plan.get("cpu_max")
-            if avg is None or not (avg >= avg_limit or (peak or 0) >= max_limit):
+            avg = plan.get("cpu_avg")
+            if avg is None:
                 continue
-            findings.append(self.resource_finding(
-                plan,
-                finding_type="app_service_plan_cpu_saturated",
-                title=f"CPU saturated ({avg:.0f}% avg): {plan['name']}",
-                description=(
-                    f"App Service plan '{plan['name']}' ({plan.get('sku_name')} x{plan.get('capacity')}, "
-                    f"{plan.get('sites')} app(s)) averaged {avg:.1f}% CPU with peaks of {peak or 0:.0f}% over "
-                    f"30 days. Every app and slot on the plan competes for the same instance."
-                ),
-                resource_type="microsoft.web/serverfarms",
-                remediation_steps=(
-                    "1. Move non-production slots/apps to their own plan.\n"
-                    "2. Add instances and an autoscale rule (CPU > 70% scale out).\n"
-                    "3. Profile the hottest app (App Insights) before scaling up."
-                ),
-                azure_cli_script=(
-                    f"az monitor autoscale create -g {plan.get('resourceGroup')} --resource {plan['id']} "
-                    f"--min-count 2 --max-count 4 --count 2\n"
-                    f"az monitor autoscale rule create -g {plan.get('resourceGroup')} --autoscale-name {plan['name']} "
-                    f"--condition \"CpuPercentage > 70 avg 10m\" --scale out 1"
-                ),
-                evidence={"cpu_avg_30d": avg, "cpu_max_30d": peak, "memory_avg_30d": plan.get("mem_avg")},
-                estimated_monthly_savings_usd=0.0,
-            ))
+            peak_hour = plan.get("cpu_peak_hour")
+            profile = self._profile_text(plan)
+            evidence = {"cpu_avg_30d": avg, "cpu_busiest_hour": peak_hour, "cpu_p95_hourly": plan.get("cpu_p95"),
+                        "cpu_max_1min": plan.get("cpu_max"), "hours_with_burst_90": plan.get("burst_hours"),
+                        "memory_avg_30d": plan.get("mem_avg")}
+            if avg >= float(self.setting("cpu_avg_threshold", self.AVG_CPU_THRESHOLD)) or (peak_hour or 0) >= float(
+                    self.setting("cpu_peak_hour_threshold", self.PEAK_HOUR_THRESHOLD)):
+                findings.append(self._saturated(plan, profile, evidence))
+            elif self._underutilized(plan):
+                findings.append(self._oversized(plan, profile, evidence))
         return ScanOutput(findings=findings, resources_scanned=len(plans), warnings=warnings)
 
+    @staticmethod
+    def _profile_text(plan: Dict[str, Any]) -> str:
+        parts = [f"averaged {plan['cpu_avg']:.1f}% CPU"]
+        if plan.get("cpu_peak_hour") is not None:
+            parts.append(f"its busiest hour {plan['cpu_peak_hour']:.1f}%")
+        if plan.get("cpu_p95") is not None:
+            parts.append(f"95% of hours at or below {plan['cpu_p95']:.1f}%")
+        text = ", ".join(parts)
+        if plan.get("cpu_max") is not None:
+            bursts = plan.get("burst_hours") or 0
+            text += (f"; one-minute peaks reached {plan['cpu_max']:.0f}%"
+                     + (f" in {bursts:,.0f} hour(s)" if bursts else ""))
+        return text
+
+    def _underutilized(self, plan: Dict[str, Any]) -> bool:
+        p95, peak_hour, mem = plan.get("cpu_p95"), plan.get("cpu_peak_hour"), plan.get("mem_avg")
+        return (p95 is not None and peak_hour is not None
+                and p95 < float(self.setting("idle_p95_threshold", self.IDLE_P95_THRESHOLD))
+                and peak_hour < float(self.setting("idle_peak_hour_threshold", self.IDLE_PEAK_HOUR_THRESHOLD))
+                and (mem is None or mem < float(self.setting("max_memory_for_downsize", self.MAX_MEMORY_FOR_DOWNSIZE)))
+                and smaller_plan_sku(plan.get("sku_name")) is not None)
+
+    def _saturated(self, plan: Dict[str, Any], profile: str, evidence: Dict[str, Any]):
+        return self.resource_finding(
+            plan,
+            finding_type="app_service_plan_cpu_saturated",
+            title=f"CPU saturated (busiest hour {plan.get('cpu_peak_hour') or plan['cpu_avg']:.0f}%): {plan['name']}",
+            description=(
+                f"App Service plan '{plan['name']}' ({plan.get('sku_name')} x{plan.get('capacity')}, "
+                f"{plan.get('sites')} app(s)) {profile} over 30 days. Every app and slot on the plan competes for "
+                f"the same instances."
+            ),
+            resource_type="microsoft.web/serverfarms",
+            remediation_steps=(
+                "1. Move non-production slots/apps to their own plan.\n"
+                "2. Add instances and an autoscale rule (CPU > 70% scale out).\n"
+                "3. Profile the hottest app (App Insights) before scaling up."
+            ),
+            azure_cli_script=(
+                f"az monitor autoscale create -g {plan.get('resourceGroup')} --resource {plan['id']} "
+                f"--min-count 2 --max-count 4 --count 2\n"
+                f"az monitor autoscale rule create -g {plan.get('resourceGroup')} --autoscale-name {plan['name']} "
+                f"--condition \"CpuPercentage > 70 avg 10m\" --scale out 1"
+            ),
+            evidence=evidence,
+            estimated_monthly_savings_usd=0.0,
+        )
+
+    def _oversized(self, plan: Dict[str, Any], profile: str, evidence: Dict[str, Any]):
+        target = smaller_plan_sku(plan.get("sku_name"))
+        cost = plan.get("cost_usd_30d")
+        saving = round(cost / 2, 2) if cost else None
+        return self.resource_finding(
+            plan,
+            finding_type="app_service_plan_underutilized",
+            title=f"Over-provisioned plan ({plan.get('cpu_p95') or 0:.0f}% CPU at P95): {plan['name']}",
+            description=(
+                f"App Service plan '{plan['name']}' ({plan.get('sku_name')} x{plan.get('capacity')}, "
+                f"{plan.get('sites')} app(s)) {profile} over 30 days, with {plan.get('mem_avg') or 0:.0f}% memory "
+                f"used. One size down ({target}) keeps the instance count and still leaves headroom"
+                + (f"; estimated saving USD {saving:,.0f}/month (one size down roughly halves the price)."
+                   if saving else ".")
+            ),
+            resource_type="microsoft.web/serverfarms",
+            severity=SeverityLevel.LOW,
+            remediation_steps=(
+                f"1. Check the busiest hour and the bursts above against the apps' own response times.\n"
+                f"2. Scale the plan to {target} (keep at least 2 instances for production).\n"
+                "3. Watch CPU and memory for a week; scale back up if the busiest hour passes 70%."
+            ),
+            azure_cli_script=f"az appservice plan update --ids {plan['id']} --sku {target}",
+            evidence=evidence,
+            estimated_monthly_savings_usd=saving,
+        )
+
     def _mock_data(self) -> List[Dict[str, Any]]:
-        return [{
-            "id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Web/serverfarms/asp-shared-1",
-            "name": "asp-shared-1", "type": "microsoft.web/serverfarms", "resourceGroup": "rg-web",
-            "subscriptionId": "sub-1", "location": "westeurope", "sku_name": "P3v2", "capacity": 1, "sites": 5,
-            "cpu_avg": 68.3, "cpu_max": 100.0, "mem_avg": 32.2,
-        }]
+        common = {"type": "microsoft.web/serverfarms", "resourceGroup": "rg-web", "subscriptionId": "sub-1",
+                  "location": "westeurope"}
+        return [
+            {**common, "id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Web/serverfarms/asp-shared-1",
+             "name": "asp-shared-1", "sku_name": "P3v2", "capacity": 1, "sites": 5, "cpu_avg": 68.3,
+             "cpu_max": 100.0, "cpu_peak_hour": 97.0, "cpu_p95": 91.0, "burst_hours": 310.0, "mem_avg": 32.2},
+            {**common, "id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Web/serverfarms/asp-quiet-1",
+             "name": "asp-quiet-1", "sku_name": "P2v3", "capacity": 2, "sites": 3, "cpu_avg": 1.5,
+             "cpu_max": 100.0, "cpu_peak_hour": 8.2, "cpu_p95": 3.2, "burst_hours": 40.0, "mem_avg": 21.0,
+             "cost_usd_30d": 420.0},
+            {**common, "id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Web/serverfarms/asp-bursty-1",
+             "name": "asp-bursty-1", "sku_name": "P2v2", "capacity": 2, "sites": 40, "cpu_avg": 1.5,
+             "cpu_max": 100.0, "cpu_peak_hour": 8.2, "cpu_p95": 3.2, "burst_hours": 40.0, "mem_avg": 43.6},
+        ]
+
+
+def smaller_plan_sku(sku: Optional[str]) -> Optional[str]:
+    """One size down in the same App Service family: P2v2 -> P1v2, P1v3 -> P0v3, S3 -> S2; None at the bottom."""
+    m = re.match(r"^([A-Za-z]+)(\d)((?:m?v\d)?)$", sku or "")
+    if not m:
+        return None
+    family, size, gen = m.group(1), int(m.group(2)), m.group(3)
+    if size > 1:
+        return f"{family}{size - 1}{gen}"
+    if size == 1 and family.upper() == "P" and gen.lower() == "v3":
+        return "P0v3"
+    return None
 
 
 # ---------------------------------------------------------------------------

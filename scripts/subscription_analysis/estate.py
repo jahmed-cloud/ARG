@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from scanners.base.azure_api import point_profile
 from scanners.base.naming import env_from_name, env_from_tags
 
 ESTATE_DIR = "_estate"
@@ -884,6 +885,10 @@ def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
         "cpuAvg": row.get("cpuAvg"),
         "cpuMax": row.get("cpuMax"),
         "memAvg": row.get("memAvg"),
+        "cpuPeakHour": row.get("cpuPeakHour"),
+        "cpuP95": row.get("cpuP95"),
+        "burstHours": row.get("burstHours"),
+        "memPeakHour": row.get("memPeakHour"),
         "activity": row.get("activity"),
         "activityUnit": row.get("activityUnit") or "",
         "usage": usage_of(row),
@@ -1051,6 +1056,7 @@ def _summarize(values: List[Dict[str, Any]]) -> Dict[str, Dict[str, Optional[flo
             "total": sum(totals) if totals else None,
             "latest_average": averages[-1] if averages else None,
             "points": float(len(points)),
+            **point_profile(averages, maxima),
         }
     return out
 
@@ -1074,6 +1080,57 @@ def _batch_fetch(token: str, subscription: str, region: str, namespace: str, met
         break
     return {(v.get("resourceid") or "").lower(): _summarize(v.get("value") or [])
             for v in response.json().get("values") or []}
+
+
+def hourly_metrics(spec: List[Tuple[str, str]]) -> List[str]:
+    """Percentage metrics whose 30-day average hides busy hours: CPU, memory %, capacity / RU / ingestion %."""
+    return [m for m, role in spec if role in ("cpu", "mem") or role.split(":")[0] in ("pct", "maxpct")]
+
+
+def _batch_fetch_hourly(token: str, subscription: str, region: str, namespace: str, metrics: List[str],
+                        resource_ids: List[str], start: datetime, end: datetime) -> Dict[str, Dict[str, Any]]:
+    """metrics:getBatch at PT1H: {resource id: {metric: summary with busiest hour, P95 and burst hours}}."""
+    import httpx
+
+    params = {"starttime": f"{start:%Y-%m-%dT%H:%M:%SZ}", "endtime": f"{end:%Y-%m-%dT%H:%M:%SZ}", "interval": "PT1H",
+              "metricnamespace": namespace, "metricnames": ",".join(metrics), "aggregation": "average,maximum",
+              "api-version": "2023-10-01"}
+    url = f"https://{region}.metrics.monitor.azure.com/subscriptions/{subscription}/metrics:getBatch"
+    for attempt in range(3):
+        response = httpx.post(url, params=params, json={"resourceids": resource_ids},
+                              headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        if response.status_code == 429 and attempt < 2:
+            time.sleep(float(response.headers.get("Retry-After") or 5))
+            continue
+        response.raise_for_status()
+        break
+    return {(v.get("resourceid") or "").lower(): _summarize(v.get("value") or [])
+            for v in response.json().get("values") or []}
+
+
+def apply_hourly(row: Dict[str, Any], summaries: Dict[str, Dict[str, Any]], spec: List[Tuple[str, str]]) -> None:
+    """
+    The profile behind each 30-day average: CPU busiest hour, P95 of hourly averages and hours with a 90 %+
+    burst; memory busiest hour; the busiest hour of capacity / RU / ingestion percentages in the Usage column.
+    """
+    extras: List[str] = []
+    for metric, role in spec:
+        s = summaries.get(metric) or {}
+        peak = s.get("peak_average")
+        kind, _, label = role.partition(":")
+        if kind == "cpu":
+            if peak is not None:
+                row["cpuPeakHour"] = round(peak, 1)
+            if s.get("p95_average") is not None:
+                row["cpuP95"] = round(s["p95_average"], 1)
+            if s.get("burst_points") is not None:
+                row["burstHours"] = int(s["burst_points"])
+        elif kind == "mem" and peak is not None:
+            row["memPeakHour"] = round(peak, 1)
+        elif kind in ("pct", "maxpct") and peak is not None:
+            extras.append(f"{label} busiest hour {peak:.0f} %")
+    if extras:
+        row["usageExtra"] = " · ".join(x for x in (row.get("usageExtra"), *extras) if x)
 
 
 def _batch_fetch_split(token: str, subscription: str, region: str, namespace: str, metric: str, dimension: str,
@@ -1110,7 +1167,7 @@ def apply_split(row: Dict[str, Any], by_value: Dict[str, float]) -> None:
 
 
 async def collect_usage(credential: Any, rows: List[Dict[str, Any]], days: int = 30, concurrency: int = 16,
-                        fetch=None, fetch_split=None) -> Dict[str, int]:
+                        fetch=None, fetch_split=None, fetch_hourly=None) -> Dict[str, int]:
     """
     30-day usage for every resource type in USAGE_SPECS via the metrics batch API (one call per 50 resources of a
     type / region / subscription). A failing batch is retried metric by metric; global resources
@@ -1120,6 +1177,8 @@ async def collect_usage(credential: Any, rows: List[Dict[str, Any]], days: int =
 
     if fetch_split is None and fetch is None:
         fetch_split = _batch_fetch_split
+    if fetch_hourly is None and fetch is None:
+        fetch_hourly = _batch_fetch_hourly
     fetch = fetch or _batch_fetch
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
@@ -1184,6 +1243,24 @@ async def collect_usage(credential: Any, rows: List[Dict[str, Any]], days: int =
             if row is not None:
                 apply_usage(row, summary, spec)
                 stats["with_data"] += 1
+        profile_metrics = hourly_metrics(spec)
+        if profile_metrics and fetch_hourly and results and region not in ("global", ""):
+            hourly: Dict[str, Dict[str, Any]] = {}
+            for names in [profile_metrics] + ([[m] for m in profile_metrics] if len(profile_metrics) > 1 else []):
+                try:
+                    part = await asyncio.to_thread(fetch_hourly, token(), sub, region, rtype, names, ids, start, end)
+                except Exception:
+                    continue  # one metric without an hourly grain: retry them one by one
+                for rid, summaries in part.items():
+                    hourly.setdefault(rid, {}).update(summaries)
+                if names is profile_metrics:
+                    break
+            if not hourly:
+                stats["failed_batches"] += 1  # the daily average and peak stay; only the profile is missing
+            for rid, summaries in hourly.items():
+                row = by_id.get(rid)
+                if row is not None:
+                    apply_hourly(row, summaries, spec)
         split = SPLIT_SPECS.get(rtype)
         if split and fetch_split and results and region not in ("global", ""):
             try:
@@ -1477,13 +1554,16 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
                "state": r["state"], "env": r["env"], "mb": r["managedBy"], "gb": r.get("sizeGB"), "tags": r["tags"],
                "vcpu": r.get("vcpu"), "ram": r.get("ramGB"), "cpu": r.get("cpuAvg"), "cpuMax": r.get("cpuMax"),
                "mem": r.get("memAvg"), "sub": 1 if r.get("subResource") else None,
+               "cpuHr": r.get("cpuPeakHour"), "cpu95": r.get("cpuP95"), "burst": r.get("burstHours"),
+               "memHr": r.get("memPeakHour"),
                "act": r.get("activity"), "use": r.get("usage"), "idle": 1 if r.get("idle") else None,
                "dor": 1 if r.get("dormant") else None, "nva": 1 if r.get("nva") else None,
                "cost": r.get("cost30"), "cur": r.get("currency"), "n": r["suggestions"], "h": r.get("hygiene"),
                "sev": r["maxSeverity"]}
         resources.append({k: v for k, v in row.items()
                           if v not in (None, "", {}, 0) or k == "s"
-                          or (k in ("cpu", "cpuMax", "mem", "act", "cost") and v is not None)})
+                          or (k in ("cpu", "cpuMax", "mem", "act", "cost", "cpuHr", "cpu95", "burst", "memHr")
+                              and v is not None)})
     suggestions = []
     for s in estate["suggestions"]:
         link = s["link"]
@@ -1567,6 +1647,7 @@ RIGHTSIZE_MAX_CPU = 5.0   # average CPU % below which a running VM is a downsizi
 RIGHTSIZE_MIN_VCPU = 4    # smaller VMs have no meaningful smaller size
 RIGHTSIZE_MAX_MEM = 40.0  # one size down halves the RAM: the used memory must fit with headroom
 RIGHTSIZE_PEAK_WARN = 80.0
+RIGHTSIZE_MAX_PEAK_HOUR = 40.0  # one size down doubles the load: the busiest hour must still fit
 
 
 def rightsizing(vms: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Counter]:
@@ -1580,6 +1661,8 @@ def rightsizing(vms: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Counte
             excluded["network appliances (vendor-sized, licensed per vCPU)"] += 1
         elif r.get("memAvg") is not None and r["memAvg"] >= RIGHTSIZE_MAX_MEM:
             excluded[f"memory-bound (≥ {RIGHTSIZE_MAX_MEM:.0f} % RAM used - half the RAM would not fit)"] += 1
+        elif r.get("cpuPeakHour") is not None and r["cpuPeakHour"] >= RIGHTSIZE_MAX_PEAK_HOUR:
+            excluded[f"busy hours (busiest hour ≥ {RIGHTSIZE_MAX_PEAK_HOUR:.0f} % CPU)"] += 1
         else:
             candidates.append(r)
     return sorted(candidates, key=lambda r: (-(r.get("vcpu") or 0), r["cpuAvg"])), excluded
@@ -1588,7 +1671,8 @@ def rightsizing(vms: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Counte
 def _rightsizing_note(r: Dict[str, Any]) -> str:
     notes = []
     if r.get("cpuMax") is not None and r["cpuMax"] >= RIGHTSIZE_PEAK_WARN:
-        notes.append(f"peaks at {r['cpuMax']:.0f} % - check bursts")
+        hour = f", busiest hour {r['cpuPeakHour']:.0f} %" if r.get("cpuPeakHour") is not None else ""
+        notes.append(f"1-minute bursts to {r['cpuMax']:.0f} %{hour} - check bursts")
     if r.get("memAvg") is None:
         notes.append("no memory data - check RAM first")
     return "; ".join(notes) or "one size down"
@@ -1608,13 +1692,15 @@ def _utilisation(resources: List[Dict[str, Any]]) -> List[str]:
         lines += [f"### Right-sizing candidates: {len(candidates)} running VM(s) with {RIGHTSIZE_MIN_VCPU}+ vCPU, under "
                   f"{RIGHTSIZE_MAX_CPU:.0f} % average CPU and under {RIGHTSIZE_MAX_MEM:.0f} % memory used", ""]
     if candidates:
-        lines += [_table(["VM", "Size", "vCPU / RAM", "Avg CPU", "Peak CPU", "Avg memory", "Last 30 days", "Note",
-                          "Subscription"], [
+        lines += [_table(["VM", "Size", "vCPU / RAM", "Avg CPU", "Busiest hour", "1-min peak", "Avg memory",
+                          "Last 30 days", "Note", "Subscription"], [
                       [r["name"], r["size"], f"{r['vcpu']} / {r['ramGB']:g} GB", f"{r['cpuAvg']} %",
+                       f"{r['cpuPeakHour']} %" if r.get("cpuPeakHour") is not None else "-",
                        f"{r.get('cpuMax')} %" if r.get("cpuMax") is not None else "-",
                        f"{r['memAvg']} %" if r.get("memAvg") is not None else "-", _cost_label([r]),
                        _rightsizing_note(r), r["subscription"]]
-                      for r in candidates[:25]], ["---", "---", "---", "---:", "---:", "---:", "---:", "---", "---"]), ""]
+                      for r in candidates[:25]], ["---", "---", "---", "---:", "---:", "---:", "---:", "---:", "---",
+                                                  "---"]), ""]
     if excluded:
         lines += ["Low CPU but not listed: " + "; ".join(f"{n} {reason}" for reason, n in excluded.most_common()) + ".",
                   ""]

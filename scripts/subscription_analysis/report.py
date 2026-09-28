@@ -29,7 +29,7 @@ from scripts.subscription_analysis.knowledge import (
 )
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
-SEV_LABEL = {"critical": "🔴 Critical", "high": "🟠 High", "medium": "🟡 Medium", "low": "⚪ Low", "info": "ℹ️ Info"}
+SEV_LABEL = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Info"}
 WORKLOAD_TAG_KEYS = ("projectname", "project", "application", "workload")
 
 

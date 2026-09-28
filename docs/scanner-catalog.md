@@ -12,7 +12,7 @@ Total: **63 scanners**.
 | Scanner | What it detects | Default severity | Finding types | Data sources | Local |
 |---|---|---|---|---|---|
 | `app_service_plan_generation_scanner` | App Service Plan Generation & Redundancy | medium | `app_service_plan_previous_generation`<br>`app_service_plan_single_instance` | Resource Graph | yes |
-| `app_service_plan_utilization_scanner` | App Service Plan CPU Saturation | high | `app_service_plan_cpu_saturated` | Resource Graph, Azure Monitor metrics | yes |
+| `app_service_plan_utilization_scanner` | App Service Plan CPU Utilisation | high | `app_service_plan_cpu_saturated`<br>`app_service_plan_underutilized` | Resource Graph, Azure Monitor metrics, Cost Management | yes |
 | `deallocated_vm_scanner` | Deallocated Virtual Machines | medium | `deallocated_virtual_machine` | Resource Graph | yes |
 | `idle_vmss_scanner` | Idle VM Scale Sets | low | `idle_vmss` | Resource Graph | yes |
 | `old_snapshot_scanner` | Old Disk Snapshots | medium | `old_disk_snapshot` | Resource Graph, Cost Management | yes |
@@ -128,6 +128,7 @@ How the subscription analysis report files each finding type (gap-analysis area,
 | `app_insights_classic_mode` | Operational / Observability | `observability-operations` | Wave 2 - Optimisation |
 | `app_insights_workspace_missing` | Operational / Observability | `observability-operations` | Wave 1 - No-regret cleanup |
 | `app_service_plan_cpu_saturated` | Performance & Resilience | `compute-appservice` | Wave 2 - Optimisation |
+| `app_service_plan_underutilized` | FinOps / Governance | `compute-appservice` | Wave 2 - Optimisation |
 | `app_service_plan_mixed_environments` | Structural / Architecture | `compute-appservice` | Wave 2 - Optimisation |
 | `app_service_plan_previous_generation` | FinOps / Governance | `compute-appservice` | Wave 2 - Optimisation |
 | `app_service_plan_single_instance` | Performance & Resilience | `compute-appservice` | Wave 2 - Optimisation |

@@ -227,6 +227,30 @@ class ArmClient:
         self._http.close()
 
 
+BURST_PCT = 90.0  # a point whose maximum reaches this had a burst (1-minute peaks count)
+
+
+def percentile(values: List[float], pct: float) -> Optional[float]:
+    """Nearest-rank percentile of already collected values; None when empty."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, round(pct / 100 * (len(ordered) - 1))))]
+
+
+def point_profile(averages: List[float], maxima: List[float]) -> Dict[str, Optional[float]]:
+    """
+    Shape of a utilisation series beyond its mean: the busiest point (busiest hour at PT1H), the 95th percentile
+    of the point averages and how many points had a burst. A 30-day average of 1.5 % and a daily maximum of 100 %
+    are both true for a plan that idles with nightly one-minute spikes - this tells the two apart.
+    """
+    return {
+        "peak_average": max(averages) if averages else None,
+        "p95_average": percentile(averages, 95),
+        "burst_points": float(sum(1 for m in maxima if m >= BURST_PCT)) if maxima else None,
+    }
+
+
 def summarize_metrics(payload: Dict[str, Any]) -> Dict[str, Dict[str, Optional[float]]]:
     summary: Dict[str, Dict[str, Optional[float]]] = {}
     for metric in payload.get("value", []):
@@ -241,6 +265,7 @@ def summarize_metrics(payload: Dict[str, Any]) -> Dict[str, Dict[str, Optional[f
             "total": sum(totals) if totals else None,
             "latest_average": averages[-1] if averages else None,
             "points": float(len(points)),
+            **point_profile(averages, maxima),
         }
     return summary
 

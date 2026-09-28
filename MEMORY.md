@@ -20,6 +20,8 @@ in the same change that makes an entry wrong.
 
 ## Running it
 
+The full cycle (sign in, fresh start, estate, all subscriptions, portal, tests, git) is in [local-run.md](local-run.md).
+
 - `az login` (Reader + Cost Management Reader + Security Reader on each subscription).
 - Portal: `scripts/Start-LocalPortal.ps1` → `http://127.0.0.1:8765` (login from `ARG_PORTAL_USER` /
   `ARG_PORTAL_PASSWORD`, or a one-time password printed at start). Sessions are in memory; restart after Python
@@ -27,6 +29,8 @@ in the same change that makes an entry wrong.
 - Many subscriptions: `python -m scripts.subscription_analysis --all --tenant <id> --parallel 3`. Estate only:
   `--all --tenant <id> --estate` (a few minutes including usage metrics).
 - Tests: `python -m pytest tests/unit -q` (offline); lint: `ruff check --select F,E9 scripts tests`.
+- Docker: the worker runs the same scanner modules, so images rebuilt with `./build-push.sh` give the same
+  findings as the local reports.
 
 ## Decisions worth remembering
 
@@ -42,6 +46,10 @@ in the same change that makes an entry wrong.
 - **Estate** = one Resource Graph query + Compute SKU catalogue + usage, joined with report findings and cost. Tag /
   naming findings are "hygiene", counted apart from actionable suggestions. VM / Arc extensions are hidden by default
   and named `vm › extension`. New per-type facts go into `RESOURCE_DETAILS` (`cfg` pack) → `_profile()`.
+- **Utilisation** = average + busiest hour + P95 + one-minute peak / burst hours (hourly points,
+  `azure_api.point_profile`). Saturated needs a busy hour (80 %+); one-minute peaks are bursts. Over-provisioned
+  plans: P95 < 10 %, busiest hour < 30 %, memory < 40 %.
+- **No emoji** in code, reports, docs or UI - plain words ("Critical", "Warning:").
 - **No blank cells:** reports drop all-blank columns (`md_table(drop_empty=True)`), show `0.00` for no charge
   (`Model.cost30`) and an Impact label; the Estate page renders empty values as a muted `-` with a reason tooltip.
 - **Report folders** are keyed by subscription ID (`.subscription-id`); duplicate display names get `_<id8>`.

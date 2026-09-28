@@ -192,8 +192,8 @@ data disks, Spot; NIC attachment and IP; private endpoint target; certificate ex
 `Available Memory Bytes`; memory used = 1 - available / RAM). Hover the CPU value for the 30-day peak. Deallocated
 VMs have no metrics. Network virtual appliances (firewalls) often report almost no available memory, so they show
 ~100 % memory used - that is how the appliance reserves memory, not a problem. The markdown overview lists running
-VMs by average-CPU band and the **right-sizing candidates**: running, 4+ vCPU, under 5 % average CPU **and** under
-40 % memory used (one size down halves the RAM). Network virtual appliances (FortiGate, Palo Alto, Check Point, Cisco,
+VMs by average-CPU band and the **right-sizing candidates**: running, 4+ vCPU, under 5 % average CPU, a busiest hour
+under 40 % **and** under 40 % memory used (one size down halves the RAM and doubles the load). Network virtual appliances (FortiGate, Palo Alto, Check Point, Cisco,
 ... detected from the Marketplace image) are never listed - they are vendor-sized and licensed per vCPU - and the
 excluded counts are shown. A peak of 80 % or more, or missing memory data, is noted per VM. VM costs are what Cost
 Management attributes to the VM: compute covered by a reservation or savings plan shows close to 0, so check the
@@ -211,7 +211,7 @@ every type that reports them.
 | Type | Metrics → shown as |
 |---|---|
 | VMs, scale sets | `Percentage CPU` → CPU avg (+ peak); `Available Memory Bytes` ÷ RAM → memory used % |
-| App Service plans | `CpuPercentage`, `MemoryPercentage` |
+| App Service plans | `CpuPercentage`, `MemoryPercentage` (plus an hourly batch: busiest hour, P95, burst hours) |
 | Web / Function apps, slots | `Requests`, `Http5xx` (failed), `FunctionExecutionCount` |
 | Storage accounts | `Transactions` (plus a second batch split by `ApiName` to subtract housekeeping), `UsedCapacity` (latest), `Egress` (transferred) |
 | SQL databases / elastic pools | `cpu_percent`, `connection_successful`, `storage_percent` |
@@ -225,6 +225,11 @@ every type that reports them.
 | Data Factory, Logic apps, Automation | succeeded / failed runs, jobs |
 | Application Gateway, APIM, Front Door, Firewall, Load balancer | requests / capacity, data processed, bytes |
 | Data Explorer | `CPU`, `IngestionUtilization` |
+
+**Hourly profile.** For every CPU, memory and percentage metric a second batch reads hourly points: the **CPU
+busiest hour** column, P95 and burst hours in the CPU tooltip, the memory busiest hour, and "... busiest hour N %"
+for capacity / RU / ingestion percentages in the Usage column. A 30-day average alone hides busy hours; a daily
+maximum alone is a one-minute spike.
 
 **Idle** means the type's activity metric was zero for 30 days. Storage uses the same rule as the idle-storage
 scanner: `Transactions` split by `ApiName`, platform housekeeping (`GetBlobServiceProperties`, `ListContainers`,

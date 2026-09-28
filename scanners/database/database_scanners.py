@@ -371,10 +371,12 @@ class SqlHyperscaleLegacyPricingScanner(PostureScanner):
 @register_scanner
 class SqlDatabaseUtilizationScanner(PostureScanner):
     """
-    30-day CPU/DTU and successful connections per database (live mode):
-    - idle: CPU/DTU never above 1% AND no successful connections -> nobody uses it (saving = its cost);
-    - under-utilised: CPU/DTU never above 1% but it has connections -> in use, oversized;
-    - saturated: peaks >= 95% with a sustained average >= 10%.
+    30-day CPU/DTU (hourly grain) and successful connections per database (live mode):
+    - idle: no successful connections and no hour above 5% -> nobody uses it (saving = its cost); maintenance
+      spikes (statistics, backups) no longer hide an unused database;
+    - under-utilised: it has connections but no hour above 5% -> in use, oversized;
+    - saturated: an hour averaged 80% or more - a busy hour, not a one-minute spike.
+    Without hourly data the 1-minute maximum is used as before (< 1% idle, >= 95% with >= 10% average saturated).
     """
 
     scanner_name = "sql_database_utilization_scanner"
@@ -385,6 +387,8 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
 
     SATURATED_MAX = 95.0
     SATURATED_MIN_AVG = 10.0  # a lone spike on an otherwise idle database is not saturation
+    SATURATED_PEAK_HOUR = 80.0  # busiest hour's average
+    QUIET_PEAK_HOUR = 5.0  # no hour above this = idle (no connections) / under-utilised (connections)
     DR_SECONDARY_TYPES = ("geo", "standby")
 
     async def scan(self, context: ScanContext) -> ScanOutput:
@@ -408,10 +412,11 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
                 dtu = (db.get("sku_tier") or "").lower() in ("basic", "standard", "premium")
                 metric = "dtu_consumption_percent" if dtu else "cpu_percent"
                 try:
-                    m = await cached_metrics(context, db["id"], [metric], aggregation="Average,Maximum")
-                    db["util_avg"] = (m.get(metric) or {}).get("average")
-                    db["util_max"] = (m.get(metric) or {}).get("maximum")
-                    db["metric"] = metric
+                    m = await cached_metrics(context, db["id"], [metric], interval="PT1H", aggregation="Average,Maximum")
+                    util = m.get(metric) or {}
+                    db.update(util_avg=util.get("average"), util_max=util.get("maximum"),
+                              util_peak_hour=util.get("peak_average"), util_p95=util.get("p95_average"),
+                              metric=metric)
                 except Exception as exc:
                     warnings.append(f"Metrics unavailable for {db['name']}: {exc}")
                 try:
@@ -422,36 +427,41 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
                 db["cost_usd_30d"] = (cost_for(costs, db["id"]) or {}).get("cost_usd")
             await gather_limited(dbs, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
+        quiet = float(self.setting("quiet_peak_hour", self.QUIET_PEAK_HOUR))
+        busy = float(self.setting("saturated_peak_hour", self.SATURATED_PEAK_HOUR))
         findings = []
         for db in dbs:
-            peak, avg = db.get("util_max"), db.get("util_avg")
+            peak, avg, peak_hour = db.get("util_max"), db.get("util_avg"), db.get("util_peak_hour")
             if peak is None:
                 continue
             label = f"{db.get('sku_name')}/{db.get('capacity')}"
             connections = db.get("connections_30d")
-            evidence = {"metric": db.get("metric"), "max_30d": peak, "avg_30d": avg,
-                        "successful_connections_30d": connections}
-            if peak < 1.0 and (db.get("secondary_type") or "").lower() in self.DR_SECONDARY_TYPES:
+            evidence = {"metric": db.get("metric"), "max_30d": peak, "avg_30d": avg, "busiest_hour": peak_hour,
+                        "p95_hourly": db.get("util_p95"), "successful_connections_30d": connections}
+            profile = (f"busiest hour {peak_hour:.1f}%, one-minute peak {peak:.0f}%" if peak_hour is not None
+                       else f"peak {peak:.1f}%")
+            is_quiet = peak_hour < quiet if peak_hour is not None else peak < 1.0
+            if is_quiet and (db.get("secondary_type") or "").lower() in self.DR_SECONDARY_TYPES:
                 continue  # geo / standby replicas take no connections until a failover - that is their job
-            if peak < 1.0 and not connections:
+            if is_quiet and not connections:
                 basis = ("no successful connections" if connections == 0
                          else "connection metric unavailable, CPU only")
                 findings.append(self.resource_finding(
                     db, finding_type="idle_sql_database", title=f"Idle database: {db['name']}",
-                    description=(f"Database '{db['name']}' ({label}) peaked at {peak:.1f}% {db.get('metric')} with "
-                                 f"{basis} over 30 days - nobody is using it."),
+                    description=(f"Database '{db['name']}' ({label}) had {basis} over 30 days and its "
+                                 f"{db.get('metric')} stayed low ({profile}) - nobody is using it."),
                     resource_type="microsoft.sql/servers/databases", severity=SeverityLevel.LOW,
                     remediation_steps="Confirm with the owner; export a BACPAC and delete, or move to serverless with auto-pause.",
                     azure_cli_script=f"az sql db delete --ids {db['id']} --yes",
                     evidence=evidence,
                     estimated_monthly_savings_usd=round(db["cost_usd_30d"], 2) if db.get("cost_usd_30d") else None,
                 ))
-            elif peak < 1.0:
+            elif is_quiet:
                 findings.append(self.resource_finding(
                     db, finding_type="sql_database_underutilized", title=f"Under-utilised database: {db['name']}",
                     description=(f"Database '{db['name']}' ({label}) is in use ({connections:,.0f} successful connections "
-                                 f"in 30 days) but never exceeded {peak:.1f}% {db.get('metric')} - it is sized far above "
-                                 f"its workload."),
+                                 f"in 30 days) but its {db.get('metric')} stayed low ({profile}) - it is sized far "
+                                 f"above its workload."),
                     resource_type="microsoft.sql/servers/databases", severity=SeverityLevel.LOW,
                     remediation_steps=("Move to a smaller tier, serverless with auto-pause, or into an elastic pool "
                                        "with other small databases."),
@@ -459,13 +469,16 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
                     evidence=evidence,
                     estimated_monthly_savings_usd=None,
                 ))
-            elif peak >= float(self.setting("saturated_max", self.SATURATED_MAX)) and (avg or 0) >= float(
-                    self.setting("saturated_min_avg", self.SATURATED_MIN_AVG)):
+            elif (peak_hour is not None and peak_hour >= busy) or (peak_hour is None and peak >= float(
+                    self.setting("saturated_max", self.SATURATED_MAX)) and (avg or 0) >= float(
+                    self.setting("saturated_min_avg", self.SATURATED_MIN_AVG))):
+                shown = peak_hour if peak_hour is not None else peak
                 findings.append(self.resource_finding(
                     db, finding_type="sql_database_cpu_saturated",
-                    title=f"Database hits {peak:.0f}% {db.get('metric')}: {db['name']}",
-                    description=(f"Database '{db['name']}' ({label}) averaged {avg or 0:.1f}% and peaked at {peak:.0f}% "
-                                 f"{db.get('metric')} over 30 days; users see throttling during peaks."),
+                    title=f"Database hits {shown:.0f}% {db.get('metric')}"
+                          + (" for a whole hour" if peak_hour is not None else "") + f": {db['name']}",
+                    description=(f"Database '{db['name']}' ({label}) averaged {avg or 0:.1f}% {db.get('metric')} over "
+                                 f"30 days ({profile}); users see throttling during busy hours."),
                     resource_type="microsoft.sql/servers/databases", severity=SeverityLevel.HIGH,
                     remediation_steps=("Review Query Store top consumers, move reporting to a read replica, and "
                                        "schedule maintenance jobs off-peak before scaling up."),
@@ -482,16 +495,21 @@ class SqlDatabaseUtilizationScanner(PostureScanner):
         return [
             {**common, "id": f"{base}/db-analysis", "name": "sql-app-1/db-analysis", "sku_name": "Standard",
              "sku_tier": "Standard", "capacity": 10, "metric": "dtu_consumption_percent",
-             "util_avg": 0.0, "util_max": 0.0, "connections_30d": 0.0, "cost_usd_30d": 14.7},
+             "util_avg": 0.0, "util_max": 3.0, "util_peak_hour": 0.4, "connections_30d": 0.0, "cost_usd_30d": 14.7},
             {**common, "id": f"{base}/db-analysis-dr", "name": "sql-app-1/db-analysis-dr", "sku_name": "Standard",
              "sku_tier": "Standard", "capacity": 10, "metric": "dtu_consumption_percent", "secondary_type": "Geo",
              "util_avg": 0.0, "util_max": 0.0, "connections_30d": 0.0, "cost_usd_30d": 14.7},
             {**common, "id": f"{base}/db-reports", "name": "sql-app-1/db-reports", "sku_name": "Standard",
              "sku_tier": "Standard", "capacity": 50, "metric": "dtu_consumption_percent",
              "util_avg": 0.1, "util_max": 0.6, "connections_30d": 1240.0, "cost_usd_30d": 73.6},
+            {**common, "id": f"{base}/db-spiky", "name": "sql-app-1/db-spiky", "sku_name": "S3",
+             "sku_tier": "Standard", "capacity": 100, "metric": "dtu_consumption_percent",
+             "util_avg": 12.0, "util_max": 100.0, "util_peak_hour": 41.0, "connections_30d": 50000.0,
+             "cost_usd_30d": 147.0},
             {**common, "id": f"{base}/db-hs-1", "name": "sql-app-1/db-hs-1", "sku_name": "HS_Gen5",
              "sku_tier": "Hyperscale", "capacity": 4, "metric": "cpu_percent",
-             "util_avg": 40.1, "util_max": 100.0, "connections_30d": 90000.0, "cost_usd_30d": 1580.0},
+             "util_avg": 40.1, "util_max": 100.0, "util_peak_hour": 97.0, "connections_30d": 90000.0,
+             "cost_usd_30d": 1580.0},
         ]
 
 

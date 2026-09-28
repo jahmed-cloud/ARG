@@ -6,6 +6,28 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Utilisation that averaged away busy periods, and "saturated" from one-minute spikes.** An App Service plan
+  that idles with nightly one-minute bursts showed 1.5 % CPU in the reports while the Azure portal chart (daily
+  maximum) showed 100 %, and `app_service_plan_cpu_saturated` fired on any one-minute peak of 95 %. Metrics now
+  carry an hourly profile - **busiest hour**, **P95 of hourly averages** and **hours with a 90 %+ burst** - next to
+  the 30-day average and the one-minute peak. Saturation needs a busy hour (80 %+) or a busy month (60 %+ average);
+  bursts are reported as bursts.
+- `sql_database_utilization_scanner` reads CPU / DTU hourly: idle = no connections and no hour above 5 % (maintenance
+  spikes no longer hide an unused database), under-utilised = connections but no hour above 5 %, saturated = an
+  hour at 80 %+ (was: any one-minute peak of 95 % with a 10 % average).
+- Estate: the hourly profile for every percentage metric - CPU busiest hour column, P95 and burst hours in the
+  tooltip, memory busiest hour, and the busiest hour of API Management capacity, Cosmos DB RU, Data Explorer
+  ingestion and storage percentages in the Usage column. Right-sizing also excludes VMs whose busiest hour is 40 %+
+  and shows the busiest hour next to one-minute bursts.
+- **No emoji anywhere:** severity labels in reports are plain `Critical` / `High` / `Medium` / `Low` / `Info`;
+  scanner texts say "Warning:"; README headings, portal templates, notifications and scripts use plain text.
+
+### Added
+- `app_service_plan_underutilized`: plans whose P95 hourly CPU is under 10 %, busiest hour under 30 % and memory
+  under 40 % are reported as over-provisioned with the next smaller SKU of the same family and an estimated saving
+  of half the plan's 30-day cost.
+- `local-run.md`: end-to-end runbook - sign in, fresh start, estate refresh, full analysis, portal, reading
+  utilisation, tests, git workflow, Docker vs local, troubleshooting.
 - **Idle storage accounts that were in use.** `unused_storage_account_scanner` and the estate counted every
   transaction against a flat 200-per-30-days threshold, so accounts with real reads and writes (static websites,
   `GetBlob` / `PutBlob` traffic) hidden under ~120 housekeeping calls were reported as idle and "delete". The 30-day

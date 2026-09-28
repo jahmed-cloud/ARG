@@ -21,7 +21,7 @@ Scanners:
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from scanners.base.base_scanner import (
     BaseScanner,
@@ -280,7 +280,7 @@ class DormantUserScanner(BaseScanner):
                     f"User '{display_name}' ({upn}) last signed in "
                     f"{f'{last_signin_days} days ago' if last_signin_days else 'NEVER'}. "
                     f"Threshold: {threshold_days} days. "
-                    + ("⚠️ This user has PRIVILEGED ROLES. " if is_privileged else "")
+                    + ("Warning: this user has PRIVILEGED ROLES. " if is_privileged else "")
                     + "Disable or remove this account."
                 ),
                 object_id=user_id,
@@ -289,10 +289,10 @@ class DormantUserScanner(BaseScanner):
                 upn=upn,
                 severity=severity,
                 remediation_steps=(
-                    f"1. Verify with the user's manager if the account is still needed\n"
-                    f"2. Disable the account using the command below\n"
-                    f"3. Remove any privileged role assignments before disabling\n"
-                    f"4. Set a 30-day deletion schedule if confirmed unused"
+                    "1. Verify with the user's manager if the account is still needed\n"
+                    "2. Disable the account using the command below\n"
+                    "3. Remove any privileged role assignments before disabling\n"
+                    "4. Set a 30-day deletion schedule if confirmed unused"
                 ),
                 azure_cli_script=(
                     f"# Disable the account first (safer than immediate deletion)\n"
@@ -471,7 +471,7 @@ class MFANotEnabledScanner(BaseScanner):
                 title=f"MFA not enabled: {display_name}",
                 description=(
                     f"User '{display_name}' ({upn}) has no MFA method registered. "
-                    + ("⚠️ This user has ADMIN ROLES - CRITICAL risk. " if is_admin else "")
+                    + ("Warning: this user has ADMIN ROLES - CRITICAL risk. " if is_admin else "")
                     + "Accounts without MFA are vulnerable to password spray and phishing attacks."
                 ),
                 object_id=user_id,
@@ -615,16 +615,16 @@ class PermanentGlobalAdminScanner(BaseScanner):
                 },
                 azure_cli_script=(
                     f"# Remove the permanent Global Administrator role assignment\n"
-                    f"# ⚠️  Ensure at least 2 admins remain before removing any\n"
-                    f"# ⚠️  Enable PIM and convert to eligible assignment first if possible\n"
+                    f"# WARNING: ensure at least 2 admins remain before removing any\n"
+                    f"# WARNING: enable PIM and convert to eligible assignment first if possible\n"
                     f"az rest --method DELETE \\\n"
                     f"  --uri 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
                     f"?$filter=principalId eq '\"'\"'{user_id}'\"'\"' and roleDefinitionId eq '\"'\"'{self.GLOBAL_ADMIN_ROLE_ID}'\"'\"''"
                 ),
                 powershell_script=(
                     f"# Remove the permanent Global Administrator role assignment\n"
-                    f"# ⚠️  Ensure at least 2 admins remain before removing any\n"
-                    f"# ⚠️  Enable PIM and convert to eligible assignment first if possible\n"
+                    f"# WARNING: ensure at least 2 admins remain before removing any\n"
+                    f"# WARNING: enable PIM and convert to eligible assignment first if possible\n"
                     f"$assignments = Get-MgRoleManagementDirectoryRoleAssignment "
                     f"-Filter \"principalId eq '{user_id}' and roleDefinitionId eq '{self.GLOBAL_ADMIN_ROLE_ID}'\"\n"
                     f"foreach ($a in $assignments) {{\n"
@@ -748,11 +748,11 @@ class ExpiredAppCredentialScanner(BaseScanner):
                         display_name=display_name,
                         severity=severity,
                         remediation_steps=(
-                            f"1. Create a new client secret for the application\n"
-                            f"2. Update all applications/services using this secret\n"
-                            f"3. Verify new secret works in all environments\n"
-                            f"4. Remove the expired/old secret\n"
-                            f"5. Consider using Managed Identities to eliminate secrets entirely"
+                            "1. Create a new client secret for the application\n"
+                            "2. Update all applications/services using this secret\n"
+                            "3. Verify new secret works in all environments\n"
+                            "4. Remove the expired/old secret\n"
+                            "5. Consider using Managed Identities to eliminate secrets entirely"
                         ),
                         evidence={
                             "credential_type": "client_secret",

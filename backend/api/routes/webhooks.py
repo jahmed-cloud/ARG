@@ -155,7 +155,7 @@ async def notify_scan_completed(
     if not (settings.WEBHOOK_SLACK_URL or settings.WEBHOOK_TEAMS_URL or settings.WEBHOOK_CUSTOM_URL):
         return
 
-    severity_note = f" ⚠️ {critical_count} critical findings" if critical_count > 0 else ""
+    severity_note = f" ({critical_count} critical findings)" if critical_count > 0 else ""
     message = (
         f"Scan {scan_id} completed in {duration_seconds}s — "
         f"{total_findings} findings detected.{severity_note}"

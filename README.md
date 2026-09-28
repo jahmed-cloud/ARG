@@ -1,4 +1,4 @@
-# 🛡️ Azure Resource Guardian (ARG)
+# Azure Resource Guardian (ARG)
 
 > **Discover. Govern. Optimize.**
 >
@@ -16,7 +16,7 @@
 
 ---
 
-## 🎯 What Problems Does ARG Solve?
+## What Problems Does ARG Solve?
 
 | Question | ARG's Answer |
 |---|---|
@@ -30,7 +30,7 @@
 
 ---
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -63,14 +63,14 @@
 
 ---
 
-## ✨ Features
+## Features
 
-### 🔍 Resource Discovery
+### Resource Discovery
 - Full Azure resource inventory across subscriptions, management groups, and tenants
 - Tag analysis and ownership tracking
 - Resource history and change detection
 
-### 💀 Orphan Detection (20+ checks)
+### Orphan Detection (20+ checks)
 - Unattached managed disks, old snapshots, deallocated VMs
 - Unused public IPs, public IPs held by VM-less NICs, orphaned NICs and NSGs, empty load balancers
 - Unused storage accounts (verified against 7-day transaction metrics), orphaned backups
@@ -78,7 +78,7 @@
 - DDoS Network Protection plans that protect no VNet or public IP
 - Private Link DNS zones with no endpoints
 
-### 💰 Cost Optimization
+### Cost Optimization
 - Azure Cost Management integration
 - Per-resource monthly/annual savings estimates
 - Top 10 cost-saving opportunities dashboard
@@ -90,14 +90,14 @@
 - Budgets exceeded month after month, and Advisor reservation / savings-plan opportunities
 - Marketplace SaaS plans: unsubscribed leftovers, suspended or never-activated plans, terms ending or auto-renewing
 
-### 🆔 Entra ID Hygiene
+### Entra ID Hygiene
 - Stale/unused applications and service principals
 - Expired certificates and secrets
 - Guest users never logged in, dormant users, MFA gaps
 - Permanent Global Admins, PIM assignments never activated
 - Managed identities never used
 
-### 🏛️ Governance
+### Governance
 - Tag policy enforcement
 - Naming standard validation
 - Region restriction compliance
@@ -109,7 +109,7 @@
 - Log Analytics daily caps that silently drop data, App Insights linked to deleted workspaces, missing Service Health alerts
 - Many unrelated workloads sharing one subscription (landing-zone gap)
 
-### 🔒 Security
+### Security
 - Public storage accounts, SQL servers, Key Vaults
 - Disabled Defender plans, low secure score, and imported Defender for Cloud recommendations
 - Missing backup configurations
@@ -123,22 +123,23 @@
 - Excess subscription Owners, standing User Access Administrator, privileged service principals
 - Security Score (0-100)
 
-### 🌊 Terraform Drift Detection
+### Terraform Drift Detection
 - Compare Terraform state vs live Azure inventory
 - Detect unmanaged resources, deleted resources, config drift
 - Generate Terraform import commands
 - Generate remediation plans
 
-### 📊 Reporting
+### Reporting
 - Executive PDF summary
 - Board-level reports
 - Technical CSV/Excel/JSON exports
 - Compliance reports
 
-### 🧭 Subscription Analysis Report (CLI + local portal)
+### Subscription Analysis Report (CLI + local portal)
 Run every scanner against your subscriptions from your own workstation - **no Docker, database or
 service principal needed**. Azure access reuses your **`az login`** session (your own account).
-📖 Full guide: [docs/subscription-analysis.md](docs/subscription-analysis.md) · PRD: [docs/PRD-subscription-analysis.md](docs/PRD-subscription-analysis.md)
+Full guide: [docs/subscription-analysis.md](docs/subscription-analysis.md) · PRD: [docs/PRD-subscription-analysis.md](docs/PRD-subscription-analysis.md) · 
+End-to-end runbook (sign in, estate, every subscription, portal, tests): [local-run.md](local-run.md)
 
 **Where to run:** the PowerShell/bash launchers work **from any folder** (they switch to the repo root and
 create `.venv-local` on first use). Plain `python -m …` commands must be run **from the ARG repository root**.
@@ -170,8 +171,10 @@ python -m scripts.local_portal                                                  
   SQL/Redis SKUs, AKS pools, Arc SQL editions), configuration, OS and Hybrid Benefit, power state, environment,
   region, cost, the report findings on it, **vCPU / RAM** and **30-day usage** from Azure Monitor (CPU and memory %,
   transactions, requests, connections, messages, runs, calls, tokens, used capacity) with an **idle** flag, for 31
-  resource types. Filter by any of these, click breakdowns to drill down, switch to the Suggestions view, export CSV
-  and share filtered links. [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#5c-estate-inventory-all-subscriptions).
+  resource types. CPU and other percentages come with the **busiest hour**, P95 and one-minute bursts, so a 1.5 %
+  average and a 100 % portal peak are shown together; idle storage that still holds data is flagged **dormant**, and
+  right-sizing skips network appliances, memory-bound and busy-hour VMs. Filter by any of these, click breakdowns
+  to drill down, switch to the Suggestions view, export CSV and share filtered links. [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#5c-estate-inventory-all-subscriptions).
 
 - **Portal login** is a simple local username/password that only protects the portal:
   `ARG_PORTAL_USER` (default `admin`) / `ARG_PORTAL_PASSWORD`. If no password is set, a one-time
@@ -206,7 +209,7 @@ that share a display name get `<name>_<first 8 of ID>/` so they never overwrite 
 Reports contain resource IDs and principal IDs - `reports/` is git-ignored. Entra ID (Graph) scanners
 are skipped in this mode.
 
-### 📐 ARG vs. Azure FinOps hubs
+### ARG vs. Azure FinOps hubs
 
 ARG does **not** use or require [FinOps hubs](https://learn.microsoft.com/cloud-computing/finops/toolkit/hubs/finops-hubs-overview)
 from the Microsoft FinOps toolkit. It reads cost data **live** at scan time, straight from the Azure APIs:
@@ -239,7 +242,7 @@ hub's Data Explorer / FOCUS exports when one exists, and falling back to the liv
 
 ---
 
-## 🐳 Docker Hub Images
+## Docker Hub Images
 
 **ARG 0.1** is published to Docker Hub as multi-arch images (`linux/amd64` + `linux/arm64`):
 
@@ -278,7 +281,7 @@ docker pull jahmed22/azure-resource-guardian-frontend:0.1
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Docker Engine 24+ and the Docker Compose plugin
@@ -379,7 +382,7 @@ docker compose down -v       # stop containers AND delete all data (Postgres/Red
 
 ---
 
-## 🔑 Azure Permissions Required
+## Azure Permissions Required
 
 | Module | Required Role |
 |---|---|
@@ -400,7 +403,7 @@ This prints a `appId` (client ID) and `password` (client secret) - enter those a
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 arg/
@@ -429,7 +432,7 @@ arg/
 
 ---
 
-## 🛠️ Development
+## Development
 
 ```bash
 # Backend
@@ -449,7 +452,7 @@ make test
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome - bug reports, scanner additions, and pull requests all help.
 
@@ -464,19 +467,19 @@ For bugs or feature requests, open an issue on [GitHub](https://github.com/jahme
 
 ---
 
-## 📜 License
+## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for what's planned next.
 
 ---
 
-## 👤 About / Author
+## About / Author
 
 Azure Resource Guardian was designed and built by **Junaid Ahmed**.
 

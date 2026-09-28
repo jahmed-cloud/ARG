@@ -430,7 +430,7 @@ def test_rightsizing_skips_appliances_and_memory_bound_vms():
     estate = build_estate_from_rows([
         vm("app01"), vm("burst01", cpuMax=98.0), vm("nomem01", memAvg=None),
         vm("fw01", imageOffer="fortinet_fortigate-vm_v5", imageSku="fortinet_fg-vm", memAvg=100.0),
-        vm("search01", memAvg=87.3), vm("busy01", cpuAvg=35.0),
+        vm("search01", memAvg=87.3), vm("busy01", cpuAvg=35.0), vm("nightly01", cpuPeakHour=65.0),
     ])
     by = {r["name"]: r for r in estate["resources"]}
     assert by["fw01"]["nva"] and not by["app01"]["nva"]
@@ -439,8 +439,9 @@ def test_rightsizing_skips_appliances_and_memory_bound_vms():
     assert ": 3 running VM(s)" in section
     assert "| app01 |" in section and "| burst01 |" in section and "| nomem01 |" in section
     assert "fw01" not in section and "search01" not in section and "busy01" not in section
-    assert "peaks at 98 % - check bursts" in section and "no memory data - check RAM first" in section
-    assert "1 network appliances" in section and "1 memory-bound" in section
+    assert "1-minute bursts to 98 % - check bursts" in section and "no memory data - check RAM first" in section
+    assert "1 network appliances" in section and "1 memory-bound" in section and "1 busy hours" in section
+    assert "nightly01" not in section
     assert compact(estate)["resources"][[r["name"] for r in estate["resources"]].index("fw01")]["nva"] == 1
 
 

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block user %}
 <div class="user">
-  <span title="Portal user">👤 {{ username }}</span>
+  <span title="Portal user">User: {{ username }}</span>
   <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
 </div>
 {% endblock %}

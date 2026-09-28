@@ -153,7 +153,7 @@ with a customer, reviewed in a pull request or read offline.
   metric; global resources use the per-resource ARM metrics API; deallocated VMs are skipped. Idle =
   activity metric zero (storage ≤ 10 data operations after subtracting housekeeping - `Transactions` split by
   `ApiName` - and idle accounts holding data reported as dormant, container apps also scaled to zero, web apps also
-  no function executions; SQL `master` and geo / standby replicas never idle). Right-sizing needs < 5 % CPU and
+  no function executions; SQL `master` and geo / standby replicas never idle; saturation needs a busy hour (80 %+), one-minute peaks are bursts). Right-sizing needs < 5 % CPU and
   < 40 % memory and skips network virtual appliances.
 - **Estate page:** static HTML + `estate.js` (no inline script, all Azure text via `textContent`), filters in the URL
   hash, client-side facets and breakdowns, paged table, CSV export with formula-injection guard; the API is gzip'd.

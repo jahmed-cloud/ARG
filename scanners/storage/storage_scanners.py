@@ -241,7 +241,7 @@ class UnusedStorageAccountScanner(BaseScanner):
                             f"{' and more' if len(boot_diag_vms) > 5 else ''} - switch those VMs to managed boot "
                             f"diagnostics before removing it.")
         if public_access:
-            description += " ⚠️ Public blob access is enabled on this account."
+            description += " Warning: public blob access is enabled on this account."
             severity = SeverityLevel.HIGH
 
         return self.make_finding(

@@ -10,6 +10,7 @@
     { key: "name", label: "Name" }, { key: "typeLabel", label: "Type" }, { key: "size", label: "Size / SKU" },
     { key: "vcpu", label: "vCPU", num: true, compute: true }, { key: "ramGB", label: "RAM (GB)", num: true, compute: true },
     { key: "cpuAvg", label: "CPU avg 30 d", num: true, compute: true, pct: true },
+    { key: "cpuPeakHour", label: "CPU busiest hour", num: true, compute: true, pct: true },
     { key: "memAvg", label: "Memory avg 30 d", num: true, compute: true, pct: true },
     { key: "usage", label: "Usage (30 d)", sortKey: "activity", usage: true },
     { key: "config", label: "Configuration" }, { key: "os", label: "OS / runtime" }, { key: "state", label: "State" },
@@ -63,6 +64,8 @@
         cost30: r.cost === undefined ? null : r.cost, currency: r.cur || "", suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
         vcpu: r.vcpu || null, ramGB: r.ram || null, cpuAvg: r.cpu === undefined ? null : r.cpu,
         cpuMax: r.cpuMax === undefined ? null : r.cpuMax, memAvg: r.mem === undefined ? null : r.mem, subResource: !!r.sub,
+        cpuPeakHour: r.cpuHr === undefined ? null : r.cpuHr, cpuP95: r.cpu95 === undefined ? null : r.cpu95,
+        burstHours: r.burst === undefined ? null : r.burst, memPeakHour: r.memHr === undefined ? null : r.memHr,
         activity: r.act === undefined ? null : r.act, usage: r.use || "", idle: !!r.idle, dormant: !!r.dor,
         nva: !!r.nva,
       };
@@ -352,6 +355,16 @@
     os: "Only for machines, apps and containers", state: "No state reported: running / provisioned normally",
   };
 
+  // "1.5 %" average and "100 %" in the Azure portal are both true for a plan that idles with short bursts.
+  function cpuProfile(r) {
+    return [
+      r.cpuAvg !== null ? "30-day average " + r.cpuAvg.toFixed(1) + " %" : null,
+      r.cpuPeakHour !== null ? "busiest hour " + r.cpuPeakHour.toFixed(1) + " %" : null,
+      r.cpuP95 !== null ? "95 % of hours at or below " + r.cpuP95.toFixed(1) + " %" : null,
+      r.cpuMax !== null ? "1-minute peak " + r.cpuMax.toFixed(0) + " %" + (r.burstHours ? " (bursts of 90 %+ in " + r.burstHours + " hours)" : "") : null,
+    ].filter(Boolean).join(", ");
+  }
+
   function cellValue(r, c) {
     const v = r[c.key];
     if (c.key === "cost30") return v === null || v === undefined ? "" : (v ? fmt(v) : "0") + " " + (r.currency || "");
@@ -371,8 +384,10 @@
         td.textContent = text === "" ? "-" : text;
         if (text === "") { td.classList.add("muted"); td.title = BLANK_REASON[c.key] || "Not reported for this resource"; }
       }
-      if (c.key === "cpuAvg" && r.cpuMax !== null) td.title = "Peak " + r.cpuMax.toFixed(1) + " % (highest 1-minute value in 30 days)";
+      if ((c.key === "cpuAvg" || c.key === "cpuPeakHour") && r.cpuMax !== null) td.title = cpuProfile(r);
       if (c.key === "cpuAvg" && r.cpuAvg !== null && r.cpuAvg < 5) td.classList.add("low-util");
+      if (c.key === "cpuPeakHour" && r.cpuPeakHour !== null && r.cpuPeakHour >= 80) td.classList.add("low-util");
+      if (c.key === "memAvg" && r.memPeakHour !== null) td.title = "busiest hour " + r.memPeakHour.toFixed(1) + " %";
       if (c.key === "usage" && r.idle) td.classList.add("low-util");
       tr.appendChild(td);
     });
@@ -390,9 +405,10 @@
     if (hasCpu(r) || r.usage) {
       td.appendChild(el("p", { class: "small" }, [
         r.vcpu ? r.vcpu + " vCPU, " + r.ramGB + " GB RAM" : null,
-        r.cpuAvg !== null ? "CPU average " + r.cpuAvg.toFixed(1) + " %, peak " + (r.cpuMax || 0).toFixed(1) + " %"
+        r.cpuAvg !== null ? "CPU " + cpuProfile(r)
           : (hasCompute(r) ? "no CPU data (not running in the last 30 days)" : null),
-        r.memAvg !== null ? "memory used " + r.memAvg.toFixed(1) + " % on average" : null,
+        r.memAvg !== null ? "memory used " + r.memAvg.toFixed(1) + " % on average"
+          + (r.memPeakHour !== null ? ", busiest hour " + r.memPeakHour.toFixed(1) + " %" : "") : null,
         r.usage ? "usage: " + r.usage + (r.dormant ? " (idle, holds data: tier or archive it, don't delete it)"
           : r.idle ? " (idle)" : "") : null,
         r.nva ? "network virtual appliance: vendor-sized, ~100 % memory is normal" : null,
@@ -521,7 +537,7 @@
 
   function csv() {
     const columns = state.view === "resources"
-      ? ["name", "typeLabel", "category", "size", "vcpu", "ramGB", "cpuAvg", "cpuMax", "memAvg", "usage", "activity", "idle", "config", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
+      ? ["name", "typeLabel", "category", "size", "vcpu", "ramGB", "cpuAvg", "cpuPeakHour", "cpuP95", "cpuMax", "burstHours", "memAvg", "usage", "activity", "idle", "config", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
       : ["severity", "ref", "title", "type", "resourceName", "typeLabel", "category", "subscription", "savingsUsd", "wave", "resourceId"];
     const escape = (v) => {
       let text = v === undefined || v === null ? "" : String(v);

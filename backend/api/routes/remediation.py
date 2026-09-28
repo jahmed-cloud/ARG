@@ -128,7 +128,7 @@ def _build_checklist(findings: list, script_type: str) -> str:
         f"{header_comment} Findings: {len(findings)}",
         f"{header_comment} ============================================================",
         f"{header_comment}",
-        f"{header_comment} ⚠️  REVIEW EVERY COMMAND BEFORE RUNNING.",
+        f"{header_comment} WARNING: REVIEW EVERY COMMAND BEFORE RUNNING.",
         f"{header_comment} Test in a non-production subscription first.",
         f"{header_comment} These commands make real changes to Azure resources.",
         "",

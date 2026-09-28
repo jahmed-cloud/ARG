@@ -63,8 +63,8 @@ fi
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
 
 log()  { echo -e "${CYAN}▶ $*${RESET}"; }
-ok()   { echo -e "${GREEN}✓ $*${RESET}"; }
-warn() { echo -e "${YELLOW}⚠ $*${RESET}"; }
+ok()   { echo -e "${GREEN}OK   $*${RESET}"; }
+warn() { echo -e "${YELLOW}WARN $*${RESET}"; }
 
 # ---------------------------------------------------------------------------
 # Ensure we're in the project root

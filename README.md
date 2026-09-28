@@ -5,7 +5,7 @@
 > Author: **Junaid Ahmed** · [jahmed.cloud](https://jahmed.cloud) · [github.com/jahmed-cloud/ARG](https://github.com/jahmed-cloud/ARG)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.1-brightgreen.svg)](https://github.com/jahmed-cloud/ARG/releases)
+[![Version](https://img.shields.io/badge/version-0.2-brightgreen.svg)](https://github.com/jahmed-cloud/ARG/releases)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110-009688.svg)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://reactjs.org)
@@ -244,13 +244,13 @@ hub's Data Explorer / FOCUS exports when one exists, and falling back to the liv
 
 ## Docker Hub Images
 
-**ARG 0.1** is published to Docker Hub as multi-arch images (`linux/amd64` + `linux/arm64`):
+**ARG 0.2** is published to Docker Hub as multi-arch images (`linux/amd64` + `linux/arm64`):
 
 | Image | Tags |
 |-------|------|
-| `jahmed22/azure-resource-guardian-backend` | `0.1`, `latest` |
-| `jahmed22/azure-resource-guardian-worker` | `0.1`, `latest` |
-| `jahmed22/azure-resource-guardian-frontend` | `0.1`, `latest` |
+| `jahmed22/azure-resource-guardian-backend` | `0.2`, `0.1`, `latest` |
+| `jahmed22/azure-resource-guardian-worker` | `0.2`, `0.1`, `latest` |
+| `jahmed22/azure-resource-guardian-frontend` | `0.2`, `0.1`, `latest` |
 
 ### Run directly from Docker Hub (no source code needed)
 
@@ -274,9 +274,9 @@ docker compose -f docker-compose.hub.yml up -d
 ### Pull a specific version
 
 ```bash
-docker pull jahmed22/azure-resource-guardian-backend:0.1
-docker pull jahmed22/azure-resource-guardian-worker:0.1
-docker pull jahmed22/azure-resource-guardian-frontend:0.1
+docker pull jahmed22/azure-resource-guardian-backend:0.2
+docker pull jahmed22/azure-resource-guardian-worker:0.2
+docker pull jahmed22/azure-resource-guardian-frontend:0.2
 ```
 
 ---

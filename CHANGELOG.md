@@ -5,6 +5,8 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2] - 2026-09-28
+
 ### Fixed
 - **Utilisation that averaged away busy periods, and "saturated" from one-minute spikes.** An App Service plan
   that idles with nightly one-minute bursts showed 1.5 % CPU in the reports while the Azure portal chart (daily

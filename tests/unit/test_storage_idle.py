@@ -194,3 +194,27 @@ def test_ai_deep_dive_shows_accounts_deployments_and_spend():
     assert "gpt-5 GlobalStandard x250" in ai and "deleted within the window" in ai
     assert "## Spend in scope (last 30 days)" in pages["data-sql-storage"] and "12.00" in pages["data-sql-storage"]
     assert "No findings in this area." in ai
+
+
+def test_report_tables_have_no_blank_columns_and_explicit_costs():
+    from scripts.subscription_analysis.collector import AnalysisData
+    from scripts.subscription_analysis.report import Model, md_table, render_savings_register
+
+    table = md_table(["A", "B", "C"], [["x", "", "1"], ["y", "-", "2"]], drop_empty=True)
+    assert table.splitlines() == ["| A | C |", "|---|---|", "| x | 1 |", "| y | 2 |"]
+    rid = "/subscriptions/s/resourceGroups/rg/providers/Microsoft.KeyVault/vaults/kv1"
+    base = {"severity": "high", "wave": 1, "area": "Security & Identity", "resource_id": rid, "title": "t"}
+    findings = [dict(base, finding_type="key_vault_public_network_open", title="Open vault"),
+                dict(base, finding_type="unused_public_ip", area="FinOps / Governance", title="Unused IP",
+                     estimated_monthly_savings_usd=4.0),
+                dict(base, finding_type="missing_required_tags", severity="low", title="Tags"),
+                dict(base, finding_type="missing_required_tags", severity="low", title="Tags 2")]
+    data = AnalysisData(subscription={"id": "s", "name": "sub"}, generated_at=None, findings=findings,
+                        cost={"currency": "CHF", "usd_to_billing": 0.8, "last30_by_resource": {"/other": {"cost": 5.0}}})
+    m = Model(data)
+    assert m.cost30(rid) == "0.00" and m.cost30(None) == "-"          # analysed, no charge vs no resource
+    assert m.impact_label(findings[0]) == "Security" and m.impact_label(findings[1]).startswith("3 CHF")
+    register = render_savings_register(m)
+    assert "### With an estimated saving (1)" in register and "### Other actions (1)" in register
+    assert "### Tag and naming hygiene (2)" in register and "| missing_required_tags | 2 |" in register
+    assert "Monthly impact" not in register

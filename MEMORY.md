@@ -42,6 +42,8 @@ in the same change that makes an entry wrong.
 - **Estate** = one Resource Graph query + Compute SKU catalogue + usage, joined with report findings and cost. Tag /
   naming findings are "hygiene", counted apart from actionable suggestions. VM / Arc extensions are hidden by default
   and named `vm › extension`. New per-type facts go into `RESOURCE_DETAILS` (`cfg` pack) → `_profile()`.
+- **No blank cells:** reports drop all-blank columns (`md_table(drop_empty=True)`), show `0.00` for no charge
+  (`Model.cost30`) and an Impact label; the Estate page renders empty values as a muted `-` with a reason tooltip.
 - **Report folders** are keyed by subscription ID (`.subscription-id`); duplicate display names get `_<id8>`.
 - The analysis is **read-only**. Remediation commands are for review; never execute them.
 

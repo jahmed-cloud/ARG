@@ -30,6 +30,20 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   The estate splits storage `Transactions` by `ApiName` like the scanner.
 - `idle_sql_database` skips geo / standby secondaries: a DR replica takes no connections by design and was reported
   as "delete".
+- **Blank values in reports and the estate.** Report tables drop columns that are blank in every row (resource
+  inventory, service baselines, deep dives); a resource with no charge shows `0.00` instead of nothing; the action list
+  and deep dives show an **Impact** (the saving, else Security / Performance / Operational / Structural); the savings
+  register lists actions with a saving first, then the other actions without an empty saving column, and summarises
+  tag / naming hygiene as counts (it listed ~1,800 rows with a blank "Monthly impact"); scanner runs show 0 warnings
+  and "not reported" instead of blanks; cost drivers say "stable" / "first month" instead of an empty "Largest change".
+  The report inventory adds Configuration and 30-day cost columns.
+- **Estate details for types that showed nothing:** storage accounts (network exposure, private endpoints, shared key,
+  blob public access, TLS, ADLS Gen2, SFTP), managed disks (OS / data, VM, zone, tier, public access, bursting,
+  shared), snapshots (incremental, source, date), SQL databases (max size, zone redundancy, backup redundancy,
+  auto-pause), smart detector alerts (frequency, detector, disabled), Event Grid topic source, registries (admin user,
+  network, zone redundancy), runbooks (state), Arc SQL instances (license, host, disconnected) and the VM OS-disk type.
+  The Estate page shows a muted "-" with a tooltip explaining why a cell is empty, and `0` cost for resources of
+  analysed subscriptions that had no charge. Environment falls back to the subscription name.
 
 ### Added
 - **Estate inventory** across all subscriptions: portal **Estate** page (`/estate`) and `reports/_estate/`

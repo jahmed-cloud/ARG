@@ -136,6 +136,8 @@ class User(Base):
     sso_subject   = Column(String(255), nullable=True)  # OID / sub claim
     subscription_scoped = Column(Boolean, default=False, server_default="false", nullable=False)
     sso_access_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # Created by Microsoft sign-in; role follows Entra group membership (see services/entra_access.py)
+    entra_managed = Column(Boolean, default=False, server_default="false", nullable=False)
 
     # Activity tracking
     last_login_at = Column(DateTime(timezone=True), nullable=True)
@@ -170,19 +172,28 @@ class User(Base):
 
 
 class SubscriptionAccess(Base):
-    """ARG-only grants to immutable Entra principals; no Azure IAM writes."""
+    """ARG-only grants; no Azure IAM writes.
+
+    A grant targets an immutable Entra principal (tenant_id + object_id) or a local ARG account (user_id).
+    source='azure' rows are Owner leases discovered from Azure at sign-in (expires_at set); source='manual' rows
+    are reader grants added in ARG by an owner or an admin.
+    """
     __tablename__ = "subscription_access"
     id = Column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
     subscription_id = Column(UUID(as_uuid=False), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
-    tenant_id = Column(String(36), nullable=False)
-    object_id = Column(String(36), nullable=False)
+    tenant_id = Column(String(36), nullable=True)
+    object_id = Column(String(36), nullable=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    principal_name = Column(String(255), nullable=True)  # display only (email / UPN at grant time)
     role = Column(String(16), nullable=False)  # owner / reader
     source = Column(String(16), nullable=False)  # azure / manual
     granted_by = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     __table_args__ = (
         UniqueConstraint("subscription_id", "tenant_id", "object_id", "source", name="uq_subscription_access_principal"),
+        UniqueConstraint("subscription_id", "user_id", "source", name="uq_subscription_access_user"),
         Index("ix_subscription_access_principal", "tenant_id", "object_id"),
+        Index("ix_subscription_access_user", "user_id"),
     )
 
 

@@ -67,21 +67,27 @@ interface NavItem {
   path: string;
   icon: React.ReactNode;
   badge?: number;
+  group: "WORKSPACE" | "ASSESSMENT" | "OPERATIONS";
+  // Tenant-wide or write-only pages: hidden for viewers, who only see their own subscriptions.
+  operatorsOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Overview", path: "/dashboard", icon: <Dashboard /> },
-  { label: "Scans", path: "/scans", icon: <SearchOutlined /> },
-  { label: "Findings", path: "/findings", icon: <BugReport /> },
-  { label: "Cost Savings", path: "/costs", icon: <AttachMoney /> },
-  { label: "Identity", path: "/identity", icon: <Person /> },
-  { label: "Governance", path: "/governance", icon: <Policy /> },
-  { label: "Security", path: "/security", icon: <Security /> },
-  { label: "Terraform Drift", path: "/drift", icon: <CompareArrows /> },
-  { label: "Reports", path: "/reports", icon: <Description /> },
-  { label: "Remediation", path: "/remediation", icon: <Build /> },
-  { label: "Subscriptions", path: "/subscriptions", icon: <CloudQueue /> },
+  { label: "Overview", path: "/dashboard", icon: <Dashboard />, group: "WORKSPACE" },
+  { label: "Scans", path: "/scans", icon: <SearchOutlined />, group: "WORKSPACE" },
+  { label: "Findings", path: "/findings", icon: <BugReport />, group: "WORKSPACE" },
+  { label: "Cost Savings", path: "/costs", icon: <AttachMoney />, group: "WORKSPACE" },
+  { label: "Identity", path: "/identity", icon: <Person />, group: "ASSESSMENT", operatorsOnly: true },
+  { label: "Governance", path: "/governance", icon: <Policy />, group: "ASSESSMENT" },
+  { label: "Security", path: "/security", icon: <Security />, group: "ASSESSMENT" },
+  { label: "Terraform Drift", path: "/drift", icon: <CompareArrows />, group: "ASSESSMENT" },
+  { label: "Reports", path: "/reports", icon: <Description />, group: "OPERATIONS" },
+  { label: "Remediation", path: "/remediation", icon: <Build />, group: "OPERATIONS", operatorsOnly: true },
+  { label: "Subscriptions", path: "/subscriptions", icon: <CloudQueue />, group: "OPERATIONS" },
 ];
+
+// Roles that run scans and see tenant-wide pages (admin, and the contributor group = analyst).
+const OPERATOR_ROLES = ["super_admin", "admin", "analyst"];
 
 export function AppLayout() {
   const theme = useTheme();
@@ -92,6 +98,9 @@ export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const { user } = useAppSelector((s) => s.auth);
+  const isViewer = user?.role === "viewer";
+  const canOperate = !!user && OPERATOR_ROLES.includes(user.role);
+  const navItems = NAV_ITEMS.filter((item) => !(item.operatorsOnly && isViewer));
 
   // Below this width, the sidebar switches from a permanent column that
   // always reserves layout space to a temporary overlay drawer that's
@@ -230,10 +239,11 @@ export function AppLayout() {
 
         {/* Nav items */}
         <List component="nav" aria-label="Main navigation" sx={{ pt: 1, px: 0.5, flex: 1 }}>
-          {NAV_ITEMS.map((item, index) => {
+          {navItems.map((item, index) => {
             const active = location.pathname.startsWith(item.path);
+            const firstOfGroup = index === 0 || navItems[index - 1].group !== item.group;
             return (
-              <React.Fragment key={item.path}>{!compact && [0, 4, 8].includes(index) && <Typography component="div" sx={{ px: 2, pt: index ? 2.5 : 1.5, pb: 1, color: "#90a79a", fontSize: 9, letterSpacing: ".15em", fontFamily: "Consolas, monospace" }}>{index === 0 ? "WORKSPACE" : index === 4 ? "ASSESSMENT" : "OPERATIONS"}</Typography>}<ListItem disablePadding sx={{ mb: 0.25 }}>
+              <React.Fragment key={item.path}>{!compact && firstOfGroup && <Typography component="div" sx={{ px: 2, pt: index ? 2.5 : 1.5, pb: 1, color: "#90a79a", fontSize: 9, letterSpacing: ".15em", fontFamily: "Consolas, monospace" }}>{item.group}</Typography>}<ListItem disablePadding sx={{ mb: 0.25 }}>
                 <Tooltip title={compact ? item.label : ""} placement="right">
                   <ListItemButton
                     aria-label={item.label}
@@ -382,7 +392,7 @@ export function AppLayout() {
                 where they can choose which subscription(s) to target —
                 deliberately does NOT start a scan directly from here,
                 since that would skip subscription selection entirely. */}
-            <Button
+            {canOperate && <Button
               variant="contained"
               size="small"
               disableElevation
@@ -406,7 +416,7 @@ export function AppLayout() {
               }}
             >
               {isMobile ? <PlayArrow sx={{ fontSize: "18px !important" }} /> : "Start a Scan"}
-            </Button>
+            </Button>}
 
 
             {/* User avatar */}

@@ -37,6 +37,8 @@ The mobile shell switches to an overlay below 900px. It reserves no sidebar widt
 
 ## Local portal and CLI
 
+Access is role-based with a per-subscription scope for viewers: `backend/services/access.py` turns the caller into an `AccessScope` that every read route applies to its `subscription_id` column; Entra group roles, Azure Owner leases and ARG reader grants are described in [Access control](access-control.md).
+
 The worker authenticates per tenant with the stored service principal (`ClientSecretCredential`); `scripts.connect_azure` creates that principal from the operator's `az login` and registers it through the API, and the secret can be replaced in place with `PATCH /tenants/{id}`.
 
 `scripts.subscription_analysis` uses the Azure CLI credential from `az login`. It collects paginated inventory, runs scanners and writes subscription-specific files under `reports/`. The local FastAPI/Jinja portal adds a loopback web UI and a bounded thread pool for analyses. It does not require PostgreSQL, Redis, Docker, or the React build.

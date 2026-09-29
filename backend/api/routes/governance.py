@@ -2,14 +2,14 @@
 Governance API routes — tag compliance, naming, CAF alignment.
 """
 import logging
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies.auth import require_analyst
 from backend.api.dependencies.database import get_db
-from backend.models.models import Finding, FindingStatus, User
+from backend.models.models import Finding, FindingStatus
+from backend.services.access import AccessScope, get_access_scope
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["governance"])
@@ -28,12 +28,13 @@ class GovernanceStats(BaseModel):
 @router.get("/stats", response_model=GovernanceStats)
 async def get_governance_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ) -> GovernanceStats:
     """Governance score and violation breakdown."""
     result = await db.execute(
         select(Finding).where(
-            and_(Finding.category == "governance", Finding.status == FindingStatus.OPEN)
+            and_(Finding.category == "governance", Finding.status == FindingStatus.OPEN,
+                 scope.where(Finding.subscription_id))
         )
     )
     findings = result.scalars().all()

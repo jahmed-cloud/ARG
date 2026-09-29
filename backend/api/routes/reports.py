@@ -26,9 +26,9 @@ from sqlalchemy.orm import selectinload
 import io
 
 from backend.core.config import settings
-from backend.api.dependencies.auth import require_analyst
 from backend.api.dependencies.database import get_db
-from backend.models.models import Finding, Report, ReportFormat, FindingStatus, User
+from backend.models.models import Finding, Report, ReportFormat, FindingStatus
+from backend.services.access import AccessScope, get_access_scope
 from backend.services.report_service import ReportService
 
 logger = logging.getLogger(__name__)
@@ -48,14 +48,18 @@ class ReportRequest(BaseModel):
 async def generate_report(
     body: ReportRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ) -> StreamingResponse:
     """Generate and stream a governance report directly — no DB row created."""
     allowed_formats = {"pdf", "excel", "csv", "json"}
     if body.output_format not in allowed_formats:
         raise HTTPException(status_code=400, detail=f"Format must be one of: {allowed_formats}")
 
-    q = select(Finding).options(selectinload(Finding.resource))
+    current_user = scope.user
+    if body.subscription_ids:
+        for sub_id in body.subscription_ids:
+            scope.require(sub_id)
+    q = select(Finding).options(selectinload(Finding.resource)).where(scope.where(Finding.subscription_id))
     if not body.include_resolved:
         q = q.where(Finding.status.in_([FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED]))
     if body.subscription_ids:
@@ -162,7 +166,7 @@ async def generate_report(
 @router.get("", response_model=dict)
 async def list_reports(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     """
     List previously generated reports — both on-demand (POST /generate)
@@ -170,7 +174,10 @@ async def list_reports(
     Ordered by expiration since there's no created_at column —
     expires_at is the closest proxy for recency available on this table.
     """
-    result = await db.execute(select(Report).order_by(Report.expires_at.desc()).limit(50))
+    q = select(Report)
+    if scope.scoped:  # scoped users only see the reports they generated (limited to their subscriptions)
+        q = q.where(Report.generated_by == scope.user.id)
+    result = await db.execute(q.order_by(Report.expires_at.desc()).limit(50))
     reports = result.scalars().all()
     return {
         "items": [
@@ -193,11 +200,11 @@ async def list_reports(
 async def download_report(
     report_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ):
     """Re-download a previously generated report from history."""
     report = await db.get(Report, str(report_id))
-    if not report:
+    if not report or (scope.scoped and str(report.generated_by) != str(scope.user.id)):
         raise HTTPException(status_code=404, detail="Report not found")
     if not report.file_path or not os.path.exists(report.file_path):
         raise HTTPException(
@@ -225,11 +232,11 @@ async def download_report(
 async def delete_report(
     report_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ):
     """Delete a report's file and its history entry."""
     report = await db.get(Report, str(report_id))
-    if not report:
+    if not report or (scope.scoped and str(report.generated_by) != str(scope.user.id)):
         raise HTTPException(status_code=404, detail="Report not found")
 
     if report.file_path and os.path.exists(report.file_path):

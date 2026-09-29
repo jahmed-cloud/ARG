@@ -7,7 +7,7 @@ from uuid import UUID
 
 import httpx
 from azure.identity.aio import ClientSecretCredential
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from backend.core.config import settings
 from backend.models.models import Subscription, SubscriptionAccess, Tenant, UserRole
@@ -26,14 +26,26 @@ def identity_from_claims(claims):
     return tenant_id, object_id
 
 
-def group_admin(claims):
-    # Overage claims do not contain a complete membership list. Fail closed;
+def _groups(claims):
+    # Overage claims do not contain a complete membership list. Fail closed (no group role);
     # administrators can use the local recovery account to adjust configuration.
     if claims.get('hasgroups') or 'groups' in claims.get('_claim_names', {}):
-        return False
-    groups = {str(UUID(g)) for g in claims.get('groups', [])}
-    configured = {str(UUID(g)) for g in settings.ENTRA_ADMIN_GROUP_IDS}
-    return bool(groups & configured)
+        return set()
+    return {str(UUID(g)) for g in claims.get('groups', [])}
+
+
+def group_admin(claims):
+    return bool(_groups(claims) & {str(UUID(g)) for g in settings.ENTRA_ADMIN_GROUP_IDS})
+
+
+def role_from_groups(claims):
+    """Application role from Entra group membership: admin group, contributor group, else viewer."""
+    groups = _groups(claims)
+    if groups & {str(UUID(g)) for g in settings.ENTRA_ADMIN_GROUP_IDS}:
+        return UserRole.ADMIN
+    if groups & {str(UUID(g)) for g in settings.ENTRA_CONTRIBUTOR_GROUP_IDS}:
+        return UserRole.ANALYST
+    return UserRole.VIEWER
 
 
 def is_owner_assignment(assignment, subscription_id):
@@ -68,9 +80,25 @@ async def subscription_owner(client, token, subscription_id, object_id):
 
 
 async def sync_entra_access(db, user, claims):
-    tenant_id, object_id = identity_from_claims(claims)
+    """At Microsoft sign-in: set the role of Entra-managed users from their groups, then refresh Owner leases.
+
+    Accounts an admin created in ARG keep their ARG role; only their Owner leases are refreshed when they are
+    viewers. Returns the number of subscriptions the user owns (0 for non-viewers).
+    """
+    identity_from_claims(claims)  # tenant-bound identities only
+    if user.entra_managed:
+        user.role = role_from_groups(claims)
+    return await refresh_owner_grants(db, user)
+
+
+async def refresh_owner_grants(db, user):
+    """Replace this user's Azure Owner leases with what Azure says now (viewers only; fail closed)."""
+    if user.role != UserRole.VIEWER or not user.sso_subject or not settings.entra_tenant_bound:
+        user.subscription_scoped = user.role == UserRole.VIEWER
+        return 0
+    tenant_id = str(UUID(settings.AZURE_OAUTH_TENANT_ID))
+    object_id = str(UUID(user.sso_subject))
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.ENTRA_ACCESS_TTL_MINUTES)
-    user.role = UserRole.ADMIN if group_admin(claims) else UserRole.VIEWER
     user.subscription_scoped = True
     user.sso_access_expires_at = expires_at
     # Delete previous discovery grants even if Azure becomes unavailable. Never
@@ -78,9 +106,8 @@ async def sync_entra_access(db, user, claims):
     await db.execute(delete(SubscriptionAccess).where(
         SubscriptionAccess.tenant_id == tenant_id, SubscriptionAccess.object_id == object_id,
         SubscriptionAccess.source == 'azure'))
-    if user.role == UserRole.ADMIN:
-        return 0
-    tenant = (await db.execute(select(Tenant).where(Tenant.tenant_id == tenant_id, Tenant.is_active.is_(True)))).scalar_one_or_none()
+    tenant = (await db.execute(select(Tenant).where(
+        func.lower(Tenant.tenant_id) == tenant_id, Tenant.is_active.is_(True)))).scalar_one_or_none()
     if not tenant:
         return 0
     subscriptions = (await db.execute(select(Subscription).where(
@@ -102,6 +129,36 @@ async def sync_entra_access(db, user, claims):
     owners = [sub for sub in results if sub is not None]
     for sub in owners:
         db.add(SubscriptionAccess(subscription_id=sub.id, tenant_id=tenant_id, object_id=object_id,
-            role='owner', source='azure', expires_at=expires_at))
+            principal_name=user.email, role='owner', source='azure', expires_at=expires_at))
     user.preferences = {**(user.preferences or {}), 'ownership_sync': 'ok'}
     return len(owners)
+
+
+async def find_entra_user(tenant, email):
+    """Look up a user in the tenant by UPN or mail with the tenant's scanner principal (needs User.Read.All).
+
+    Returns {'id', 'upn'} or None. Raises LookupUnavailable when Graph cannot be queried.
+    """
+    if not tenant.graph_permissions_granted:
+        raise LookupUnavailable('Microsoft Graph User.Read.All is not granted to this tenant\'s scanner principal')
+    safe = email.replace("'", "''")
+    params = {'$filter': f"userPrincipalName eq '{safe}' or mail eq '{safe}'", '$select': 'id,userPrincipalName'}
+    try:
+        async with ClientSecretCredential(tenant.tenant_id, tenant.client_id,
+                                          decrypt(tenant.client_secret_encrypted)) as credential:
+            token = await credential.get_token('https://graph.microsoft.com/.default')
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get('https://graph.microsoft.com/v1.0/users', params=params,
+                                            headers={'Authorization': f'Bearer {token.token}'})
+                response.raise_for_status()
+                rows = response.json().get('value', [])
+    except Exception as exc:
+        logger.warning('Entra user lookup unavailable: %s', type(exc).__name__)
+        raise LookupUnavailable('Microsoft Graph could not be queried') from None
+    if len(rows) != 1:
+        return None
+    return {'id': str(UUID(rows[0]['id'])), 'upn': rows[0].get('userPrincipalName') or email}
+
+
+class LookupUnavailable(Exception):
+    pass

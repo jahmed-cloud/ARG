@@ -16,4 +16,5 @@
 - [Local setup and development](local-development.md)
 - [Docker deployment and operations](docker-deployment.md)
 - [Connect Azure to the Docker stack](connect-azure.md) - one command or manual
+- [Access control](access-control.md) - roles, Entra admin / contributor groups, owners and readers
 - [Merge and validation record](merge-validation.md)

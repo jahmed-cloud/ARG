@@ -11,12 +11,12 @@ import secrets
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select, func, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies.auth import get_current_user, require_admin
+from backend.api.dependencies.auth import require_admin
 from backend.api.dependencies.database import get_db
 from backend.api.routes.auth import hash_password
 from backend.models.models import User, UserRole
@@ -51,6 +51,7 @@ class UserResponse(BaseModel):
     is_active: bool
     mfa_enabled: bool
     sso_provider: str | None
+    entra_managed: bool = False  # role follows Entra groups; change it there
     last_login_at: datetime | None
     login_count: int
     created_at: datetime
@@ -69,6 +70,7 @@ def _serialize(u: User) -> dict:
         "is_active": u.is_active,
         "mfa_enabled": u.mfa_enabled,
         "sso_provider": u.sso_provider,
+        "entra_managed": bool(u.entra_managed),
         "last_login_at": u.last_login_at,
         "login_count": u.login_count,
         "created_at": u.created_at,
@@ -160,6 +162,11 @@ async def update_user(
     # demoting their own only-remaining super_admin account.
     if user.id == current_user.id and body.is_active is False:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+
+    if body.role is not None and body.role != user.role and user.entra_managed:
+        raise HTTPException(status_code=400, detail=(
+            "This account's role follows Entra group membership (admin / contributor groups) and is set again "
+            "at every Microsoft sign-in. Change the group membership instead."))
 
     if body.full_name is not None:
         user.full_name = body.full_name

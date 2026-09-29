@@ -5,6 +5,8 @@
  *   GET  /subscriptions
  *   POST /subscriptions { name, azure_subscription_id, tenant_id }
  *   DELETE /subscriptions/{id}
+ *   GET/POST /subscriptions/{id}/access, DELETE /subscriptions/{id}/access/{grantId}
+ *     - reader access inside ARG, managed by the subscription's Azure owners and by admins
  *
  * Tenant creation (backend/api/routes/tenants.py) is intentionally
  * left for the Settings page since it involves secret entry — keeping
@@ -39,9 +41,10 @@ import {
   Alert,
   alpha,
 } from '@mui/material';
-import { Add, Delete, CloudQueue } from '@mui/icons-material';
+import { Add, Delete, CloudQueue, GroupAdd } from '@mui/icons-material';
 import { useApi, ApiError } from '../hooks/useApi';
 import { useSnackbar } from 'notistack';
+import { useAppSelector } from '../store/store';
 
 interface SubscriptionItem {
   id: string;
@@ -50,6 +53,17 @@ interface SubscriptionItem {
   tenant_id: string;
   state: string;
   last_scanned_at: string | null;
+  my_access?: 'all' | 'owner' | 'reader' | null;
+  can_manage_access?: boolean;
+}
+
+interface AccessGrant {
+  id: string;
+  principal: string | null;
+  kind: 'local' | 'entra';
+  role: 'owner' | 'reader';
+  source: 'azure' | 'manual';
+  removable: boolean;
 }
 
 interface TenantOption {
@@ -73,6 +87,55 @@ export const SubscriptionsPage: React.FC = () => {
 
   const [tenants, setTenants] = useState<TenantOption[]>([]);
   const [tenantsLoading, setTenantsLoading] = useState(false);
+
+  const { user } = useAppSelector((s) => s.auth);
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const isViewer = user?.role === 'viewer';
+
+  const [accessFor, setAccessFor] = useState<SubscriptionItem | null>(null);
+  const [grants, setGrants] = useState<AccessGrant[]>([]);
+  const [grantEmail, setGrantEmail] = useState('');
+  const [granting, setGranting] = useState(false);
+
+  const loadGrants = async (sub: SubscriptionItem) => {
+    try {
+      setGrants(await api.get(`/subscriptions/${sub.id}/access`));
+    } catch (e) {
+      enqueueSnackbar(e instanceof ApiError ? e.message : 'Failed to load access', { variant: 'error' });
+    }
+  };
+
+  const openAccess = (sub: SubscriptionItem) => {
+    setAccessFor(sub);
+    setGrants([]);
+    setGrantEmail('');
+    loadGrants(sub);
+  };
+
+  const addReader = async () => {
+    if (!accessFor || !grantEmail.trim()) return;
+    setGranting(true);
+    try {
+      await api.post(`/subscriptions/${accessFor.id}/access`, { email: grantEmail.trim() });
+      enqueueSnackbar(`${grantEmail.trim()} can now see ${accessFor.name}`, { variant: 'success' });
+      setGrantEmail('');
+      loadGrants(accessFor);
+    } catch (e) {
+      enqueueSnackbar(e instanceof ApiError ? e.message : 'Failed to add reader', { variant: 'error' });
+    } finally {
+      setGranting(false);
+    }
+  };
+
+  const removeGrant = async (grant: AccessGrant) => {
+    if (!accessFor) return;
+    try {
+      await api.del(`/subscriptions/${accessFor.id}/access/${grant.id}`);
+      loadGrants(accessFor);
+    } catch (e) {
+      enqueueSnackbar(e instanceof ApiError ? e.message : 'Failed to remove access', { variant: 'error' });
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,14 +213,14 @@ export const SubscriptionsPage: React.FC = () => {
         <Typography variant="h5" sx={{ fontWeight: 700 }}>
           Subscriptions
         </Typography>
-        <Button
+        {isAdmin && <Button
           variant="contained"
           startIcon={<Add />}
           onClick={openDialog}
           sx={{  fontWeight: 700 }}
         >
           Register Subscription
-        </Button>
+        </Button>}
       </Box>
 
       {error && (
@@ -172,7 +235,9 @@ export const SubscriptionsPage: React.FC = () => {
             <Box sx={{ py: 6, textAlign: 'center' }}>
               <CloudQueue sx={{ fontSize: 40, color: alpha('#fff', 0.2), mb: 1 }} />
               <Typography variant="body2" sx={{ color: alpha('#fff', 0.4) }}>
-                No subscriptions registered yet. Register one to start scanning.
+                {isViewer
+                  ? 'You do not have access to a subscription yet. You see the subscriptions you own in Azure, and the ones an owner or admin gives you access to here.'
+                  : 'No subscriptions registered yet. Register one to start scanning.'}
               </Typography>
             </Box>
           ) : (
@@ -184,6 +249,7 @@ export const SubscriptionsPage: React.FC = () => {
                   <TableCell>Azure Subscription ID</TableCell>
                   <TableCell>Status</TableCell>
                   <TableCell>Last Scanned</TableCell>
+                  {isViewer && <TableCell>Your access</TableCell>}
                   <TableCell align="right">Actions</TableCell>
                 </TableRow>
               </TableHead>
@@ -208,10 +274,21 @@ export const SubscriptionsPage: React.FC = () => {
                     <TableCell sx={{ color: alpha('#fff', 0.6) }}>
                       {s.last_scanned_at ? new Date(s.last_scanned_at).toLocaleString() : 'Never'}
                     </TableCell>
+                    {isViewer && (
+                      <TableCell sx={{ color: alpha('#fff', 0.6), textTransform: 'capitalize' }}>{s.my_access ?? '-'}</TableCell>
+                    )}
                     <TableCell align="right">
-                      <IconButton size="small" onClick={() => handleDelete(s.id)} sx={{ color: alpha('#F44336', 0.8) }}>
-                        <Delete fontSize="small" />
-                      </IconButton>
+                      {s.can_manage_access && (
+                        <IconButton size="small" aria-label={`Manage access to ${s.name}`} title="Manage access"
+                          onClick={() => openAccess(s)} sx={{ color: alpha('#b8d9ba', 0.9) }}>
+                          <GroupAdd fontSize="small" />
+                        </IconButton>
+                      )}
+                      {isAdmin && (
+                        <IconButton size="small" aria-label={`Remove ${s.name}`} onClick={() => handleDelete(s.id)} sx={{ color: alpha('#F44336', 0.8) }}>
+                          <Delete fontSize="small" />
+                        </IconButton>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -269,6 +346,65 @@ export const SubscriptionsPage: React.FC = () => {
           <Button onClick={handleCreate} variant="contained" disabled={submitting}>
             {submitting ? 'Registering…' : 'Register'}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!accessFor} onClose={() => setAccessFor(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Access to {accessFor?.name}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ color: alpha('#fff', 0.6), mb: 2 }}>
+            Readers see this subscription's findings, costs, scans and reports in ARG. Nothing changes in Azure.
+            Admins, contributors and auditors already see every subscription. Owners come from Azure (Owner role)
+            and are re-checked at every sign-in.
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+            <TextField
+              label="Email (ARG account or Entra user)"
+              size="small"
+              fullWidth
+              value={grantEmail}
+              onChange={(e) => setGrantEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') addReader(); }}
+            />
+            <Button variant="contained" onClick={addReader} disabled={granting || !grantEmail.trim()}
+              sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
+              {granting ? 'Adding…' : 'Add reader'}
+            </Button>
+          </Box>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Person</TableCell>
+                <TableCell>Access</TableCell>
+                <TableCell>From</TableCell>
+                <TableCell align="right" />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {grants.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={4} sx={{ color: alpha('#fff', 0.5) }}>No owners or readers yet.</TableCell>
+                </TableRow>
+              )}
+              {grants.map((g) => (
+                <TableRow key={g.id}>
+                  <TableCell>{g.principal ?? '-'}</TableCell>
+                  <TableCell sx={{ textTransform: 'capitalize' }}>{g.role}</TableCell>
+                  <TableCell>{g.source === 'azure' ? 'Azure Owner' : g.kind === 'local' ? 'Added in ARG' : 'Added in ARG (Entra)'}</TableCell>
+                  <TableCell align="right">
+                    {g.removable && (
+                      <IconButton size="small" aria-label={`Remove ${g.principal}`} onClick={() => removeGrant(g)} sx={{ color: alpha('#F44336', 0.8) }}>
+                        <Delete fontSize="small" />
+                      </IconButton>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAccessFor(null)}>Close</Button>
         </DialogActions>
       </Dialog>
     </Box>

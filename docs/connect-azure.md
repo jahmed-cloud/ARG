@@ -17,7 +17,8 @@ can create app registrations and assign roles on the subscriptions (Owner or Use
 
 ```bash
 az login
-python -m scripts.connect_azure                                   # every enabled subscription in the current tenant
+python -m scripts.connect_azure                                   # every subscription your az login can read
+python -m scripts.connect_azure --current-tenant-only             # only the tenant az is signed in to now
 python -m scripts.connect_azure --subscription <subscription-id>  # only these (repeat the flag)
 python -m scripts.connect_azure --scan                            # connect and start a scan
 ```
@@ -27,18 +28,28 @@ On Windows without `python` on the PATH use `.venv\Scripts\python.exe -m scripts
 
 What it does, in order:
 
-1. Reads the tenant and subscriptions of your current `az login` (`az account show` / `az account list`). Only
-   enabled subscriptions of that tenant are used; an unknown `--subscription` stops the run before any change.
+1. Lists every subscription your `az login` can see, in **all** signed-in tenants (`az account list --all`), in
+   the states Azure still lets you read: Enabled, Warned and PastDue (Disabled and Deleted are left out). An unknown
+   or disabled `--subscription` stops the run before any change.
 2. Signs in to ARG with `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env` (or `--user`, then prompts for the
    password). `--url` points at another ARG address.
-3. Finds the service principal `arg-scanner`, or creates it with Reader on the chosen subscriptions.
+3. Per tenant (current tenant first; for another tenant it switches the active subscription so `az ad` works there,
+   and switches back at the end): finds the service principal `arg-scanner`, or creates it without roles.
 4. Assigns **Reader**, **Cost Management Reader** and **Security Reader** on each subscription, skipping roles that
-   are already there (retries while a new principal replicates in Entra ID).
+   are already there (retries only while a new principal replicates in Entra ID).
+   - No Reader possible (you are not Owner / User Access Administrator there): the subscription is **skipped** with
+     the reason; the others carry on.
+   - Reader in place but a cost or security role missing: connected, with a warning that those results are partial.
+   - A tenant `az` cannot use (for example multi-factor sign-in needed): skipped with the `az login --tenant <id>`
+     command to run first.
 5. Registers the tenant in ARG if it is not registered yet. Only then is a client secret needed: a new principal's
    own secret, or - for an existing principal - an **additional** secret (`az ad app credential reset --append`,
    one year), so secrets used elsewhere keep working.
-6. Registers each subscription that ARG does not know yet.
+6. Registers each connected subscription that ARG does not know yet, and prints what was connected and skipped.
 7. With `--scan`, starts a scan of all registered subscriptions.
+
+Subscriptions in a tenant you have not signed in to with `az login` are invisible to the CLI; run
+`az login --tenant <tenant-id>` for it, then the command again.
 
 The client secret goes from Azure straight into ARG's API, where it is encrypted with `ENCRYPTION_KEY`. It is never
 printed or written to disk. Run the command again at any time to add subscriptions; everything already in place is

@@ -354,6 +354,8 @@ docker compose up -d --build
 
 This builds the backend, worker, beat, and frontend images, then starts Postgres, Redis, and all five application services. The backend container automatically runs `alembic upgrade head` on startup, so the database schema is created the first time it boots - no manual migration step needed.
 
+Windows with Podman Desktop instead of Docker: `.\scripts\Start-PodmanStack.ps1` builds and starts the same stack (see [local-run.md](local-run.md), section 8).
+
 Check that everything came up healthy:
 
 ```bash

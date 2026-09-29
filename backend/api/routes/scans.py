@@ -13,9 +13,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies.auth import get_current_user, require_analyst
+from backend.api.dependencies.auth import require_analyst
 from backend.api.dependencies.database import get_db
-from backend.models.models import ScanJob, ScanResult, ScanStatus, Subscription, User
+from backend.models.models import ScanJob, ScanStatus, Subscription, User
+from backend.services.access import AccessScope, get_access_scope
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -182,10 +183,11 @@ async def list_scans(
     page_size: int = Query(20, ge=1, le=100),
     status_filter: Optional[str] = Query(None, alias="status"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    scope: AccessScope = Depends(get_access_scope),
 ):
-    """List scan jobs with pagination."""
-    query = select(ScanJob).order_by(ScanJob.created_at.desc())
+    """List scan jobs with pagination. Scoped users see scans of their own subscriptions only."""
+    visible = scope.where(ScanJob.subscription_id)
+    query = select(ScanJob).where(visible).order_by(ScanJob.created_at.desc())
 
     if status_filter:
         try:
@@ -194,7 +196,7 @@ async def list_scans(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status_filter}")
 
-    total = await db.scalar(select(func.count()).select_from(ScanJob))
+    total = await db.scalar(select(func.count()).select_from(ScanJob).where(visible))
     jobs = await db.execute(query.offset((page - 1) * page_size).limit(page_size))
 
     return ScanListResponse(
@@ -224,12 +226,12 @@ async def list_scans(
 async def get_scan(
     scan_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    scope: AccessScope = Depends(get_access_scope),
 ):
     """Get details of a specific scan job."""
     result = await db.execute(select(ScanJob).where(ScanJob.id == scan_id))
     job = result.scalar_one_or_none()
-    if not job:
+    if not job or (scope.scoped and not (job.subscription_id and scope.allows(job.subscription_id))):
         raise HTTPException(status_code=404, detail="Scan job not found")
 
     return ScanJobResponse(

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from backend.api.routes.dashboard import get_dashboard
+from backend.services.access import AccessScope
 from backend.models.models import (
     Tenant, Subscription, ResourceInventory, ResourceCost, Finding, SeverityLevel,
 )
@@ -45,13 +46,13 @@ async def check_dashboard(url):
                         severity=SeverityLevel.CRITICAL, title='Must be excluded', description='Rollback-only fixture'))
                     await db.flush()
                     for scope in [subs[0].id, subs[0].subscription_id]:
-                        result = await get_dashboard(scope, db, SimpleNamespace())
+                        result = await get_dashboard(scope, db, AccessScope(user=SimpleNamespace()))
                         assert result.total_resources == 1
                         assert result.total_subscriptions == 1
                         assert result.total_findings_open == 4
                         assert [f.severity for f in result.top_findings] == ['critical', 'high', 'low', 'info']
                         assert result.cost_trend[0].total_cost == 42
-                    empty = await get_dashboard(str(uuid4()), db, SimpleNamespace())
+                    empty = await get_dashboard(str(uuid4()), db, AccessScope(user=SimpleNamespace()))
                     assert empty.total_resources == empty.total_findings_open == 0
                     assert empty.cost_trend == []
             finally:

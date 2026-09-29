@@ -7,9 +7,9 @@ from pydantic import BaseModel
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies.auth import require_analyst
 from backend.api.dependencies.database import get_db
-from backend.models.models import Finding, FindingStatus, User
+from backend.models.models import Finding, FindingStatus
+from backend.services.access import AccessScope, get_access_scope
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["security"])
@@ -27,12 +27,13 @@ class SecurityStats(BaseModel):
 @router.get("/stats", response_model=SecurityStats)
 async def get_security_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ) -> SecurityStats:
     """Security score and issue breakdown."""
     result = await db.execute(
         select(Finding).where(
-            and_(Finding.category == "security", Finding.status == FindingStatus.OPEN)
+            and_(Finding.category == "security", Finding.status == FindingStatus.OPEN,
+                 scope.where(Finding.subscription_id))
         )
     )
     findings = result.scalars().all()

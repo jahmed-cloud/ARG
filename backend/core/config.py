@@ -9,6 +9,7 @@ Uses a layered approach: defaults → .env file → environment variables.
 
 from functools import lru_cache
 from typing import List, Optional
+from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -127,13 +128,31 @@ class Settings(BaseSettings):
     # specific tenant GUID to restrict sign-in to one organization.
     AZURE_OAUTH_TENANT_ID: str = "common"
     AZURE_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/microsoft/callback"
-    # JSON array of security-group object IDs in AZURE_OAUTH_TENANT_ID.
+    # JSON arrays of security-group object IDs in AZURE_OAUTH_TENANT_ID. Members of an admin group get the
+    # ARG admin role, members of a contributor group the analyst role (scans and findings, not tenants or
+    # users); everyone else sees only the subscriptions they own in Azure or were given reader access to.
     ENTRA_ADMIN_GROUP_IDS: list[str] = Field(default_factory=list)
+    ENTRA_CONTRIBUTOR_GROUP_IDS: list[str] = Field(default_factory=list)
+    # Anyone in AZURE_OAUTH_TENANT_ID may sign in; without a group they are scoped to their subscriptions.
+    # Needs AZURE_OAUTH_TENANT_ID set to a tenant GUID (not "common"). False = an admin creates accounts first.
+    ENTRA_AUTO_PROVISION: bool = True
+    # How long an Azure Owner lease lasts before it is re-checked (at the next token refresh).
     ENTRA_ACCESS_TTL_MINUTES: int = Field(default=30, ge=5, le=60)
+    # Group membership is read at Microsoft sign-in; Entra-managed sessions end after this and sign in again.
+    ENTRA_SESSION_HOURS: int = Field(default=12, ge=1, le=168)
 
     @property
     def microsoft_oauth_configured(self) -> bool:
         return bool(self.AZURE_OAUTH_CLIENT_ID and self.AZURE_OAUTH_CLIENT_SECRET)
+
+    @property
+    def entra_tenant_bound(self) -> bool:
+        """True when sign-in is restricted to one tenant GUID - required for scoped and auto-provisioned users."""
+        try:
+            UUID(self.AZURE_OAUTH_TENANT_ID)
+            return True
+        except (TypeError, ValueError):
+            return False
 
     # -------------------------------------------------------------------------
     # Azure SDK Global Settings

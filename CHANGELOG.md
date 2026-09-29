@@ -5,6 +5,28 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Subscription-scoped access - 2026-09-30
+
+- Anyone in the configured Entra tenant can sign in with Microsoft (`ENTRA_AUTO_PROVISION`, needs
+  `AZURE_OAUTH_TENANT_ID` set to the tenant GUID). Without a group they are viewers and see only the subscriptions
+  they are Owner of in Azure (checked at sign-in and every token refresh with the tenant's scanner principal,
+  30-minute lease, fail closed) or were given reader access to in ARG - nothing until then.
+- `ENTRA_ADMIN_GROUP_IDS` members are admins, `ENTRA_CONTRIBUTOR_GROUP_IDS` members analysts (every subscription,
+  scans and findings, not tenants or users). Roles of accounts created by Microsoft sign-in follow the groups at
+  every sign-in and cannot be changed in Settings; those sessions end after `ENTRA_SESSION_HOURS` (12).
+- Owners and admins manage readers per subscription (Subscriptions - Manage access): an ARG account by email, or an
+  Entra user looked up through Microsoft Graph (User.Read.All on the scanner principal). Audit-logged; nothing
+  changes in Azure. API: `GET/POST /subscriptions/{id}/access`, `DELETE /subscriptions/{id}/access/{grant}`.
+- One filter (`backend/services/access.py`) now limits every read route - dashboard, findings, costs, governance,
+  security, scans, drift, subscriptions, reports - to the caller's subscriptions. Viewers previously saw the full
+  dashboard and scan list; they now see only their subscriptions. Auditors can now read the subscription pages (they were
+  blocked from most). Identity, Remediation and Start a Scan are hidden for viewers.
+- Fixed: "Sign in with Microsoft" failed on every attempt (`settings.JWT_ALGORITHM` does not exist; the setting is
+  `ALGORITHM`).
+- Migration `d4e1a7c3b902`: reader grants for local accounts, `users.entra_managed`.
+- Tests: unit rules, a dashboard check that a viewer without access gets an always-false filter on every query, and
+  a PostgreSQL test of isolation on every scoped route, grants and Microsoft sign-in.
+
 ### Reader roles on every subscription - 2026-09-29
 
 - `scripts/Grant-ArgRoles.ps1` assigns Cost Management Reader and Security Reader (plus Reader with

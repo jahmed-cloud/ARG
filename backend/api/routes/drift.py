@@ -16,7 +16,6 @@ a state file may be imported even when zero drift findings exist for it
 """
 import logging
 import json
-from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
@@ -28,6 +27,7 @@ from sqlalchemy.orm import selectinload
 from backend.api.dependencies.auth import require_analyst
 from backend.api.dependencies.database import get_db
 from backend.models.models import TerraformState, Finding, Subscription, User
+from backend.services.access import AccessScope, get_access_scope
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["drift"])
@@ -45,14 +45,14 @@ class DriftStats(BaseModel):
 @router.get("/stats", response_model=DriftStats)
 async def get_drift_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ) -> DriftStats:
     """
     Aggregate drift statistics summed across all imported Terraform state
     files. Counts are computed by the terraform scanner on each scan run
     and cached on the TerraformState row (last_drift_check).
     """
-    result = await db.execute(select(TerraformState))
+    result = await db.execute(select(TerraformState).where(scope.where(TerraformState.subscription_id)))
     states = result.scalars().all()
 
     managed = sum(s.managed_count or 0 for s in states)
@@ -173,7 +173,7 @@ async def import_terraform_state(
 @router.get("/findings", response_model=dict)
 async def list_drift_findings(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
     finding_type: str | None = Query(
         None, description="terraform_unmanaged_resource|terraform_missing_resource"
     ),
@@ -187,7 +187,7 @@ async def list_drift_findings(
     scanner's findings (category='terraform'), via the shared Finding
     table — not a separate per-resource drift table.
     """
-    filters = [Finding.category == "terraform"]
+    filters = [Finding.category == "terraform", scope.where(Finding.subscription_id)]
     if finding_type:
         filters.append(Finding.finding_type == finding_type)
 
@@ -226,11 +226,12 @@ async def list_drift_findings(
 @router.get("/state-files", response_model=dict)
 async def list_state_files(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     """List imported Terraform state files with their last drift check summary."""
     result = await db.execute(
-        select(TerraformState).order_by(TerraformState.imported_at.desc())
+        select(TerraformState).where(scope.where(TerraformState.subscription_id))
+        .order_by(TerraformState.imported_at.desc())
     )
     states = result.scalars().all()
     return {

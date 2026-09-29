@@ -9,6 +9,7 @@ from sqlalchemy.dialects import postgresql
 from backend.api.routes import dashboard
 from backend.api.dependencies.database import get_db
 from backend.api.dependencies.auth import get_current_user
+from backend.models.models import UserRole
 
 
 class EmptyResult:
@@ -46,12 +47,27 @@ class Transaction:
         return 0
 
 
-def client_for(db):
+def client_for(db, role=UserRole.ANALYST):
     app = FastAPI()
     app.include_router(dashboard.router, prefix='/dashboard')
     app.dependency_overrides[get_db] = lambda: db
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id='tester')
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        id='tester', role=role, sso_provider=None, sso_subject=None)
     return TestClient(app)
+
+
+def test_viewer_without_access_gets_an_always_false_filter_on_every_query():
+    db = Transaction()
+    with client_for(db, role=UserRole.VIEWER) as client:
+        assert client.get('/dashboard').status_code == 200
+        assert client.get('/dashboard/score-history').status_code == 200
+    summary_queries = db.queries[1:]  # the first query loads the viewer's grants
+    assert summary_queries
+    for query in summary_queries:
+        sql = str(query.compile(dialect=postgresql.dialect()))
+        if 'FROM subscription_access' in sql:
+            continue
+        assert 'false' in sql.lower(), sql
 
 
 def test_empty_dashboard_has_no_invented_cost_or_assessment_dates():

@@ -16,12 +16,10 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
-from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, update
@@ -31,6 +29,7 @@ from backend.core.config import settings
 from backend.api.dependencies.database import get_db
 from backend.api.dependencies.auth import get_current_user
 from backend.models.models import AuditLog, RefreshToken, User, UserRole
+from backend.services.entra_access import identity_from_claims, refresh_owner_grants, sync_entra_access
 from backend.utils.mailer import send_email
 
 logger = logging.getLogger(__name__)
@@ -83,6 +82,8 @@ class UserProfile(BaseModel):
     mfa_enabled: bool
     last_login_at: datetime | None
     created_at: datetime
+    scoped: bool = False  # sees only subscriptions they own or were given access to
+    entra_managed: bool = False  # role follows Entra groups
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +299,19 @@ async def refresh_token(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
+    now = datetime.now(timezone.utc)
+    if user.entra_managed and (
+        not user.last_login_at or user.last_login_at < now - timedelta(hours=settings.ENTRA_SESSION_HOURS)
+    ):
+        # Group membership (the role) is only read at Microsoft sign-in, so these sessions are bounded.
+        await db.commit()  # keep the rotation: the old refresh token stays revoked
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Session expired - sign in with Microsoft again")
+    if (user.role == UserRole.VIEWER and user.sso_subject and settings.entra_tenant_bound
+            and (not user.sso_access_expires_at or user.sso_access_expires_at < now + timedelta(minutes=5))):
+        # Re-check Azure ownership before the lease runs out; fails closed (no owner access) on errors.
+        await refresh_owner_grants(db, user)
+
     # Issue new tokens
     access_token = create_access_token(user.id, user.username, user.role.value)
     raw_refresh, hashed_refresh = create_refresh_token()
@@ -356,6 +370,8 @@ async def get_me(
         mfa_enabled=current_user.mfa_enabled,
         last_login_at=current_user.last_login_at,
         created_at=current_user.created_at,
+        scoped=current_user.role == UserRole.VIEWER,
+        entra_managed=bool(current_user.entra_managed),
     )
 
 
@@ -555,7 +571,7 @@ async def microsoft_login():
     state_token = jwt.encode(
         {"purpose": "oauth_state", "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
         settings.SECRET_KEY.get_secret_value(),
-        algorithm=settings.JWT_ALGORITHM,
+        algorithm=settings.ALGORITHM,
     )
     auth_url = _msal_app().get_authorization_request_url(
         scopes=GRAPH_SCOPES,
@@ -563,6 +579,15 @@ async def microsoft_login():
         redirect_uri=settings.AZURE_OAUTH_REDIRECT_URI,
     )
     return RedirectResponse(auth_url)
+
+
+async def _unique_username(db: AsyncSession, email: str) -> str:
+    base = "".join(c for c in email.split("@")[0].lower() if c.isalnum() or c in "._-")[:80] or "user"
+    candidate, n = base, 1
+    while (await db.execute(select(User.id).where(User.username == candidate))).first():
+        n += 1
+        candidate = f"{base}{n}"
+    return candidate
 
 
 @router.get("/microsoft/callback", summary="Microsoft OAuth callback")
@@ -595,7 +620,7 @@ async def microsoft_callback(
         return RedirectResponse(f"{frontend_login}?oauth_error=missing_code_or_state")
 
     try:
-        jwt.decode(state, settings.SECRET_KEY.get_secret_value(), algorithms=[settings.JWT_ALGORITHM])
+        jwt.decode(state, settings.SECRET_KEY.get_secret_value(), algorithms=[settings.ALGORITHM])
     except JWTError:
         return RedirectResponse(f"{frontend_login}?oauth_error=invalid_or_expired_state")
 
@@ -616,6 +641,12 @@ async def microsoft_callback(
     if not ms_subject or not ms_email:
         return RedirectResponse(f"{frontend_login}?oauth_error=missing_identity_claims")
 
+    if settings.entra_tenant_bound:
+        try:
+            identity_from_claims(claims)
+        except (KeyError, ValueError):
+            return RedirectResponse(f"{frontend_login}?oauth_error=tenant_not_allowed")
+
     existing = await db.execute(
         select(User).where(User.sso_provider == "azure_ad", User.sso_subject == ms_subject)
     )
@@ -630,6 +661,23 @@ async def microsoft_callback(
         # account in the configured tenant self-provision access to ARG.
         by_email = await db.execute(select(User).where(User.email == ms_email, User.deleted_at.is_(None)))
         user = by_email.scalar_one_or_none()
+        if not user and settings.ENTRA_AUTO_PROVISION and settings.entra_tenant_bound:
+            # Anyone in the configured tenant may sign in. Without an admin or contributor group they
+            # are a viewer and see only the subscriptions they own in Azure or were given access to -
+            # nothing at all until then (see backend/services/access.py).
+            user = User(
+                email=ms_email,
+                username=await _unique_username(db, ms_email),
+                full_name=ms_name,
+                hashed_password=None,
+                role=UserRole.VIEWER,
+                is_active=True,
+                is_verified=True,
+                entra_managed=True,
+                subscription_scoped=True,
+                preferences={},
+            )
+            db.add(user)
         if not user:
             return RedirectResponse(
                 f"{frontend_login}?oauth_error=no_matching_account"
@@ -639,6 +687,12 @@ async def microsoft_callback(
             return RedirectResponse(f"{frontend_login}?oauth_error=account_disabled")
         user.sso_provider = "azure_ad"
         user.sso_subject = ms_subject
+    elif not user.is_active or user.deleted_at is not None:
+        return RedirectResponse(f"{frontend_login}?oauth_error=account_disabled")
+
+    if settings.entra_tenant_bound:
+        # Role from Entra groups (Entra-managed accounts) and Azure Owner leases (viewers).
+        await sync_entra_access(db, user, claims)
 
     user.last_login_at = datetime.now(timezone.utc)
     user.last_login_ip = request.client.host if request.client else None

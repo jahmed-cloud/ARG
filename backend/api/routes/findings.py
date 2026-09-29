@@ -32,6 +32,7 @@ from sqlalchemy.orm import selectinload
 from backend.api.dependencies.auth import require_analyst
 from backend.api.dependencies.database import get_db
 from backend.models.models import Finding, ResourceInventory, FindingStatus, Subscription, User
+from backend.services.access import AccessScope, get_access_scope
 from scanners.base.base_scanner import ORPHAN_FINDING_TYPES
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ def _serialize(f: Finding) -> dict:
 @router.get("", response_model=dict)
 async def list_findings(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
     severity: list[str] | None = Query(None),
     status: list[str] | None = Query(None),
     category: str | None = Query(None),
@@ -144,7 +145,7 @@ async def list_findings(
     sort_desc: bool = Query(True),
 ) -> dict:
     """List findings with filtering, pagination, and resource details joined in."""
-    filters = []
+    filters = [scope.where(Finding.subscription_id)]
     if severity:
         filters.append(Finding.severity.in_(severity))
     if status:
@@ -201,11 +202,11 @@ async def list_findings(
 @router.get("/stats", response_model=FindingStats)
 async def get_finding_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
     subscription_id: UUID | None = Query(None),
 ) -> FindingStats:
     """Aggregate finding statistics for dashboard widgets."""
-    q = select(Finding)
+    q = select(Finding).where(scope.where(Finding.subscription_id))
     if subscription_id:
         q = q.where(Finding.subscription_id == subscription_id)
 
@@ -242,13 +243,13 @@ async def get_finding_stats(
 async def get_finding(
     finding_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_analyst),
+    scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     result = await db.execute(
         select(Finding).options(selectinload(Finding.resource)).where(Finding.id == finding_id)
     )
     finding = result.scalar_one_or_none()
-    if not finding:
+    if not finding or not scope.allows(finding.subscription_id):
         raise HTTPException(status_code=404, detail="Finding not found")
     return _serialize(finding)
 

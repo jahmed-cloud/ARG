@@ -14,15 +14,15 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select, case, cast, String, or_, true
+from sqlalchemy import and_, func, select, case, cast, String, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies.auth import get_current_user
 from backend.api.dependencies.database import get_db
+from backend.services.access import AccessScope, get_access_scope
 from backend.models.models import (
     CostSaving, EntraFinding, Finding, FindingStatus,
     ResourceInventory, ResourceCost, ScanJob, ScanResult, ScanStatus, Subscription,
-    ScoreSnapshot, SeverityLevel, User
+    ScoreSnapshot, SeverityLevel
 )
 
 router = APIRouter()
@@ -119,20 +119,20 @@ class DashboardSummary(BaseModel):
 async def get_dashboard(
     subscription_id: Optional[str] = Query(None, description="Filter to a specific subscription"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    scope: AccessScope = Depends(get_access_scope),
 ):
     """
     Main dashboard endpoint.
     Runs aggregation queries within the request transaction.
     """
     # AsyncSession owns one transaction/connection and cannot run queries concurrently.
-    resource_stats = await _get_resource_stats(db, subscription_id)
-    finding_stats = await _get_finding_stats(db, subscription_id)
-    cost_stats = await _get_cost_stats(db, subscription_id)
-    score_stats = await _get_score_stats(db, subscription_id)
-    entra_stats = await _get_entra_stats(db, subscription_id)
-    scan_stats = await _get_scan_stats(db, subscription_id)
-    top_findings = await _get_top_findings(db, subscription_id)
+    resource_stats = await _get_resource_stats(db, subscription_id, scope)
+    finding_stats = await _get_finding_stats(db, subscription_id, scope)
+    cost_stats = await _get_cost_stats(db, subscription_id, scope)
+    score_stats = await _get_score_stats(db, subscription_id, scope)
+    entra_stats = await _get_entra_stats(db, subscription_id, scope)
+    scan_stats = await _get_scan_stats(db, subscription_id, scope)
+    top_findings = await _get_top_findings(db, subscription_id, scope)
 
     return DashboardSummary(
         total_resources=resource_stats["total"],
@@ -174,7 +174,7 @@ async def get_score_history(
     start_date: Optional[date] = Query(None, description="ISO date (YYYY-MM-DD) â€” overrides 'days' if set"),
     end_date: Optional[date] = Query(None, description="ISO date (YYYY-MM-DD), defaults to today"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    scope: AccessScope = Depends(get_access_scope),
 ):
     """
     Returns one data point per day from daily ScoreSnapshot rows (see
@@ -202,9 +202,10 @@ async def get_score_history(
     if range_start > range_end:
         raise HTTPException(status_code=422, detail="start_date must be on or before end_date")
 
-    filters = [ScoreSnapshot.snapshot_date >= range_start, ScoreSnapshot.snapshot_date <= range_end]
+    filters = [ScoreSnapshot.snapshot_date >= range_start, ScoreSnapshot.snapshot_date <= range_end,
+               scope.where(ScoreSnapshot.subscription_id)]
     if subscription_id:
-        filters.append(_scope(ScoreSnapshot, subscription_id))
+        filters.append(_scope(ScoreSnapshot, subscription_id, scope))
 
     result = await db.execute(
         select(ScoreSnapshot).where(*filters).order_by(ScoreSnapshot.snapshot_date.asc())
@@ -252,31 +253,34 @@ def _subscription_ids(sub_id: str):
     ))
 
 
-def _scope(model, sub_id):
-    return model.subscription_id.in_(_subscription_ids(sub_id)) if sub_id else true()
+def _scope(model, sub_id, access):
+    # The requested subscription (if any), always inside what this user may see.
+    requested = model.subscription_id.in_(_subscription_ids(sub_id)) if sub_id else true()
+    return and_(requested, access.where(model.subscription_id))
 
 
-async def _get_resource_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
-    total = await db.scalar(select(func.count()).select_from(ResourceInventory).where(_scope(ResourceInventory, sub_id))) or 0
+async def _get_resource_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
+    total = await db.scalar(select(func.count()).select_from(ResourceInventory).where(_scope(ResourceInventory, sub_id, access))) or 0
     orphaned = await db.scalar(select(func.count()).select_from(ResourceInventory).where(
-        ResourceInventory.is_orphaned.is_(True), _scope(ResourceInventory, sub_id))) or 0
+        ResourceInventory.is_orphaned.is_(True), _scope(ResourceInventory, sub_id, access))) or 0
     subscription_count = await db.scalar(select(func.count()).select_from(Subscription).where(
         Subscription.is_active.is_(True),
-        Subscription.id.in_(_subscription_ids(sub_id)) if sub_id else true())) or 0
+        Subscription.id.in_(_subscription_ids(sub_id)) if sub_id else true(),
+        access.where(Subscription.id))) or 0
     return {"total": total, "orphaned": orphaned, "subscriptions": subscription_count}
 
 
-async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
+async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
     # Open findings count
     open_query = select(func.count()).select_from(Finding).where(
-        Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id)
+        Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id, access)
     )
     total_open = await db.scalar(open_query) or 0
 
     # By severity
     severity_result = await db.execute(
         select(Finding.severity, func.count(Finding.id))
-        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id))
+        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id, access))
         .group_by(Finding.severity)
     )
     by_severity_raw = dict(severity_result.all())
@@ -293,7 +297,7 @@ async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     # By category
     category_result = await db.execute(
         select(Finding.category, func.count(Finding.id))
-        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id))
+        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id, access))
         .group_by(Finding.category)
     )
     by_category = dict(category_result.all())
@@ -302,7 +306,7 @@ async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     drift_count = await db.scalar(
         select(func.count()).select_from(Finding).where(
             Finding.category == "terraform",
-            Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id),
+            Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id, access),
         )
     ) or 0
 
@@ -314,16 +318,16 @@ async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     }
 
 
-async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
+async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
     # Total potential monthly savings
     monthly_result = await db.scalar(
         select(func.sum(CostSaving.estimated_monthly_savings_usd))
-        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id))
+        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id, access))
     ) or 0.0
 
     annual_result = await db.scalar(
         select(func.sum(CostSaving.estimated_annual_savings_usd))
-        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id))
+        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id, access))
     ) or 0.0
 
     # Top 10 savings opportunities
@@ -336,7 +340,7 @@ async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
             CostSaving.estimated_monthly_savings_usd,
             CostSaving.action_required,
         )
-        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id))
+        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id, access))
         .order_by(CostSaving.estimated_monthly_savings_usd.desc())
         .limit(10)
     )
@@ -359,7 +363,7 @@ async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     rows = await db.execute(select(ResourceCost.billing_month, func.sum(ResourceCost.cost_usd))
         .join(ResourceInventory, ResourceCost.resource_id == ResourceInventory.id)
         .where(ResourceCost.billing_month >= first_month,
-               ResourceCost.billing_month <= today.strftime("%Y-%m"), _scope(ResourceInventory, sub_id))
+               ResourceCost.billing_month <= today.strftime("%Y-%m"), _scope(ResourceInventory, sub_id, access))
         .group_by(ResourceCost.billing_month).order_by(ResourceCost.billing_month))
     trend = [CostTrendPoint(month=month, total_cost=round(cost, 2), savings_identified=0.0)
              for month, cost in rows.all()]
@@ -372,7 +376,7 @@ async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     }
 
 
-async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
+async def _get_score_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
     """
     Compute governance, security, and identity scores.
 
@@ -391,7 +395,7 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     finding_result = await db.execute(
         select(Finding.category, Finding.severity, func.count(Finding.id))
         .where(
-            Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id),
+            Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id, access),
             Finding.category.in_(["governance", "security", "identity"]),
         )
         .group_by(Finding.category, Finding.severity)
@@ -410,7 +414,7 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
 
     checked_result = await db.execute(select(ScanResult.category, func.max(ScanResult.completed_at))
         .join(ScanJob, ScanResult.scan_job_id == ScanJob.id)
-        .where(ScanResult.status == ScanStatus.COMPLETED, ScanResult.error_message.is_(None), _scope(ScanJob, sub_id))
+        .where(ScanResult.status == ScanStatus.COMPLETED, ScanResult.error_message.is_(None), _scope(ScanJob, sub_id, access))
         .group_by(ScanResult.category))
     checked_at = dict(checked_result.all())
 
@@ -430,7 +434,7 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
         row = await db.execute(
             select(ScanResult, ScanJob.completed_at)
             .join(ScanJob, ScanResult.scan_job_id == ScanJob.id)
-            .where(ScanResult.scanner_name == scanner_name, ScanResult.status == ScanStatus.COMPLETED, _scope(ScanJob, sub_id))
+            .where(ScanResult.scanner_name == scanner_name, ScanResult.status == ScanStatus.COMPLETED, _scope(ScanJob, sub_id, access))
             .order_by(ScanJob.completed_at.desc())
             .limit(1)
         )
@@ -471,7 +475,9 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     }
 
 
-async def _get_entra_stats(db: AsyncSession, sub_id: Optional[str] = None) -> dict:
+async def _get_entra_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
+    if access.scoped:
+        return {"open": 0}  # Entra findings are tenant-wide, not per subscription
     open_count = await db.scalar(
         select(func.count()).select_from(EntraFinding).where(
             EntraFinding.status == FindingStatus.OPEN,
@@ -481,10 +487,10 @@ async def _get_entra_stats(db: AsyncSession, sub_id: Optional[str] = None) -> di
     return {"open": open_count}
 
 
-async def _get_scan_stats(db: AsyncSession, sub_id: Optional[str] = None) -> dict:
+async def _get_scan_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
     last_scan = await db.execute(
         select(ScanJob)
-        .where(ScanJob.status == ScanStatus.COMPLETED, _scope(ScanJob, sub_id))
+        .where(ScanJob.status == ScanStatus.COMPLETED, _scope(ScanJob, sub_id, access))
         .order_by(ScanJob.completed_at.desc())
         .limit(1)
     )
@@ -495,7 +501,7 @@ async def _get_scan_stats(db: AsyncSession, sub_id: Optional[str] = None) -> dic
     }
 
 
-async def _get_top_findings(db: AsyncSession, sub_id: Optional[str]) -> List[TopFinding]:
+async def _get_top_findings(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> List[TopFinding]:
     result = await db.execute(
         select(
             Finding.id, Finding.title, Finding.severity,
@@ -503,7 +509,7 @@ async def _get_top_findings(db: AsyncSession, sub_id: Optional[str]) -> List[Top
             ResourceInventory.resource_name, ResourceInventory.resource_group,
         )
         .outerjoin(ResourceInventory, Finding.resource_id == ResourceInventory.id)
-        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id))
+        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id, access))
         .order_by(case(*[(Finding.severity == level, rank) for rank, level in enumerate(
             [SeverityLevel.CRITICAL, SeverityLevel.HIGH, SeverityLevel.MEDIUM, SeverityLevel.LOW, SeverityLevel.INFO]
         )], else_=5), Finding.estimated_monthly_savings_usd.desc().nullslast())

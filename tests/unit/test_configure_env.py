@@ -24,3 +24,17 @@ def test_creates_fresh_host_config_without_overwriting(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match='1'):
         configure_env.main()
     assert (tmp_path / '.env').read_text() == text
+
+
+def test_rotate_admin_replaces_only_the_admin_password(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(configure_env, 'ROOT', tmp_path)
+    monkeypatch.setattr(sys, 'argv', ['configure_env', '--rotate-admin'])
+    with pytest.raises(SystemExit, match='1'):
+        configure_env.main()
+    (tmp_path / '.env').write_text('SECRET_KEY=keep\nADMIN_PASSWORD=old\n', encoding='utf-8')
+    configure_env.main()
+    values = dict(line.split('=', 1) for line in (tmp_path / '.env').read_text().splitlines())
+    assert values['SECRET_KEY'] == 'keep'
+    assert values['ADMIN_PASSWORD'] not in ('old', '')
+    assert len(values['ADMIN_PASSWORD']) >= 24
+    assert values['ADMIN_PASSWORD'] in capsys.readouterr().out

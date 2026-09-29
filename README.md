@@ -475,7 +475,7 @@ A scan needs a registered tenant **and** at least one registered subscription; w
 
 ```bash
 az login
-python -m scripts.connect_azure                                   # every enabled subscription in the tenant
+python -m scripts.connect_azure                                   # every subscription your az login can read
 python -m scripts.connect_azure --subscription <subscription-id>  # or only these (repeat the flag)
 python -m scripts.connect_azure --scan                            # connect and start a scan
 ```
@@ -483,7 +483,9 @@ python -m scripts.connect_azure --scan                            # connect and 
 It uses your `az login` to create (or reuse) the read-only service principal `arg-scanner`, assigns Reader, Cost
 Management Reader and Security Reader on each subscription, and registers the tenant and subscriptions in ARG with
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`. The client secret goes straight from Azure into ARG (encrypted)
-and is never printed. Run it again to add subscriptions; `--new-secret` replaces an expiring secret.
+and is never printed. It covers all tenants you signed in to; a subscription where you cannot assign roles is
+skipped with the reason, and a summary lists what was connected. Run it again to add subscriptions;
+`--new-secret` replaces an expiring secret.
 
 **Option B - manual:**
 

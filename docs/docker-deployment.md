@@ -34,8 +34,10 @@ az login
 python -m scripts.connect_azure --scan
 ```
 
-This creates or reuses the read-only service principal `arg-scanner`, assigns Reader, Cost Management Reader and
-Security Reader, and registers the tenant and subscriptions through the API. The manual alternative (Settings -
+This covers every subscription your `az login` can read, in all signed-in tenants: it creates or reuses the
+read-only service principal `arg-scanner` per tenant, assigns Reader, Cost Management Reader and Security Reader,
+registers the tenant and subscriptions through the API, and skips (with the reason) subscriptions where you cannot
+assign roles. The manual alternative (Settings -
 Register Tenant, Subscriptions - Register Subscription) and secret rotation are in [Connect Azure](connect-azure.md).
 
 Do not generate new credentials over an existing deployment. Match the existing PostgreSQL password and encryption key. The environment generator deliberately refuses to overwrite `.env`.

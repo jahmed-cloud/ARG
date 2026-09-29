@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from scanners.base.azure_api import (
+    ACTUAL_COST,
     DEFAULT_ARM_CONCURRENCY,
     HOURS_BILLED_PER_MONTH,
     HOURS_PER_MONTH,
@@ -1164,6 +1165,7 @@ class VmRightsizingScanner(PostureScanner):
             advisor = {}
             warnings.append(f"Azure Advisor recommendations unavailable (cross-check skipped): {exc}")
         costs = await get_resource_costs(context)
+        actual = await get_resource_costs(context, cost_type=ACTUAL_COST)
         cases: List[Dict[str, Any]] = []
 
         async def build(vm: Dict[str, Any]) -> None:
@@ -1192,6 +1194,7 @@ class VmRightsizingScanner(PostureScanner):
                 "profile": vm_profile(payload, _cap(current, "MemoryGB")),
                 "advisor": advisor.get(vm["id"].lower()) or {},
                 "cost_usd": (cost_for(costs, vm["id"]) or {}).get("cost_usd"),
+                "actual_cost_usd": (cost_for(actual, vm["id"]) or {}).get("cost_usd"),
                 "prices": {},
             })
 
@@ -1241,9 +1244,10 @@ class VmRightsizingScanner(PostureScanner):
         target, projected = choice["target"], choice["projected"]
         cur_name, tgt_name = current["name"], target["name"]
         retail = (choice["cur_price"] - choice["price"]) * HOURS_BILLED_PER_MONTH
-        actual = case.get("cost_usd")
-        covered = actual is not None and actual < 0.5 * choice["cur_price"] * HOURS_BILLED_PER_MONTH
-        saving = retail if actual is None else min(retail, max(0.0, actual) * (1 - choice["price"] / choice["cur_price"]))
+        amortized, invoiced = case.get("cost_usd"), case.get("actual_cost_usd")
+        # Covered: most of the amortized cost is a reservation / savings plan, not invoiced as pay-as-you-go here.
+        covered = amortized is not None and invoiced is not None and amortized > 0 and invoiced < 0.5 * amortized
+        saving = retail if amortized is None else min(retail, max(0.0, amortized) * (1 - choice["price"] / choice["cur_price"]))
         spec = lambda s: f"{_cap(s, 'vCPUs'):.0f} vCPU / {_cap(s, 'MemoryGB'):g} GB"  # noqa: E731
         adv_target = choice.get("advisor_target")
         if adv_target and adv_target.lower() == tgt_name.lower():
@@ -1263,9 +1267,9 @@ class VmRightsizingScanner(PostureScanner):
         else:
             lifecycle = ""
         value = (f"Value: about USD {retail:,.0f}/month (USD {retail * 12:,.0f}/year) at pay-as-you-go prices"
-                 + (f"; this VM's compute is mostly covered by a reservation or savings plan (30-day cost USD "
-                    f"{actual:,.0f}), so the resize frees that commitment for other VMs rather than cutting this "
-                    f"invoice line" if covered else "")
+                 + (f"; this VM's compute is mostly covered by a reservation or savings plan (30-day amortized cost "
+                    f"USD {amortized:,.0f}, of which USD {invoiced:,.0f} is invoiced as pay-as-you-go), so the resize "
+                    f"frees that commitment for other VMs rather than cutting this invoice line" if covered else "")
                  + lifecycle + ".")
         description = (
             f"VM '{vm['name']}' ({cur_name}, {spec(current)}) over the last {RIGHTSIZE_LOOKBACK_DAYS} days: CPU at "
@@ -1300,7 +1304,8 @@ class VmRightsizingScanner(PostureScanner):
                 "disk_uncached_p95": profile.get("disk_uncached_p95"), "disk_cached_p95": profile.get("disk_cached_p95"),
                 "projected": {k: round(v, 1) if isinstance(v, float) else v for k, v in projected.items()},
                 "limits": RIGHTSIZE_LIMITS, "usd_per_hour": {cur_name: choice["cur_price"], tgt_name: choice["price"]},
-                "retail_saving_usd_month": round(retail, 2), "actual_cost_usd_30d": actual,
+                "retail_saving_usd_month": round(retail, 2), "amortized_cost_usd_30d": amortized,
+                "actual_cost_usd_30d": invoiced,
                 "covered_by_commitment": covered, "advisor_target": adv_target,
                 "rejected_targets": choice["rejected"],
             },
@@ -1332,7 +1337,7 @@ class VmRightsizingScanner(PostureScanner):
         return [
             {"vm": dict(common, id=f"{base}/vm-app-01", name="vm-app-01", size="Standard_D4s_v5"),
              "current": catalogue["standard_d4s_v5"], "catalogue": catalogue, "profile": quiet,
-             "advisor": {}, "cost_usd": 168.0, "prices": dict(prices)},
+             "advisor": {}, "cost_usd": 168.0, "actual_cost_usd": 168.0, "prices": dict(prices)},
             {"vm": dict(common, id=f"{base}/vm-search-01", name="vm-search-01", size="Standard_D8s_v5"),
              "current": catalogue["standard_d8s_v5"], "catalogue": catalogue,
              "profile": dict(quiet, mem_used_p99_gb=24.6), "cost_usd": 0.7, "prices": dict(prices),

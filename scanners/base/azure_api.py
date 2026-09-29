@@ -14,7 +14,7 @@ ScanContext still holds.
   Management query) built on httpx and an azure-identity credential,
   with 429/503 retry that honours Retry-After and the Cost Management
   x-ms-ratelimit-*-retry-after headers.
-- get_resource_costs(): per-resource actual cost for the last N days,
+- get_resource_costs(): per-resource amortized cost for the last N days,
   cached on the ScanContext so several scanners can share one Cost
   Management call (the API is throttled to a few calls per minute).
 - get_retail_price(): public Azure Retail Prices API lookup (USD), used
@@ -319,43 +319,59 @@ def _cost_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 # Cost helpers (shared per scan)
 # ---------------------------------------------------------------------------
 
+# Amortized cost spreads reservation and savings-plan purchases over the resources that use them, so a VM covered
+# by a savings plan bought in another subscription shows its real share instead of ~0 (actual cost). Budgets and
+# Marketplace purchases are judged on actual (invoiced) cost and ask for it explicitly.
+COST_BASIS = "AmortizedCost"
+ACTUAL_COST = "ActualCost"
+
+
 def _cost_body(start: date, end: date, grouping: List[Dict[str, str]], granularity: str = "None",
-               include_usd: bool = True) -> Dict[str, Any]:
+               include_usd: bool = True, cost_type: str = COST_BASIS,
+               cost_filter: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     aggregation = {"totalCost": {"name": "Cost", "function": "Sum"}}
     if include_usd:
         aggregation["totalCostUSD"] = {"name": "CostUSD", "function": "Sum"}
+    dataset: Dict[str, Any] = {"granularity": granularity, "aggregation": aggregation, "grouping": grouping}
+    if cost_filter:
+        dataset["filter"] = cost_filter  # same schema as a budget's filter (dimensions / tags / and / or)
     return {
-        "type": "ActualCost",
+        "type": cost_type,
         "timeframe": "Custom",
         "timePeriod": {"from": start.isoformat(), "to": end.isoformat()},
-        "dataset": {"granularity": granularity, "aggregation": aggregation, "grouping": grouping},
+        "dataset": dataset,
     }
 
 
 async def run_cost_query(context: Any, start: date, end: date, grouping: List[Dict[str, str]],
-                         granularity: str = "None") -> Optional[List[Dict[str, Any]]]:
+                         granularity: str = "None", cost_type: str = COST_BASIS, scope: Optional[str] = None,
+                         cost_filter: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
     """
-    Cost query that asks for CostUSD alongside the billing-currency Cost.
-    Some agreement types reject CostUSD - retry once without it.
+    Cost query (amortized unless cost_type says otherwise) that asks for CostUSD alongside the billing-currency
+    Cost, at the subscription or the given scope (e.g. a resource group), optionally filtered. Some agreement types
+    reject CostUSD - retry once without it.
     """
     arm = getattr(context, "arm_client", None)
     if arm is None:
         return None
-    scope = f"/subscriptions/{context.subscription_id}"
+    scope = scope or f"/subscriptions/{context.subscription_id}"
     try:
-        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=True))
+        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=True,
+                                                      cost_type=cost_type, cost_filter=cost_filter))
     except Exception as exc:
         logger.info("CostUSD aggregation rejected (%s); retrying with billing currency only", exc)
-        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=False))
+        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=False,
+                                                      cost_type=cost_type, cost_filter=cost_filter))
 
 
-async def get_resource_costs(context: Any, days: int = 30) -> Optional[Dict[str, Dict[str, Any]]]:
+async def get_resource_costs(context: Any, days: int = 30,
+                             cost_type: str = COST_BASIS) -> Optional[Dict[str, Dict[str, Any]]]:
     """
     {lower(resource_id): {"cost", "cost_usd", "currency", "meters": {subcategory: cost}}}
-    for the last `days` days. Cached on context.cache for the whole scan.
+    for the last `days` days, amortized unless cost_type is ACTUAL_COST. Cached on context.cache for the whole scan.
     """
     cache = getattr(context, "cache", None)
-    key = f"resource_costs:{days}"
+    key = f"resource_costs:{days}:{cost_type}"
     if cache is not None and key in cache:
         return cache[key]
 
@@ -365,6 +381,7 @@ async def get_resource_costs(context: Any, days: int = 30) -> Optional[Dict[str,
         rows = await run_cost_query(
             context, start, end,
             [{"type": "Dimension", "name": "ResourceId"}, {"type": "Dimension", "name": "MeterSubCategory"}],
+            cost_type=cost_type,
         )
     except Exception as exc:
         logger.warning("Cost query failed: %s", exc)

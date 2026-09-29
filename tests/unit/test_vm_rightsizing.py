@@ -123,14 +123,24 @@ def test_scanner_recommends_only_what_passes():
     assert f.azure_cli_script.endswith("--size Standard_D2s_v5")
 
 
-def test_commitment_covered_vm_does_not_overstate_the_saving():
+def test_commitment_covered_vm_is_valued_on_amortized_cost():
     scanner = ScannerRegistry.get("vm_rightsizing_scanner")(config={})
     case = scanner._mock_data()[0]
-    case["cost_usd"] = 0.7                          # compute covered by a savings plan
+    case["cost_usd"], case["actual_cost_usd"] = 168.0, 0.7   # amortized share vs pay-as-you-go invoiced here
     choice = asyncio.run(scanner._choose(ScanContext(subscription_id="s", tenant_id="t", scan_job_id="j"), case))
     f = scanner._finding(case, choice)
-    assert f.evidence["covered_by_commitment"] is True and f.estimated_monthly_savings_usd == 0.35
+    assert f.evidence["covered_by_commitment"] is True and f.estimated_monthly_savings_usd == 83.95
+    assert f.evidence["amortized_cost_usd_30d"] == 168.0 and f.evidence["actual_cost_usd_30d"] == 0.7
     assert "frees that commitment for other VMs" in f.description
+
+
+def test_uncovered_vm_saving_never_exceeds_its_amortized_cost():
+    scanner = ScannerRegistry.get("vm_rightsizing_scanner")(config={})
+    case = scanner._mock_data()[0]
+    case["cost_usd"], case["actual_cost_usd"] = 40.0, 40.0   # part-month: less than the retail difference
+    choice = asyncio.run(scanner._choose(ScanContext(subscription_id="s", tenant_id="t", scan_job_id="j"), case))
+    f = scanner._finding(case, choice)
+    assert f.evidence["covered_by_commitment"] is False and f.estimated_monthly_savings_usd == 20.0
 
 
 def test_value_mentions_end_of_life_series():

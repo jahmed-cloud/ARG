@@ -5,6 +5,36 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **Cost basis is amortized cost.** Actual cost put reservation and savings-plan purchases on the subscription that
+  bought them, so a VM covered by a savings plan bought elsewhere showed ~2 CHF a month instead of ~147 CHF, and
+  the buying subscription looked expensive. Per-resource cost, subscription totals, trends, savings and the estate
+  now use AmortizedCost (Cost Management spreads the commitment over the resources that use it); the report states
+  the basis and shows the invoiced (actual) cost next to it. Budgets are still compared with actual cost (that is
+  what Azure evaluates), and Marketplace SaaS stays on actual cost (purchases are not amortized). VM right-sizing
+  detects commitment coverage from invoiced vs amortized cost. The Docker cost dashboard uses the same basis.
+
+### Added
+- **Resource providers.** Each report (01 - Current findings, section 7) shows which providers the subscription
+  accepts (registered) and which not, against what it uses: in use, registered but not in use, platform (always
+  registered), not registered, registering, and in use but not registered. It lists the "Allowed resource types" /
+  "Not allowed resource types" policy assignments that apply (on the subscription, a resource group or an ancestor
+  management group, enforced or audit only). The estate overview adds the same view across all subscriptions. New
+  finding `resource_type_denied_by_policy` (`resource_provider_policy_scanner`) for resource types in use that such a
+  policy denies. Registered but unused providers are not findings - Azure registers many on its own.
+
+### Removed
+- `MEMORY.md` and the Copilot skill (`.github/skills/`) are no longer part of the repository; maintainers keep
+  their AI-assistant notes locally.
+
+### Fixed
+- **Budgets were compared with the whole subscription.** Resource-group budgets and budgets filtered to a meter (for
+  example one per AI model) were judged against the entire subscription's monthly cost, producing "exceeded by
+  80,391 %" on a 20 CHF budget. Each budget is now evaluated like Azure does: actual cost at its own scope and with
+  its own filter, with Azure's current spend in the evidence. "Overlapping budgets" is reported only for budgets
+  with the same scope and filter. The report overview compares only subscription-wide, unfiltered budgets with the
+  subscription total, and budgets show "-" instead of a 0.00 cost.
+
 ### Added
 - **Validated VM right-sizing** (`vm_rightsizing_scanner`, finding `vm_rightsizing_opportunity`). Based on Azure
   Advisor's documented resize criteria with the stricter user-facing limits for every VM: over 30 days of 30-minute

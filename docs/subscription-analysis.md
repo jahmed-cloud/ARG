@@ -33,7 +33,7 @@ folder you started from. `reports/` is git-ignored.
    | Role | Used for |
    |---|---|
    | Reader | Resource Graph, ARM configuration, Azure Monitor metrics, diagnostic settings |
-   | Cost Management Reader | Cost trend, per-resource cost, budgets, actual-cost savings |
+   | Cost Management Reader | Cost trend, per-resource cost (amortized), budgets (actual), savings |
    | Security Reader | Defender plans, secure score, Defender recommendations |
 
    If a role is missing, that part of the report is empty and the reason appears under *Collection Warnings* in
@@ -164,6 +164,38 @@ A missing budget (`budget_missing`) is **High** instead of Medium when the peak 
 is at least `budget_missing_high_monthly_usd` (10,000 USD).
 
 ---
+
+## 5a-2. Cost basis: amortized vs actual
+
+Reports use **amortized cost**: Cost Management spreads reservation and savings-plan purchases over the resources
+that use them. With actual cost a VM covered by a savings plan bought in another subscription shows almost nothing
+(for example 2 CHF instead of 147 CHF a month) and the buying subscription carries the whole commitment. The README
+states the basis and shows the **invoiced (actual)** cost for the same 12 months next to it; the 12-month trend has
+both columns.
+
+Actual cost is still used where it is the right measure: **budgets** (Azure evaluates them on actual cost, at the
+budget's own scope - subscription or resource group - and filter, for example one AI model's meter) and
+**Marketplace SaaS** (purchases are not amortized). VM right-sizing reads both: when most of a VM's amortized cost is
+not invoiced as pay-as-you-go, it is covered by a commitment and the resize frees that commitment for other VMs.
+
+## 5a-3. Resource providers
+
+Section 7 of *01 - Current findings* shows which resource providers the subscription **accepts** (registered) and
+which it does not, against what it actually uses:
+
+| Status | Meaning |
+|---|---|
+| In use | Registered and resources exist |
+| Registered, not in use | Registered on request, nothing deployed - normal (portals and tools register on first use), not a finding |
+| Platform (always registered) | Registration-free providers Azure keeps registered |
+| Not registered | The subscription cannot create these resources until an Owner / Contributor registers the provider |
+| Registering / Unregistering | A registration change in progress |
+| In use, not registered | Resources exist although the provider is not registered (usually created before it was unregistered) |
+
+It also lists the **"Allowed resource types" / "Not allowed resource types"** policy assignments that apply -
+on the subscription, one of its resource groups or an ancestor management group - with their enforcement mode.
+Resource types in use that such a policy denies raise `resource_type_denied_by_policy`. The estate overview adds
+the same view across all subscriptions (where each provider is registered, used, or registered but unused).
 
 ## 5c. Estate inventory (all subscriptions)
 

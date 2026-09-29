@@ -937,7 +937,59 @@ def collect_inventory(credential: Any, subscriptions: List[Dict[str, Any]]) -> D
         usage = asyncio.run(collect_usage(credential, rows))
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "source": "resource-graph",
             "subscriptions": [{"id": s["id"].lower(), "name": s.get("name")} for s in subscriptions],
-            "usage": usage, "resources": rows}
+            "usage": usage, "resources": rows, "providers": asyncio.run(collect_providers(credential, ids))}
+
+
+async def collect_providers(credential: Any, subscription_ids: List[str], concurrency: int = 16
+                            ) -> Dict[str, List[Dict[str, str]]]:
+    """{subscription id: [{namespace, state, policy}]} - which resource providers each subscription accepts."""
+    from scanners.base.azure_api import ArmClient, gather_limited
+
+    arm = ArmClient(credential)
+    out: Dict[str, List[Dict[str, str]]] = {}
+
+    async def one(sub_id: str) -> None:
+        try:
+            items = await arm.get_all(f"/subscriptions/{sub_id}/providers", "2021-04-01")
+        except Exception:
+            return
+        out[sub_id.lower()] = [{"namespace": p.get("namespace") or "", "state": p.get("registrationState") or "",
+                                "policy": p.get("registrationPolicy") or ""} for p in items]
+
+    try:
+        await gather_limited(subscription_ids, one, concurrency)
+    finally:
+        arm.close()
+    return out
+
+
+def provider_overview(resources: List[Dict[str, Any]], providers: Dict[str, List[Dict[str, str]]]
+                      ) -> List[Dict[str, Any]]:
+    """Per provider across the estate: subscriptions where it is registered, in use, registered but unused."""
+    used: Dict[str, set] = defaultdict(set)
+    counts: Counter = Counter()
+    for r in resources:
+        ns = (r.get("type") or "").split("/")[0]
+        if ns:
+            used[ns].add(r.get("subscriptionId"))
+            counts[ns] += 1
+    rows: Dict[str, Dict[str, Any]] = {}
+    for sub_id, items in (providers or {}).items():
+        for p in items:
+            ns = p["namespace"].lower()
+            row = rows.setdefault(ns, {"namespace": p["namespace"], "registered": 0, "not_registered": 0,
+                                       "automatic": p.get("policy") == "RegistrationFree"})
+            if (p.get("state") or "").lower() == "registered":
+                row["registered"] += 1
+            else:
+                row["not_registered"] += 1
+    for ns, subs in used.items():
+        rows.setdefault(ns, {"namespace": ns, "registered": 0, "not_registered": 0, "automatic": False})
+    for ns, row in rows.items():
+        row["in_use"] = len(used.get(ns, set()))
+        row["resources"] = counts.get(ns, 0)
+        row["registered_unused"] = max(0, row["registered"] - row["in_use"])
+    return sorted(rows.values(), key=lambda r: (-r["in_use"], -r["registered"], r["namespace"].lower()))
 
 
 async def enrich_compute(credential: Any, rows: List[Dict[str, Any]]) -> None:
@@ -1521,6 +1573,7 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "inventory_at": inventory.get("generated_at"),
         "usage": inventory.get("usage") or {},
+        "providers": provider_overview(resources, inventory.get("providers") or {}) if inventory.get("providers") else [],
         "source": inventory.get("source") or "reports",
         "subscriptions": subscriptions,
         "resources": sorted(resources, key=lambda r: (r["category"], r["typeLabel"], r["subscription"].lower(), r["name"].lower())),
@@ -1765,6 +1818,31 @@ def _usage_overview(resources: List[Dict[str, Any]], stats: Optional[Dict[str, A
     return lines
 
 
+def _providers_overview(rows: List[Dict[str, Any]], subscriptions: int) -> List[str]:
+    """Resource providers across the estate: where each is accepted (registered), used, or registered but idle."""
+    if not rows:
+        return []
+    in_use = [r for r in rows if r["in_use"]]
+    idle = sorted((r for r in rows if r["registered_unused"] and not r["automatic"]),
+                  key=lambda r: (-r["registered_unused"], r["namespace"].lower()))
+    lines = ["## Resource providers", "",
+             f"A subscription accepts a provider's resources only once the provider is **registered**. Across "
+             f"{subscriptions} subscriptions, {len(in_use)} providers are in use. Registered but unused providers "
+             f"are normal (the portal and tools register them on first use) and are not findings; per-subscription "
+             f"detail and any allow / deny resource-type policies are in each report (01 - Current findings, "
+             f"section 7).", "",
+             f"### Providers in use ({len(in_use)})", "",
+             _table(["Provider", "Subscriptions using it", "Resources", "Registered in", "Not registered in"], [
+                 [r["namespace"], r["in_use"], r["resources"], r["registered"], r["not_registered"]]
+                 for r in in_use], ["---", "---:", "---:", "---:", "---:"]), ""]
+    if idle:
+        lines += [f"### Registered but unused (on-request providers, {len(idle)})", "",
+                  _table(["Provider", "Subscriptions where registered but unused", "Registered in"], [
+                      [r["namespace"], r["registered_unused"], r["registered"]] for r in idle[:40]],
+                         ["---", "---:", "---:"]), ""]
+    return lines
+
+
 def render_estate_markdown(estate: Dict[str, Any]) -> str:
     resources, suggestions = estate["resources"], estate["suggestions"]
     subs = estate["subscriptions"]
@@ -1857,6 +1935,7 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
     lines += _sizes(resources, "microsoft.sqlvirtualmachine/sqlvirtualmachines", "SQL Server on VMs by edition · license")
     lines += _utilisation(resources, suggestions)
     lines += _usage_overview(resources, estate.get("usage"))
+    lines += _providers_overview(estate.get("providers") or [], len(estate["subscriptions"]))
 
     regions = Counter(r["location"] or "(none)" for r in resources)
     envs = Counter(r["env"] for r in resources)

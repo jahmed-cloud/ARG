@@ -57,7 +57,7 @@ const SCRIPT_EXTENSIONS: Record<string, string> = {
 const STATUS_COLORS: Record<string, string> = {
   pending: '#9E9E9E',
   approved: '#2196F3',
-  running: '#00D4FF',
+  running: '#b8d9ba',
   completed: '#4CAF50',
   failed: '#F44336',
   rejected: '#FF9800',
@@ -263,7 +263,7 @@ export const RemediationPage: React.FC = () => {
             startIcon={<Download />}
             onClick={handleGenerate}
             disabled={generating || selectedFindingIds.size === 0}
-            sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+            sx={{  fontWeight: 700 }}
           >
             {generating ? 'Generating…' : `Generate Checklist${selectedFindingIds.size > 0 ? ` (${selectedFindingIds.size})` : ''}`}
           </Button>

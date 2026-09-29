@@ -5,6 +5,44 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Docker workspace redesign and review - 2026-09-28
+
+- Pulled upstream v0.2 through `da69387`, preserving local changes and Docker configuration.
+- Redesigned the React sign-in, navigation and overview with a restrained forest/stone palette, editorial typography, grouped navigation, an estate summary, prioritized findings and guided first-use setup.
+- Fixed concurrent database-session use in the dashboard, applied subscription filters to all summary queries, and replaced fabricated zero-cost history with recorded billing data.
+- Unassessed posture areas display no score; invalid/reversed history dates return validation errors. History failures now show an explicit message.
+- Sorted priority findings by severity explicitly and placed unknown savings last.
+- Corrected the upstream nearest-rank percentile implementation and added boundary coverage.
+- Hardened the Linux entrypoint against Windows CRLF line endings.
+- Validation: 236 Python tests pass; frontend TypeScript/Vite production build and targeted Python lint pass.
+
+### Upstream refresh and Estate integration - 2026-09-26
+
+- Pulled five additional commits through `8929fe9`, retaining estate inventory/configuration/usage, the Marketplace SaaS scanner, parallel analysis and report naming fixes alongside the local improvements.
+- Resolved the shared stylesheet overlap without dropping estate-specific styles or the responsive design.
+- Extended responsive and keyboard support to Estate, added accessible view/sort/expansion states, and surfaced network/status failures.
+- Prevented duplicate estate metric collection when multiple refresh requests arrive together; a concurrent-request regression test verifies one collection.
+- Revalidated the expanded offline suite: 205 tests pass. See the [validation record](docs/merge-validation.md) for browser checks and integration limits.
+
+### Local merge and deployment improvements - 2026-09-25
+
+- Integrated upstream `4c8108f` with the local source snapshot; retained local originals in an ignored backup. See [merge decisions and validation](docs/merge-validation.md).
+- Kept the local portal, subscription CLI, scanner pagination, parallel ARM enrichment, governance configuration, remediation scripts and full-stack deployment from upstream.
+- Added BuildKit pip/npm download caches and strict frontend lockfile installation to the existing multi-stage images.
+- Fixed production port removal using Compose reset tags and corrected `ENVIRONMENT` to `APP_ENV`; right-sized API worker/pool defaults.
+- Made worker, scheduler and frontend startup wait for backend readiness. Readiness returns 503 on database failures; added pooled connection checking.
+- Added persistent report and Beat volumes, loopback-only development database/API bindings and an optional Redis development override.
+- Added safe environment generation, dependency-hash caching in local launchers, LF shell-script rules, and a CI workflow for Python, frontend and container smoke checks.
+- Removed `.env` from the tracked working tree and replaced reusable secret values in `.env.example` with placeholders. Git history is unchanged.
+- Added route-level loading/error recovery, deferred page bundles, a same-origin API default, and a real favicon.
+- Improved React dashboard hierarchy, mobile drawer behavior, Scans navigation, keyboard labels, focus visibility, reduced-motion support and shared table containment.
+- Kept successful dashboard data during refresh errors, canceled obsolete requests and prevented overlapping polling.
+- Refreshed the local portal with a workspace overview, responsive cards/tables, clearer selection counts, mixed-state select-all, empty search state and inline connection/action errors.
+- Moved local login throttling off the async event loop; added regression tests for readiness and environment generation.
+- Fixed offline Alembic SQL generation for the existing finding-script migration while retaining its online behavior and migration identity; added a regression test.
+- Added architecture, local setup, deployment/rollback, and validation documentation; corrected stale README development commands and nonexistent folders.
+
+
 ## [0.2] - 2026-09-28
 
 ### Fixed

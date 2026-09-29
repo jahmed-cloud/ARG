@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-0.2-brightgreen.svg)](https://github.com/jahmed-cloud/ARG/releases)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110-009688.svg)](https://fastapi.tiangolo.com)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688.svg)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://reactjs.org)
 [![Docker](https://img.shields.io/badge/Docker-multi--arch-2496ED.svg)](https://www.docker.com)
 [![Docker Hub](https://img.shields.io/badge/Docker_Hub-jahmed22-2496ED.svg)](https://hub.docker.com/u/jahmed22)
@@ -15,6 +15,18 @@
 **Azure Resource Guardian** is a self-hosted, Docker-based, open-source Azure governance platform that gives organizations a single-pane-of-glass view across their entire Azure estate.
 
 ---
+
+## Setup and engineering guides
+
+| Goal | Guide |
+|---|---|
+| Run the local portal or develop the full stack | [Local setup](docs/local-development.md) |
+| Build, deploy, back up or upgrade containers | [Docker deployment](docs/docker-deployment.md) |
+| Understand components and data flow | [Architecture](docs/architecture.md) |
+| Review merge decisions and verified behavior | [Merge and validation record](docs/merge-validation.md) |
+| Review changes | [Changelog](CHANGELOG.md) |
+
+The local portal uses your `az login` session and needs no database or Docker. The full stack uses React, PostgreSQL, Redis and tenant credentials configured in Settings. Source builds are required to include the latest local changes; published Docker Hub images are separate releases.
 
 ## What Problems Does ARG Solve?
 
@@ -37,7 +49,7 @@
 │                     React Frontend (MUI)                         │
 │          Dashboard │ Findings │ Costs │ Identity │ Reports       │
 └──────────────────────────┬──────────────────────────────────────┘
-                           │ REST API / WebSocket
+                           │ REST API / polling
 ┌──────────────────────────▼──────────────────────────────────────┐
 │                   FastAPI Backend (Python 3.12)                  │
 │      Auth │ Scans │ Findings │ Reports │ Remediation │ RBAC      │
@@ -351,7 +363,7 @@ python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(3
 docker compose up -d --build
 ```
 
-This builds the backend, worker, beat, and frontend images, then starts Postgres, Redis, and all five application services. The backend container automatically runs `alembic upgrade head` on startup, so the database schema is created the first time it boots - no manual migration step needed.
+This builds the backend, worker, beat, and frontend images, then starts Postgres, Redis, and all four application services. The backend container automatically runs `alembic upgrade head` on startup, so the database schema is created the first time it boots - no manual migration step needed.
 
 Check that everything came up healthy:
 
@@ -369,15 +381,13 @@ http://localhost:3000
 Log in with the `ADMIN_EMAIL` and `ADMIN_PASSWORD` you set in `.env`.
 The admin account is **created automatically on first startup** - no manual command needed.
 
-Log in with the `ADMIN_USERNAME` / `ADMIN_PASSWORD` you set in `.env`. Change the password immediately if you left it at a placeholder value.
-
 The backend API and interactive docs are available directly at `http://localhost:8000/docs` if you want to explore or test endpoints outside the UI.
 
 ### Stopping / resetting
 
 ```bash
 docker compose down          # stop containers, keep data
-docker compose down -v       # stop containers AND delete all data (Postgres/Redis volumes)
+docker compose down -v       # stop containers AND delete all data (database, Redis, reports and Beat volumes)
 ```
 
 ---
@@ -421,34 +431,29 @@ arg/
 │   ├── governance/    # Tags, naming, policy, observability, budget scanners
 │   ├── security/      # Security posture, Defender, RBAC scanners
 │   └── terraform/     # Drift detection scanners
-├── reports/           # Report generation engine
+├── reports/           # Generated local reports (ignored by Git)
 ├── docs/              # User guide, PRD, scanner catalog (docs/README.md)
 ├── scripts/           # subscription_analysis CLI, local_portal, launchers (*.ps1, *.sh)
 ├── docker/            # Dockerfiles
-├── helm/              # Helm charts for Kubernetes
-├── terraform/         # Infrastructure as Code
-└── tests/             # Unit, integration, e2e tests
+└── tests/             # Offline scanner, report, portal and configuration tests
 ```
 
 ---
 
 ## Development
 
+Follow [Local setup](docs/local-development.md) for virtual environments, database/Redis configuration, migrations and worker commands. Run Python modules from the repository root.
+
 ```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload
-
-# Frontend
+python -m pytest tests -q
+python -m uvicorn backend.main:app --reload
+# In another terminal:
 cd frontend
-npm install
+npm ci
 npm run dev
-
-# Run all tests (unit tests run offline against the scanners' mock data)
-pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-make test
 ```
+
+For a new configuration, `python -m scripts.configure_env` generates unique credentials without overwriting an existing `.env`. Use `--local` for host database/Redis URLs. See the [Docker guide](docs/docker-deployment.md) for production overrides and upgrade handling.
 
 ---
 

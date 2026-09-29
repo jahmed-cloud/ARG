@@ -13,6 +13,13 @@ from scanners.base.azure_api import percentile, point_profile, summarize_metrics
 from scanners.base.base_scanner import ScanContext, ScannerRegistry
 
 
+def test_percentile_uses_nearest_rank_at_boundaries():
+    assert percentile([1, 2, 3, 4], 50) == 2
+    assert percentile(list(range(1, 21)), 95) == 19
+    assert percentile([8, 2, 5], 0) == 2
+    assert percentile([8, 2, 5], 100) == 8
+
+
 def test_point_profile_separates_bursts_from_busy_hours():
     hourly_avg = [1.5] * 700 + [8.2] + [3.0] * 19
     hourly_max = [4.0] * 680 + [100.0] * 40

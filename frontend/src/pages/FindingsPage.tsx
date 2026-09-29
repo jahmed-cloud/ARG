@@ -387,7 +387,7 @@ export const FindingsPage: React.FC = () => {
 
       {/* Bulk action bar */}
       {selected.size > 0 && (
-        <Card sx={{ p: 1.5, mb: 2, display: 'flex', alignItems: 'center', gap: 2, bgcolor: alpha('#00D4FF', 0.06) }}>
+        <Card sx={{ p: 1.5, mb: 2, display: 'flex', alignItems: 'center', gap: 2, bgcolor: alpha('#b8d9ba', 0.06) }}>
           <Typography variant="body2">{selected.size} selected</Typography>
           <Button size="small" variant="outlined" onClick={(e) => setBulkAnchor(e.currentTarget)} endIcon={<MoreVert />}>
             Bulk action

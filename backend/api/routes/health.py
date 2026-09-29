@@ -1,10 +1,11 @@
 """
 Health check endpoint — used by Docker/K8s liveness and readiness probes.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +16,7 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("")
-async def health_check(db: AsyncSession = Depends(get_db)) -> dict:
+async def health_check(response: Response, db: AsyncSession = Depends(get_db)) -> dict:
     """
     Liveness + readiness probe endpoint.
 
@@ -24,10 +25,12 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> dict:
     """
     db_ok = False
     try:
-        await db.execute(text("SELECT 1"))
+        await asyncio.wait_for(db.execute(text("SELECT 1")), timeout=3)
         db_ok = True
     except Exception as exc:
         logger.error("Health check DB failure: %s", exc)
+        await db.rollback()
+        response.status_code = 503
 
     status = "healthy" if db_ok else "degraded"
     return {

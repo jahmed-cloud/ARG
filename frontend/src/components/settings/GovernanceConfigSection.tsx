@@ -144,7 +144,7 @@ export const GovernanceConfigSection: React.FC = () => {
               label={tag}
               size="small"
               onDelete={() => removeTag(tag)}
-              sx={{ bgcolor: alpha('#00D4FF', 0.1), color: '#00D4FF', borderColor: alpha('#00D4FF', 0.3) }}
+              sx={{ bgcolor: alpha('#b8d9ba', 0.1), color: '#b8d9ba', borderColor: alpha('#b8d9ba', 0.3) }}
               variant="outlined"
             />
           ))}
@@ -183,7 +183,7 @@ export const GovernanceConfigSection: React.FC = () => {
         {Object.entries(patterns).map(([rtype, pattern]) => (
           <Box key={rtype} sx={{ mb: 2 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-              <Typography variant="caption" sx={{ color: alpha('#00D4FF', 0.8), fontFamily: 'monospace', flex: 1 }}>
+              <Typography variant="caption" sx={{ color: alpha('#b8d9ba', 0.8), fontFamily: 'monospace', flex: 1 }}>
                 {rtype}
               </Typography>
               {config?.naming_pattern_descriptions?.[rtype] && (
@@ -243,7 +243,7 @@ export const GovernanceConfigSection: React.FC = () => {
           startIcon={<Save />}
           onClick={handleSave}
           disabled={saving}
-          sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+          sx={{  fontWeight: 700 }}
         >
           {saving ? 'Saving…' : 'Save Configuration'}
         </Button>

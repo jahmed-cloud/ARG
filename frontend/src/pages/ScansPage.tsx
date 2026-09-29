@@ -59,7 +59,7 @@ interface ScanJob {
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#9E9E9E',
-  running: '#00D4FF',
+  running: '#b8d9ba',
   completed: '#4CAF50',
   failed: '#F44336',
   cancelled: '#FF9800',
@@ -197,7 +197,7 @@ export const ScansPage: React.FC = () => {
                   width: 7,
                   height: 7,
                   borderRadius: '50%',
-                  bgcolor: '#00D4FF',
+                  bgcolor: '#b8d9ba',
                   animation: 'pulse 1.4s ease-in-out infinite',
                   '@keyframes pulse': {
                     '0%, 100%': { opacity: 1, transform: 'scale(1)' },
@@ -205,7 +205,7 @@ export const ScansPage: React.FC = () => {
                   },
                 }}
               />
-              <Typography variant="caption" sx={{ color: '#00D4FF', fontWeight: 600 }}>
+              <Typography variant="caption" sx={{ color: '#b8d9ba', fontWeight: 600 }}>
                 Live — updating every 2s
               </Typography>
             </Box>
@@ -219,7 +219,7 @@ export const ScansPage: React.FC = () => {
             variant="contained"
             startIcon={<PlayArrow />}
             onClick={openScanDialog}
-            sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+            sx={{  fontWeight: 700 }}
           >
             Start a Scan
           </Button>
@@ -368,7 +368,7 @@ export const ScansPage: React.FC = () => {
             onClick={handleStartScan}
             variant="contained"
             disabled={starting || subscriptionsLoading || subscriptions.length === 0}
-            sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+            sx={{  fontWeight: 700 }}
           >
             {starting ? 'Starting…' : `Start Scan${selectedSubIds.size > 0 ? ` (${selectedSubIds.size})` : ''}`}
           </Button>

@@ -15,19 +15,19 @@ import type { PaletteMode } from '@mui/material';
 
 // Brand palette
 const BRAND = {
-  navy:       '#0A0F1E',   // Deepest background
-  midnight:   '#0D1421',   // App background (dark)
-  slate:      '#141C2E',   // Card background (dark)
-  border:     '#1E2D45',   // Subtle borders
-  cyan:       '#00D4FF',   // Primary brand accent
-  cyanDark:   '#0099BB',   // Hover state for cyan
-  electricBlue: '#1565C0', // Secondary (familiar Azure blue)
+  navy:       '#101b17',   // Deepest background
+  midnight:   '#111e19',   // App background (dark)
+  slate:      '#192820',   // Card background (dark)
+  border:     '#30423b',   // Subtle borders
+  cyan:       '#b8d9ba',   // Primary brand accent
+  cyanDark:   '#90bba0',   // Hover state for cyan
+  electricBlue: '#789c87', // Secondary (familiar Azure blue)
   success:    '#00C853',
   warning:    '#FFB300',
   error:      '#F44336',
   critical:   '#D32F2F',   // Critical findings
-  textPrimary: '#E8EAF0',
-  textSecondary: '#8899AA',
+  textPrimary: '#ebece3',
+  textSecondary: '#a3b5ad',
 };
 
 interface ColorModeContext {
@@ -76,7 +76,7 @@ const getTheme = (mode: PaletteMode) =>
               paper: '#FFFFFF',
             },
             primary: {
-              main: '#0277BD',   // Azure blue for light mode
+              main: '#365b47',   // Azure blue for light mode
               contrastText: '#FFFFFF',
             },
             secondary: {
@@ -105,10 +105,19 @@ const getTheme = (mode: PaletteMode) =>
     },
 
     shape: {
-      borderRadius: 8,
+      borderRadius: 5,
     },
 
     components: {
+      MuiCssBaseline: {
+        styleOverrides: {
+          ':focus-visible': { outline: '3px solid #b8d9ba', outlineOffset: 3 },
+          '@media (prefers-reduced-motion: reduce)': {
+            '*, *::before, *::after': { animationDuration: '0.01ms !important', transitionDuration: '0.01ms !important' },
+          },
+        },
+      },
+      MuiTableContainer: { styleOverrides: { root: { maxWidth: '100%', overflowX: 'auto' } } },
       MuiAppBar: {
         styleOverrides: {
           root: ({ theme }) => ({
@@ -136,12 +145,13 @@ const getTheme = (mode: PaletteMode) =>
         styleOverrides: {
           root: ({ theme }) => ({
             backgroundImage: 'none',
+            boxShadow: 'none',
             border: `1px solid ${
               theme.palette.mode === 'dark' ? BRAND.border : '#E8EDF2'
             }`,
             transition: 'border-color 0.2s ease',
             '&:hover': {
-              borderColor: theme.palette.mode === 'dark' ? BRAND.cyan : '#0277BD',
+              borderColor: theme.palette.mode === 'dark' ? '#34506C' : '#B7CADA',
             },
           }),
         },
@@ -161,18 +171,21 @@ const getTheme = (mode: PaletteMode) =>
           root: {
             textTransform: 'none',
             fontWeight: 600,
-            borderRadius: 8,
+            borderRadius: 4,
+            boxShadow: 'none',
+            '&.Mui-disabled': { background: '#26372f', color: '#84998d', borderColor: '#3a4d40' },
+            '&.Mui-focusVisible': { outline: '2px solid #dfe5d5', outlineOffset: 3 },
           },
           containedPrimary: ({ theme }) => ({
             background:
               theme.palette.mode === 'dark'
-                ? `linear-gradient(135deg, ${BRAND.cyan} 0%, ${BRAND.cyanDark} 100%)`
+                ? BRAND.cyan
                 : undefined,
             color: theme.palette.mode === 'dark' ? BRAND.navy : '#FFFFFF',
             '&:hover': {
               background:
                 theme.palette.mode === 'dark'
-                  ? `linear-gradient(135deg, ${BRAND.cyanDark} 0%, #007799 100%)`
+                  ? BRAND.cyanDark
                   : undefined,
             },
           }),

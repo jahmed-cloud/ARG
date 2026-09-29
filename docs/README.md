@@ -10,3 +10,10 @@
 | [../CHANGELOG.md](../CHANGELOG.md) | Changes |
 | [../MEMORY.md](../MEMORY.md) | **Project memory:** git rules, how to run, key decisions and pitfalls in one page |
 | [../ROADMAP.md](../ROADMAP.md) | Planned work and known gaps |
+
+## Engineering and deployment
+
+- [Architecture](architecture.md)
+- [Local setup and development](local-development.md)
+- [Docker deployment and operations](docker-deployment.md)
+- [Merge and validation record](merge-validation.md)

@@ -135,3 +135,7 @@ htmlcov/
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+
+# Local merge backup and validation artifacts
+.merge/
+.validation/

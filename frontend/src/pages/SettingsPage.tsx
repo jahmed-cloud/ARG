@@ -221,7 +221,7 @@ export const SettingsPage: React.FC = () => {
 
       <IntegrationsStatusCard />
 
-      <Divider sx={{ my: 3, borderColor: alpha('#00D4FF', 0.1) }} />
+      <Divider sx={{ my: 3, borderColor: alpha('#b8d9ba', 0.1) }} />
 
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5 }}>
         <Typography variant="h6" sx={{ fontWeight: 700 }}>
@@ -232,7 +232,7 @@ export const SettingsPage: React.FC = () => {
             variant="contained"
             startIcon={<Add />}
             onClick={() => setDialogOpen(true)}
-            sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+            sx={{  fontWeight: 700 }}
           >
             Register Tenant
           </Button>
@@ -277,7 +277,7 @@ export const SettingsPage: React.FC = () => {
                         <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: alpha('#fff', 0.6) }}>
                           {t.azure_tenant_id}
                         </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: '#00D4FF' }}>
+                        <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: '#b8d9ba' }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                             {t.id}
                             <Tooltip title="Copy ARG Tenant ID">
@@ -424,15 +424,15 @@ export const SettingsPage: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      <Divider sx={{ my: 3, borderColor: alpha('#00D4FF', 0.1) }} />
+      <Divider sx={{ my: 3, borderColor: alpha('#b8d9ba', 0.1) }} />
 
       <UserManagementSection />
 
-      <Divider sx={{ my: 3, borderColor: alpha('#00D4FF', 0.1) }} />
+      <Divider sx={{ my: 3, borderColor: alpha('#b8d9ba', 0.1) }} />
 
       <GovernanceConfigSection />
 
-      <Divider sx={{ my: 3, borderColor: alpha('#00D4FF', 0.1) }} />
+      <Divider sx={{ my: 3, borderColor: alpha('#b8d9ba', 0.1) }} />
 
       <AboutSection />
     </Box>

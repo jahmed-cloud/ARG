@@ -154,7 +154,7 @@ export const SubscriptionsPage: React.FC = () => {
           variant="contained"
           startIcon={<Add />}
           onClick={openDialog}
-          sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+          sx={{  fontWeight: 700 }}
         >
           Register Subscription
         </Button>

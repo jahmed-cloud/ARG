@@ -324,3 +324,16 @@ Pass a JSON file with `--config`. Keys apply to every scanner that reads them:
 - Rendered reports have raw HTML neutralised, because tag values and names come from Azure.
 - The tools are **read-only** against Azure. Remediation commands in the reports are for review and are never executed.
 - Reports contain resource IDs, IP addresses and principal IDs. Keep `reports/` out of source control; it's git-ignored.
+
+## Local UI and deployment updates (2026-09-26)
+
+The local portal now includes a workspace overview, responsive table containers, keyboard focus/skip navigation,
+selection counts across filters, and visible analysis/network errors. In Estate, Resources/Suggestions controls
+announce the selected view; resource rows expand with Enter or Space. Simultaneous inventory refresh requests
+share one collection. An interrupted browser connection does not imply the server-side analysis stopped.
+
+Launchers reuse an unchanged dependency environment based on the requirements SHA-256. To force verification
+after manually changing packages, remove `.venv-local/.requirements-local.sha256` before the next launch.
+
+See [local setup](local-development.md), [architecture](architecture.md), [Docker deployment](docker-deployment.md),
+and the [merge/validation record](merge-validation.md) for the two execution modes and tested boundaries.

@@ -21,8 +21,8 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --prefer-binary -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefer-binary -r requirements.txt
 
 # ---------------------------------------------------------------------------
 
@@ -45,7 +45,7 @@ COPY backend/ ./backend/
 COPY scanners/ ./scanners/
 COPY workers/ ./workers/
 
-RUN chown -R arg:arg /app
+RUN mkdir -p /app/beat && chown -R arg:arg /app
 USER arg
 
 # No EXPOSE — workers don't serve HTTP traffic.

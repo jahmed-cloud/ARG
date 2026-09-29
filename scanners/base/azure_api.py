@@ -22,6 +22,7 @@ ScanContext still holds.
 """
 
 import asyncio
+import math
 import logging
 import threading
 import time
@@ -235,7 +236,7 @@ def percentile(values: List[float], pct: float) -> Optional[float]:
     if not values:
         return None
     ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, max(0, round(pct / 100 * (len(ordered) - 1))))]
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(pct / 100 * len(ordered)) - 1))]
 
 
 def point_profile(averages: List[float], maxima: List[float]) -> Dict[str, Optional[float]]:

@@ -7,7 +7,7 @@ Create Date: 2026-06-22 19:51:17.579943
 """
 from typing import Sequence, Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -19,6 +19,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Offline SQL generation has no database to inspect. PostgreSQL's
+    # conditional DDL handles both fresh installs and older schemas.
+    if context.is_offline_mode():
+        op.execute('ALTER TABLE findings ADD COLUMN IF NOT EXISTS azure_cli_script TEXT')
+        op.execute('ALTER TABLE findings ADD COLUMN IF NOT EXISTS powershell_script TEXT')
+        return
     # Use IF NOT EXISTS because the initial schema migration (ee37468fb4ea)
     # already includes these columns in the CREATE TABLE findings statement.
     # On a fresh install, alembic upgrade head would run both migrations and

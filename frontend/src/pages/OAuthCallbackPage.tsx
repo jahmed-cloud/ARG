@@ -58,7 +58,7 @@ export const OAuthCallbackPage: React.FC = () => {
     <Box
       sx={{
         minHeight: '100vh',
-        bgcolor: '#0A0F1E',
+        bgcolor: '#101b17',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -72,7 +72,7 @@ export const OAuthCallbackPage: React.FC = () => {
         </Box>
       ) : (
         <>
-          <CircularProgress sx={{ color: '#00D4FF' }} />
+          <CircularProgress sx={{ color: '#b8d9ba' }} />
           <Typography sx={{ color: 'rgba(255,255,255,0.6)' }}>Completing sign-in…</Typography>
         </>
       )}

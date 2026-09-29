@@ -221,7 +221,7 @@ export const ReportsPage: React.FC = () => {
             startIcon={<Download />}
             onClick={handleGenerate}
             disabled={generating}
-            sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+            sx={{  fontWeight: 700 }}
           >
             {generating ? 'Generating…' : 'Generate & Download'}
           </Button>

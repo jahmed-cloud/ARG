@@ -134,6 +134,8 @@ class User(Base):
     # SSO (future: Azure AD / OIDC)
     sso_provider  = Column(String(50), nullable=True)   # e.g. "azure_ad"
     sso_subject   = Column(String(255), nullable=True)  # OID / sub claim
+    subscription_scoped = Column(Boolean, default=False, server_default="false", nullable=False)
+    sso_access_expires_at = Column(DateTime(timezone=True), nullable=True)
 
     # Activity tracking
     last_login_at = Column(DateTime(timezone=True), nullable=True)
@@ -164,6 +166,23 @@ class User(Base):
 
     __table_args__ = (
         Index("ix_users_email_active", "email", postgresql_where=text("deleted_at IS NULL")),
+    )
+
+
+class SubscriptionAccess(Base):
+    """ARG-only grants to immutable Entra principals; no Azure IAM writes."""
+    __tablename__ = "subscription_access"
+    id = Column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    subscription_id = Column(UUID(as_uuid=False), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(36), nullable=False)
+    object_id = Column(String(36), nullable=False)
+    role = Column(String(16), nullable=False)  # owner / reader
+    source = Column(String(16), nullable=False)  # azure / manual
+    granted_by = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "tenant_id", "object_id", "source", name="uq_subscription_access_principal"),
+        Index("ix_subscription_access_principal", "tenant_id", "object_id"),
     )
 
 

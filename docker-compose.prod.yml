@@ -6,12 +6,12 @@
 # Differences from base compose file:
 #   - Postgres and Redis ports are NOT published to the host (internal only)
 #   - Resource limits set on every service to prevent noisy-neighbor issues
-#   - Backend runs with more workers; worker replicas increased
+#   - Backend worker count and connection pools fit the default resource budget
 #   - Restart policy hardened to "always" (vs "unless-stopped") for prod resilience
 
 services:
   postgres:
-    ports: []  # remove host port mapping — only reachable inside arg-network
+    ports: !reset []  # remove host port mapping — only reachable inside arg-network
     restart: always
     deploy:
       resources:
@@ -22,7 +22,7 @@ services:
           memory: 512M
 
   redis:
-    ports: []
+    ports: !reset []
     restart: always
     deploy:
       resources:
@@ -31,10 +31,13 @@ services:
           memory: 512M
 
   backend:
+    ports: !reset []
     restart: always
     environment:
-      UVICORN_WORKERS: "8"
-      ENVIRONMENT: production
+      UVICORN_WORKERS: "2"
+      DATABASE_POOL_SIZE: "5"
+      DATABASE_MAX_OVERFLOW: "5"
+      APP_ENV: production
       LOG_LEVEL: warning
     deploy:
       resources:
@@ -47,10 +50,10 @@ services:
   worker:
     restart: always
     environment:
-      ENVIRONMENT: production
+      APP_ENV: production
       LOG_LEVEL: warning
     deploy:
-      replicas: 4
+      replicas: 2
       resources:
         limits:
           cpus: "1"
@@ -59,8 +62,13 @@ services:
   beat:
     restart: always
     environment:
-      ENVIRONMENT: production
+      APP_ENV: production
       LOG_LEVEL: warning
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
 
   frontend:
     restart: always

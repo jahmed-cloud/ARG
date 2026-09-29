@@ -19,7 +19,7 @@
     { key: "suggestions", label: "Suggestions", num: true },
   ];
   const CPU_BANDS = [[5, "under 5 %"], [20, "5-20 %"], [50, "20-50 %"], [80, "50-80 %"], [101, "80 % and more"]];
-  const cpuBand = (v) => (v === null || v === undefined ? "no data" : CPU_BANDS.find(([limit]) => v < limit)[1]);
+  const cpuBand = (v) => (v === null || v === undefined ? "no data" : (CPU_BANDS.find(([limit]) => v < limit) || CPU_BANDS[CPU_BANDS.length - 1])[1]);
   const hasCompute = (r) => r.type === "microsoft.compute/virtualmachines" || r.type === "microsoft.compute/virtualmachinescalesets";
   const hasCpu = (r) => hasCompute(r) || r.cpuAvg !== null || r.memAvg !== null;
   const activityBand = (r) => (r.dormant ? "Dormant data - no reads / writes in 30 d"
@@ -89,10 +89,17 @@
 
   async function load() {
     $("estate-status").textContent = "Loading estate…";
-    const response = await fetch("/api/estate", { credentials: "same-origin" });
+    let response, data;
+    try {
+      response = await fetch("/api/estate", { credentials: "same-origin" });
+      if (response.ok) data = await response.json();
+    } catch (err) {
+      $("estate-status").textContent = "Could not load the estate. Check your connection and reload the page.";
+      return;
+    }
     if (response.status === 401) { location.href = "/login?next=/estate"; return; }
     if (!response.ok) { $("estate-status").textContent = "Could not load the estate: " + response.statusText; return; }
-    estate = expand(await response.json());
+    estate = expand(data);
     _index = null;
     subs.clear();
     estate.subscriptions.forEach((s) => subs.set(s.id, s));
@@ -331,6 +338,7 @@
     const tr = el("tr");
     columns.forEach((c) => {
       const th = el("th", { class: c.num ? "num sortable" : "sortable", scope: "col" });
+      if (state.sort.key === c.key) th.setAttribute("aria-sort", state.sort.dir > 0 ? "ascending" : "descending");
       const arrow = state.sort.key === c.key ? (state.sort.dir > 0 ? " ▲" : " ▼") : "";
       th.appendChild(el("button", { type: "button", class: "sort" }, c.label + arrow));
       th.addEventListener("click", () => {
@@ -374,7 +382,7 @@
   }
 
   function resourceRow(r, columns) {
-    const tr = el("tr", { class: "clickable", tabindex: "0" });
+    const tr = el("tr", { class: "clickable", tabindex: "0", "aria-expanded": "false" });
     columns.forEach((c) => {
       const td = el("td", c.num ? { class: "num" } : null);
       if (c.key === "name") td.appendChild(el("strong", null, r.name));
@@ -392,13 +400,16 @@
       tr.appendChild(td);
     });
     tr.addEventListener("click", () => toggleDetail(tr, r, columns.length));
-    tr.addEventListener("keydown", (e) => { if (e.key === "Enter") toggleDetail(tr, r, columns.length); });
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleDetail(tr, r, columns.length); }
+    });
     return tr;
   }
 
   function toggleDetail(tr, r, span) {
     const next = tr.nextElementSibling;
-    if (next && next.classList.contains("detail")) { next.remove(); return; }
+    if (next && next.classList.contains("detail")) { next.remove(); tr.setAttribute("aria-expanded", "false"); return; }
+    tr.setAttribute("aria-expanded", "true");
     const detail = el("tr", { class: "detail" });
     const td = el("td", { colspan: String(span) });
     td.appendChild(el("div", { class: "mono small" }, r.id));
@@ -524,7 +535,11 @@
   let lastRows = [];
   function render() {
     if (!estate) return;
-    document.querySelectorAll(".view-switch .tab").forEach((t) => t.classList.toggle("active", t.dataset.view === state.view));
+    document.querySelectorAll(".view-switch .tab").forEach((t) => {
+      const active = t.dataset.view === state.view;
+      t.classList.toggle("active", active);
+      t.setAttribute("aria-pressed", String(active));
+    });
     const current = rows();
     renderTiles();
     fillFilters();
@@ -565,7 +580,10 @@
       if (!response.ok) throw new Error(data.detail || response.statusText);
       for (;;) {
         await new Promise((r) => setTimeout(r, 3000));
-        const status = await (await fetch("/api/estate/status", { credentials: "same-origin" })).json();
+        const statusResponse = await fetch("/api/estate/status", { credentials: "same-origin" });
+        if (statusResponse.status === 401) { location.href = "/login?next=/estate"; return; }
+        if (!statusResponse.ok) throw new Error(`Status request failed (${statusResponse.status})`);
+        const status = await statusResponse.json();
         if (!status.running) {
           if (status.error) throw new Error(status.error);
           break;

@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     # specific tenant GUID to restrict sign-in to one organization.
     AZURE_OAUTH_TENANT_ID: str = "common"
     AZURE_OAUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/microsoft/callback"
+    # JSON array of security-group object IDs in AZURE_OAUTH_TENANT_ID.
+    ENTRA_ADMIN_GROUP_IDS: list[str] = Field(default_factory=list)
+    ENTRA_ACCESS_TTL_MINUTES: int = Field(default=30, ge=5, le=60)
 
     @property
     def microsoft_oauth_configured(self) -> bool:

@@ -1,0 +1,5 @@
+# Optional host development: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis
+services:
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"

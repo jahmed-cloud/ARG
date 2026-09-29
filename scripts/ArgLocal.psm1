@@ -33,7 +33,8 @@ function Initialize-ArgLocalEnvironment {
     $relativePython = if ($isWindowsHost) { 'Scripts\python.exe' } else { 'bin/python' }
     $pythonPath = Join-Path -Path $venvPath -ChildPath $relativePython
 
-    if (-not (Test-Path -Path $pythonPath)) {
+    $created = -not (Test-Path -Path $pythonPath)
+    if ($created) {
         $bootstrapPython = Get-Command -Name 'python', 'python3' -CommandType Application -ErrorAction SilentlyContinue |
             Select-Object -First 1
         if (-not $bootstrapPython) {
@@ -47,11 +48,17 @@ function Initialize-ArgLocalEnvironment {
         & $pythonPath -m pip install --disable-pip-version-check --quiet --upgrade pip
     }
 
-    Write-Verbose 'Installing / verifying requirements-local.txt'
     $requirements = Join-Path -Path $RepositoryRoot -ChildPath 'requirements-local.txt'
-    & $pythonPath -m pip install --disable-pip-version-check --quiet -r $requirements
-    if ($LASTEXITCODE -ne 0) {
-        throw 'pip install -r requirements-local.txt failed.'
+    $stampPath = Join-Path -Path $venvPath -ChildPath '.requirements-local.sha256'
+    $requirementsHash = (Get-FileHash -LiteralPath $requirements -Algorithm SHA256).Hash
+    $installedHash = if (Test-Path -LiteralPath $stampPath) { (Get-Content -LiteralPath $stampPath -Raw).Trim() } else { '' }
+    if ($created -or $installedHash -ne $requirementsHash) {
+        Write-Verbose 'Installing updated requirements-local.txt'
+        & $pythonPath -m pip install --disable-pip-version-check --quiet -r $requirements
+        if ($LASTEXITCODE -ne 0) {
+            throw 'pip install -r requirements-local.txt failed.'
+        }
+        Set-Content -LiteralPath $stampPath -Value $requirementsHash -Encoding ASCII
     }
     Write-Output $pythonPath
 }

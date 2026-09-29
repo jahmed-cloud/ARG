@@ -204,3 +204,14 @@ with a customer, reviewed in a pull request or read offline.
 - AI spend savings are an estimate (15% from caching and routing) and are labelled as such.
 - Reports contain resource IDs, IPs and principal IDs. They're treated as internal and are git-ignored.
 - "Idle" in the estate is based on metrics only. Monthly or DR jobs can look idle over 30 days; confirm with the owner.
+
+## Integration acceptance updates (2026-09-26)
+
+- Keep both the local portal/CLI and the Docker React application operational through upstream synchronization.
+- Portal and Estate tables must stay within horizontally scrollable containers on narrow screens; controls remain
+  usable by keyboard and communicate selected, sorted and expanded states.
+- Failed inventory/network requests must show an inline message. Concurrent estate-refresh requests must start
+  one collection, verified by an offline concurrency test.
+- Preserve scanner semantics, reports, PDF export, CLI flags, author credits and the new estate usage fields.
+- Record offline test/build/browser evidence separately from live Azure and Docker runtime verification; see
+  [merge-validation.md](merge-validation.md).

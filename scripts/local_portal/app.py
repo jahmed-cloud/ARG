@@ -90,6 +90,7 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
     estate_job: Dict[str, Any] = {"running": False, "error": None, "started_at": None, "finished_at": None,
                                   "subscriptions": 0}
     background: set = set()
+    estate_refresh_lock = asyncio.Lock()
 
     app = FastAPI(title="ARG Local Portal", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth, app.state.azure, app.state.jobs = auth, azure, jobs
@@ -193,7 +194,7 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
 
     @app.post("/login")
     async def login(username: str = Form(...), password: str = Form(...), next: str = Form("/")):
-        token = auth.login(username, password)
+        token = await asyncio.to_thread(auth.login, username, password)
         if not token:
             return RedirectResponse(f"/login?error=1&next={quote(_safe_next(next))}", status_code=303)
         response = RedirectResponse(_safe_next(next), status_code=303)
@@ -287,6 +288,12 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
 
     @app.post("/api/estate/refresh")
     async def api_estate_refresh():
+        # Reserve one refresh across awaits used for Azure status/subscriptions.
+        # Two browser tabs must not launch duplicate metric collections.
+        async with estate_refresh_lock:
+            return await start_estate_refresh()
+
+    async def start_estate_refresh():
         from scripts.subscription_analysis.estate import refresh_estate
 
         if estate_job["running"]:
@@ -298,7 +305,7 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         if not subs:
             return JSONResponse({"detail": cache["error"] or "No enabled subscriptions visible to the az login session"},
                                 status_code=400)
-        estate_job.update(running=True, error=None, started_at=time.time(), subscriptions=len(subs))
+        estate_job.update(running=True, error=None, started_at=time.time(), finished_at=None, subscriptions=len(subs))
 
         async def run() -> None:
             try:

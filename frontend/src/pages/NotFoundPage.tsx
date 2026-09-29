@@ -8,7 +8,7 @@ export const NotFoundPage: React.FC = () => {
     <Box
       sx={{
         minHeight: '100vh',
-        bgcolor: '#0A0F1E',
+        bgcolor: '#101b17',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -22,7 +22,7 @@ export const NotFoundPage: React.FC = () => {
         sx={{
           fontWeight: 800,
           fontSize: 120,
-          background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)',
+          
           backgroundClip: 'text',
           WebkitBackgroundClip: 'text',
           color: 'transparent',
@@ -40,7 +40,7 @@ export const NotFoundPage: React.FC = () => {
       <Button
         variant="contained"
         onClick={() => navigate('/dashboard')}
-        sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+        sx={{  fontWeight: 700 }}
       >
         Back to Dashboard
       </Button>

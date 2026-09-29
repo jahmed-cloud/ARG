@@ -6,6 +6,18 @@
 </div>
 {% endblock %}
 {% block content %}
+<section class="page-heading">
+  <div><p class="eyebrow">AZURE RESOURCE GUARDIAN / LOCAL WORKSPACE</p>
+    <h1>Your cloud. A clearer picture.</h1>
+    <p class="muted">Discover risks, understand spend, and turn findings into your next action.</p>
+  </div>
+  <a class="report-link" href="/reports/README.md">Browse reports <span aria-hidden="true">↗</span></a>
+</section>
+<section class="overview" aria-label="Workspace overview">
+  <div class="overview-item"><span class="muted small">Visible subscriptions</span><strong>{{ subscriptions|length }}</strong><span class="small">Across your Azure session</span></div>
+  <div class="overview-item"><span class="muted small">Enabled subscriptions</span><strong>{{ subscriptions|selectattr('state', 'equalto', 'Enabled')|list|length }}</strong><span class="small">Available to analyze</span></div>
+  <div class="overview-item"><span class="muted small">Saved analyses</span><strong>{{ summaries|length }}</strong><span class="small">Latest report per subscription</span></div>
+</section>
 <section class="card azure {% if azure.signed_in %}ok{% else %}warn{% endif %}" id="azure-status">
   <div>
     <h2>Azure CLI session</h2>
@@ -31,6 +43,9 @@
   {% if subscription_error %}<p class="alert error">{{ subscription_error }}</p>{% endif %}
   <p class="muted small">Reports are written to <code>{{ reports_dir }}</code> - one folder per subscription with
     <code>README.md</code> and <code>01-…</code> to <code>05-…</code> markdown files.</p>
+  <p id="selection-status" class="muted small" role="status">Select subscriptions to begin an analysis.</p>
+  <p id="action-status" class="alert error" role="alert" hidden></p>
+  <div class="table-scroll" role="region" aria-label="Subscriptions" tabindex="0">
   <table class="subs" id="subs">
     <thead>
       <tr>
@@ -65,16 +80,21 @@
     {% endfor %}
     </tbody>
   </table>
+  </div>
+  <p id="no-matches" class="empty-state muted" hidden>No subscriptions match your search. Try a different name or ID.</p>
 </section>
 
 <section class="card">
   <h2>Analysis jobs</h2>
   <p class="muted small">Each analysis runs every ARG scanner (Resource Graph, metrics, Cost Management, Defender, Advisor) and
     takes a few minutes per subscription. You can keep browsing reports meanwhile.</p>
+  <p id="poll-status" class="muted small" role="status"></p>
+  <div class="table-scroll" role="region" aria-label="Analysis jobs" tabindex="0">
   <table class="jobs" id="jobs">
     <thead><tr><th>Subscription</th><th>Status</th><th>Progress</th><th>Started</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
+  </div>
 </section>
 {% endblock %}
 {% block scripts %}<script src="/static/portal.js"></script>{% endblock %}

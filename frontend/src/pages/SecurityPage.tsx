@@ -124,7 +124,7 @@ export const SecurityPage: React.FC = () => {
 
       <Typography variant="body2" sx={{ color: alpha('#fff', 0.4), mt: 3 }}>
         For full finding details, visit the{' '}
-        <a href="/findings" style={{ color: '#00D4FF' }}>
+        <a href="/findings" style={{ color: '#b8d9ba' }}>
           Findings
         </a>{' '}
         page and filter by category "security".

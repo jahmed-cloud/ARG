@@ -7,8 +7,14 @@ cd "$(dirname "$0")/.."
 if [ ! -x .venv-local/bin/python ]; then
   python3 -m venv .venv-local
   .venv-local/bin/python -m pip install --quiet --upgrade pip
+  rm -f .venv-local/.requirements-local.sha256
 fi
-.venv-local/bin/python -m pip install --quiet -r requirements-local.txt
+requirements_hash=$(.venv-local/bin/python -c 'import hashlib; from pathlib import Path; print(hashlib.sha256(Path("requirements-local.txt").read_bytes()).hexdigest().upper())')
+installed_hash=$(cat .venv-local/.requirements-local.sha256 2>/dev/null || true)
+if [ "$requirements_hash" != "$installed_hash" ]; then
+  .venv-local/bin/python -m pip install --quiet -r requirements-local.txt
+  printf '%s\n' "$requirements_hash" > .venv-local/.requirements-local.sha256
+fi
 
 if ! command -v az >/dev/null 2>&1; then
   echo "WARNING: Azure CLI (az) not found - install it and run 'az login'." >&2

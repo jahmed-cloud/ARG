@@ -39,7 +39,25 @@
     if (!table) return;
     const analyzeSelected = document.getElementById("analyze-selected");
     const picks = () => Array.from(table.querySelectorAll("input.pick:checked")).map((c) => c.value);
-    const syncButton = () => { analyzeSelected.disabled = picks().length === 0; };
+    const selectAll = document.getElementById("select-all");
+    const selectionStatus = document.getElementById("selection-status");
+    const actionStatus = document.getElementById("action-status");
+    const pending = new Set();
+    const syncButton = () => {
+      const selected = picks();
+      const visible = Array.from(table.querySelectorAll("tbody tr:not([hidden]) input.pick:not(:disabled)"));
+      const checked = visible.filter((c) => c.checked).length;
+      selectAll.checked = visible.length > 0 && checked === visible.length;
+      selectAll.indeterminate = checked > 0 && checked < visible.length;
+      selectAll.disabled = visible.length === 0;
+      analyzeSelected.disabled = selected.length === 0 || selected.some((id) => pending.has(id));
+      analyzeSelected.textContent = selected.length ? `Analyze selected (${selected.length})` : "Analyze selected";
+      selectionStatus.textContent = `${selected.length} selected across all filters. ${visible.length} available in this view.`;
+    };
+    function showError(message) {
+      actionStatus.textContent = message;
+      actionStatus.hidden = !message;
+    }
 
     table.addEventListener("change", (e) => {
       if (e.target.id === "select-all") {
@@ -54,14 +72,29 @@
       table.querySelectorAll("tbody tr[data-search]").forEach((row) => {
         row.hidden = term !== "" && !row.dataset.search.includes(term);
       });
+      document.getElementById("no-matches").hidden = !term || Boolean(table.querySelector("tbody tr[data-search]:not([hidden])"));
+      syncButton();
     });
 
     async function analyze(ids) {
+      if (!ids.length || ids.some((id) => pending.has(id))) return;
+      ids.forEach((id) => pending.add(id));
+      table.querySelectorAll("button.analyze").forEach((button) => {
+        if (pending.has(button.dataset.id)) button.disabled = true;
+      });
+      syncButton();
+      showError("");
       try {
         await post("/api/analyze", { subscription_ids: ids });
         poll();
       } catch (err) {
-        alert("Could not start analysis: " + err.message);
+        showError("Could not start analysis: " + err.message);
+      } finally {
+        ids.forEach((id) => pending.delete(id));
+        table.querySelectorAll("button.analyze").forEach((button) => {
+          if (ids.includes(button.dataset.id)) button.disabled = false;
+        });
+        syncButton();
       }
     }
 
@@ -72,8 +105,8 @@
 
     document.getElementById("refresh").addEventListener("click", async (e) => {
       e.target.disabled = true;
-      try { await post("/api/refresh"); } catch (err) { alert(err.message); }
-      location.reload();
+      try { await post("/api/refresh"); location.reload(); }
+      catch (err) { showError("Could not refresh: " + err.message); e.target.disabled = false; }
     });
 
     const seenCompleted = new Set();
@@ -92,7 +125,7 @@
         row.appendChild(el("td", {}, job.subscription_name));
         row.appendChild(el("td", { class: "status " + job.status }, job.status));
         const progressCell = el("td");
-        const bar = el("progress", { max: "100", value: String(job.status === "completed" ? 100 : job.percent) });
+        const bar = el("progress", { max: "100", value: String(job.status === "completed" ? 100 : job.percent), "aria-label": `Analysis progress for ${job.subscription_name}` });
         progressCell.appendChild(bar);
         progressCell.appendChild(el("div", { class: "muted small" }, job.error || job.message));
         row.appendChild(progressCell);
@@ -114,18 +147,27 @@
     }
 
     let timer = null;
+    let polling = false;
     async function poll() {
+      if (polling) return;
+      polling = true;
       clearTimeout(timer);
       try {
         const response = await fetch("/api/state", { credentials: "same-origin" });
         if (response.status === 401) { location.href = "/login"; return; }
+        if (!response.ok) throw new Error(`Status request failed (${response.status})`);
         const state = await response.json();
+        document.getElementById("poll-status").textContent = "";
         const active = renderJobs(state.jobs || []);
         timer = setTimeout(poll, active ? 2500 : 15000);
       } catch (err) {
+        document.getElementById("poll-status").textContent = "Connection interrupted. Retrying automatically; existing jobs may still be running.";
         timer = setTimeout(poll, 15000);
+      } finally {
+        polling = false;
       }
     }
+    syncButton();
     poll();
   }
 

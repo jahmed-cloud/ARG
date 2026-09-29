@@ -19,7 +19,7 @@ export const AboutSection: React.FC = () => {
               width: 32,
               height: 32,
               borderRadius: 1,
-              background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)',
+              
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -112,7 +112,7 @@ export const AboutSection: React.FC = () => {
             href="https://github.com/jahmed-cloud/ARG/blob/main/CONTRIBUTING.md"
             target="_blank"
             rel="noopener noreferrer"
-            style={{ color: alpha('#00D4FF', 0.8) }}
+            style={{ color: alpha('#b8d9ba', 0.8) }}
           >
             CONTRIBUTING.md
           </a>

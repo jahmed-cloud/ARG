@@ -8,7 +8,8 @@
  * - Global notification provider
  */
 
-import React from 'react';
+import React, { lazy } from 'react';
+import { RouteBoundary } from './components/common/RouteBoundary';
 import { Provider } from 'react-redux';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { SnackbarProvider } from 'notistack';
@@ -20,22 +21,22 @@ import { AppLayout } from './components/common/AppLayout';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 
 // Pages
-import { LoginPage } from './pages/LoginPage';
-import { ResetPasswordPage } from './pages/ResetPasswordPage';
-import { OAuthCallbackPage } from './pages/OAuthCallbackPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { FindingsPage } from './pages/FindingsPage';
-import { CostsPage } from './pages/CostsPage';
-import { IdentityPage } from './pages/IdentityPage';
-import { GovernancePage } from './pages/GovernancePage';
-import { DriftPage } from './pages/DriftPage';
-import { SecurityPage } from './pages/SecurityPage';
-import { ReportsPage } from './pages/ReportsPage';
-import { RemediationPage } from './pages/RemediationPage';
-import { SubscriptionsPage } from './pages/SubscriptionsPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { ScansPage } from './pages/ScansPage';
-import { NotFoundPage } from './pages/NotFoundPage';
+const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })));
+const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage').then(m => ({ default: m.ResetPasswordPage })));
+const OAuthCallbackPage = lazy(() => import('./pages/OAuthCallbackPage').then(m => ({ default: m.OAuthCallbackPage })));
+const DashboardPage = lazy(() => import('./pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
+const FindingsPage = lazy(() => import('./pages/FindingsPage').then(m => ({ default: m.FindingsPage })));
+const CostsPage = lazy(() => import('./pages/CostsPage').then(m => ({ default: m.CostsPage })));
+const IdentityPage = lazy(() => import('./pages/IdentityPage').then(m => ({ default: m.IdentityPage })));
+const GovernancePage = lazy(() => import('./pages/GovernancePage').then(m => ({ default: m.GovernancePage })));
+const DriftPage = lazy(() => import('./pages/DriftPage').then(m => ({ default: m.DriftPage })));
+const SecurityPage = lazy(() => import('./pages/SecurityPage').then(m => ({ default: m.SecurityPage })));
+const ReportsPage = lazy(() => import('./pages/ReportsPage').then(m => ({ default: m.ReportsPage })));
+const RemediationPage = lazy(() => import('./pages/RemediationPage').then(m => ({ default: m.RemediationPage })));
+const SubscriptionsPage = lazy(() => import('./pages/SubscriptionsPage').then(m => ({ default: m.SubscriptionsPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
+const ScansPage = lazy(() => import('./pages/ScansPage').then(m => ({ default: m.ScansPage })));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
 
 const App: React.FC = () => {
   return (
@@ -48,6 +49,7 @@ const App: React.FC = () => {
           autoHideDuration={4000}
         >
             <BrowserRouter>
+              <RouteBoundary>
               <Routes>
                 {/* Public routes */}
                 <Route path="/login" element={<LoginPage />} />
@@ -80,6 +82,7 @@ const App: React.FC = () => {
                 {/* 404 */}
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
+              </RouteBoundary>
             </BrowserRouter>
           </SnackbarProvider>
       </ARGThemeProvider>

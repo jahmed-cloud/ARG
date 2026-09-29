@@ -286,7 +286,7 @@ export const DriftPage: React.FC = () => {
             size="small"
             startIcon={<UploadFile />}
             onClick={openImportDialog}
-            sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+            sx={{  fontWeight: 700 }}
           >
             Import State File
           </Button>
@@ -411,9 +411,9 @@ export const DriftPage: React.FC = () => {
               fontWeight: 700,
               fontSize: 11,
               cursor: 'pointer',
-              bgcolor: typeFilter === f.value ? alpha('#00D4FF', 0.2) : alpha('#fff', 0.05),
-              color: typeFilter === f.value ? '#00D4FF' : alpha('#fff', 0.5),
-              border: `1px solid ${typeFilter === f.value ? '#00D4FF' : 'transparent'}`,
+              bgcolor: typeFilter === f.value ? alpha('#b8d9ba', 0.2) : alpha('#fff', 0.05),
+              color: typeFilter === f.value ? '#b8d9ba' : alpha('#fff', 0.5),
+              border: `1px solid ${typeFilter === f.value ? '#b8d9ba' : 'transparent'}`,
             }}
           />
         ))}

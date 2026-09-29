@@ -7,6 +7,8 @@ Thanks for considering a contribution - bug reports, scanner additions, and pull
 - Check [ROADMAP.md](ROADMAP.md) to see if what you're planning is already a known gap (and whether there's context on why it hasn't been done yet).
 - For anything non-trivial, open an issue first to discuss the approach before writing a lot of code - saves everyone time if the direction needs adjusting.
 
+See [Local setup](docs/local-development.md), [Architecture](docs/architecture.md), and [Docker deployment](docs/docker-deployment.md).
+
 ## Development setup
 
 ```bash
@@ -21,7 +23,7 @@ docker compose exec backend python -m scripts.seed_admin
 Frontend hot-reload during UI work:
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -31,11 +33,11 @@ Run these from the repository root. They use your own `az login`; no service pri
 
 ```bash
 python -m venv .venv-local
-.venv-local/bin/pip install -r requirements-local.txt -r backend/requirements-dev.txt   # Windows: .venv-local\Scripts\pip
-make test                                              # offline unit tests (tests/unit)
+.venv-local/bin/pip install -r requirements-local.txt -r backend/requirements.txt -r backend/requirements-dev.txt   # Windows: .venv-local\Scripts\pip
+.venv-local/bin/python -m pytest tests -q              # Windows: .venv-local\Scripts\python.exe
 az login
-python -m scripts.subscription_analysis -s <subscription-id-or-name>   # writes reports/<subscription>/
-python -m scripts.local_portal                                         # http://127.0.0.1:8765
+.venv-local/bin/python -m scripts.subscription_analysis -s <subscription-id-or-name>   # writes reports/<subscription>/
+.venv-local/bin/python -m scripts.local_portal                                         # http://127.0.0.1:8765
 ```
 
 See [docs/subscription-analysis.md](docs/subscription-analysis.md) for the full guide.

@@ -1,64 +1,11 @@
-/**
- * DashboardPage — executive summary view.
- *
- * Fetches GET /dashboard (see backend/api/routes/dashboard.py for the
- * exact DashboardSummary contract) and renders:
- *   - KPI cards: resources, open findings, monthly/annual savings
- *   - Score gauges: governance / security / identity (0-100)
- *   - Severity breakdown donut
- *   - Top findings table
- *   - Cost trend line chart
- *
- * Loading/error states are handled inline rather than via a global
- * spinner, since different widgets can be useful even if one section
- * fails (e.g. cost trend failing shouldn't block score gauges).
- */
-
 import React, { useEffect, useState } from 'react';
-import {
-  Box,
-  Grid,
-  Card,
-  CardContent,
-  Typography,
-  Skeleton,
-  Alert,
-  Chip,
-  LinearProgress,
-  ToggleButtonGroup,
-  ToggleButton,
-  alpha,
-  Table,
-  TableContainer,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
-} from '@mui/material';
-import {
-  TrendingUp,
-  TrendingDown,
-  TrendingFlat,
-  Storage,
-  BugReport,
-  CloudQueue,
-} from '@mui/icons-material';
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  PieChart,
-  Pie,
-  Cell,
-} from 'recharts';
+import { Box, Button, Alert, Skeleton, Chip, ToggleButtonGroup, ToggleButton } from '@mui/material';
+import { ArrowForward, NorthEast, ShieldOutlined, CloudQueue, CheckCircleOutline, Tune } from '@mui/icons-material';
+import { Link } from 'react-router-dom';
+import { ResponsiveContainer, AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { useAppSelector } from '../store/store';
-
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1';
-
+import './dashboard.css';
+const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
 interface ScoreCard {
   score: number;
   trend: 'improving' | 'declining' | 'stable';
@@ -119,116 +66,30 @@ interface DashboardSummary {
   last_scan_duration_s: number | null;
 }
 
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: '#F44336',
-  high: '#FF9800',
-  medium: '#FFC107',
-  low: '#2196F3',
-  info: '#9E9E9E',
-};
-
-function ScoreGauge({ label, score, trend, delta }: { label: string; score: number; trend: string; delta: number }) {
-  const color = score >= 80 ? '#4CAF50' : score >= 60 ? '#FFC107' : '#F44336';
-  const TrendIcon = trend === 'improving' ? TrendingUp : trend === 'declining' ? TrendingDown : TrendingFlat;
-  const trendColor = trend === 'improving' ? '#4CAF50' : trend === 'declining' ? '#F44336' : alpha('#fff', 0.5);
-
-  return (
-    <Card sx={{ height: '100%' }}>
-      <CardContent>
-        <Typography variant="body2" sx={{ color: alpha('#fff', 0.6), mb: 1.5 }}>
-          {label}
-        </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 1.5 }}>
-          <Typography variant="h3" sx={{ fontWeight: 800, color }}>
-            {Math.round(score)}
-          </Typography>
-          <Typography variant="body2" sx={{ color: alpha('#fff', 0.4) }}>
-            / 100
-          </Typography>
-        </Box>
-        <LinearProgress
-          variant="determinate"
-          value={score}
-          sx={{
-            height: 6,
-            borderRadius: 3,
-            bgcolor: alpha('#fff', 0.08),
-            mb: 1.5,
-            '& .MuiLinearProgress-bar': { bgcolor: color, borderRadius: 3 },
-          }}
-        />
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <TrendIcon sx={{ fontSize: 16, color: trendColor }} />
-          <Typography variant="caption" sx={{ color: trendColor }}>
-            {delta > 0 ? '+' : ''}
-            {delta.toFixed(1)} pts
-          </Typography>
-        </Box>
-      </CardContent>
-    </Card>
-  );
+const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+const severityColor: Record<string, string> = { critical: '#ee8278', high: '#f0b56d', medium: '#e5d48c', low: '#81c8e6', info: '#a9b4bb' };
+function Posture({ title, value, path }: { title: string; value: ScoreCard; path: string }) {
+  const measured = Boolean(value.last_updated);
+  return <Link to={path} className="posture-row"><span>{title}<small>{measured ? 'Latest assessment' : 'Awaiting assessment'}</small></span><span className="posture-track" aria-hidden="true"><i style={{ width: measured ? `${Math.max(0, Math.min(100, value.score))}%` : 0 }} /></span><strong>{measured ? Math.round(value.score) : '—'}<small>{measured ? '/100' : 'No data'}</small></strong><NorthEast fontSize="small" /></Link>;
 }
-
-function KpiCard({
-  icon,
-  label,
-  value,
-  subtext,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  subtext?: string;
-}) {
-  return (
-    <Card sx={{ height: '100%' }}>
-      <CardContent>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
-          <Box
-            sx={{
-              width: 36,
-              height: 36,
-              borderRadius: 1.5,
-              bgcolor: alpha('#00D4FF', 0.12),
-              color: '#00D4FF',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            {icon}
-          </Box>
-          <Typography variant="body2" sx={{ color: alpha('#fff', 0.6) }}>
-            {label}
-          </Typography>
-        </Box>
-        <Typography variant="h4" sx={{ fontWeight: 800, color: '#fff' }}>
-          {value}
-        </Typography>
-        {subtext && (
-          <Typography variant="caption" sx={{ color: alpha('#fff', 0.4) }}>
-            {subtext}
-          </Typography>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 export const DashboardPage: React.FC = () => {
   const { accessToken } = useAppSelector((s) => s.auth);
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
   const [scoreHistory, setScoreHistory] = useState<ScoreHistoryPoint[]>([]);
   const [trendDays, setTrendDays] = useState(30);
   const [trendLoading, setTrendLoading] = useState(true);
-
+  const [trendError, setTrendError] = useState(false);
   useEffect(() => {
+    const controller = new AbortController();
+    let fetching = false;
     const fetchDashboard = async () => {
+      if (fetching) return;
+      fetching = true;
       try {
         const res = await fetch(`${API_BASE}/dashboard`, {
+          signal: controller.signal,
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (!res.ok) {
@@ -238,14 +99,12 @@ export const DashboardPage: React.FC = () => {
         setData(json);
         setError(null);
       } catch (e: any) {
-        // Only show an error if we have nothing to display yet — a
-        // transient failure on a periodic background refresh shouldn't
-        // replace a dashboard that's already showing good data.
-        if (!data) {
+        if (!controller.signal.aborted) {
           setError(e.message ?? 'Failed to load dashboard');
         }
       } finally {
-        setLoading(false);
+        fetching = false;
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
     fetchDashboard();
@@ -255,283 +114,66 @@ export const DashboardPage: React.FC = () => {
     // array was just [accessToken], which doesn't change after a scan),
     // so the dashboard appeared permanently frozen until a manual reload.
     const interval = setInterval(fetchDashboard, 30000);
-    return () => clearInterval(interval);
+    return () => { clearInterval(interval); controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
 
   useEffect(() => {
+    const controller = new AbortController();
     const fetchScoreHistory = async () => {
       setTrendLoading(true);
       try {
         const res = await fetch(`${API_BASE}/dashboard/score-history?days=${trendDays}`, {
+          signal: controller.signal,
           headers: { Authorization: `Bearer ${accessToken}` },
         });
-        if (res.ok) {
-          setScoreHistory(await res.json());
-        }
+        if (!res.ok) throw new Error("History unavailable");
+        setScoreHistory(await res.json());
+        setTrendError(false);
       } catch {
-        // Non-critical — trend chart is best-effort, main dashboard
-        // already has its own error handling.
+        if (!controller.signal.aborted) { setTrendError(true); setScoreHistory([]); }
       } finally {
-        setTrendLoading(false);
+        if (!controller.signal.aborted) setTrendLoading(false);
       }
     };
     fetchScoreHistory();
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken, trendDays]);
 
-  if (loading) {
-    return (
-      <Grid container spacing={2.5}>
-        {Array.from({ length: 8 }).map((_, i) => (
-          <Grid item xs={12} sm={6} md={3} key={i}>
-            <Skeleton variant="rounded" height={140} sx={{ bgcolor: alpha('#fff', 0.05) }} />
-          </Grid>
-        ))}
-      </Grid>
-    );
-  }
-
-  if (error || !data) {
-    return <Alert severity="error">{error ?? 'No dashboard data available'}</Alert>;
-  }
-
-  const severityPieData = [
-    { name: 'Critical', value: data.findings_by_severity.critical, color: SEVERITY_COLORS.critical },
-    { name: 'High', value: data.findings_by_severity.high, color: SEVERITY_COLORS.high },
-    { name: 'Medium', value: data.findings_by_severity.medium, color: SEVERITY_COLORS.medium },
-    { name: 'Low', value: data.findings_by_severity.low, color: SEVERITY_COLORS.low },
-    { name: 'Info', value: data.findings_by_severity.info, color: SEVERITY_COLORS.info },
-  ].filter((d) => d.value > 0);
-
-  return (
-    <Box>
-      {/* KPI row */}
-      <Grid container spacing={2.5} sx={{ mb: 2.5 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            icon={<Storage fontSize="small" />}
-            label="Total Resources"
-            value={data.total_resources.toLocaleString()}
-            subtext={`${data.total_subscriptions} subscriptions`}
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            icon={<BugReport fontSize="small" />}
-            label="Open Findings"
-            value={data.total_findings_open.toLocaleString()}
-            subtext={`${data.total_orphaned} orphaned resources`}
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            icon={<TrendingDown fontSize="small" />}
-            label="Monthly Savings"
-            value={`$${data.total_monthly_savings_usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
-            subtext={`$${data.total_annual_savings_usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}/yr potential`}
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KpiCard
-            icon={<CloudQueue fontSize="small" />}
-            label="Drift Findings"
-            value={data.drift_findings.toLocaleString()}
-            subtext={`${data.entra_findings_open} identity issues`}
-          />
-        </Grid>
-      </Grid>
-
-      {/* Score gauges */}
-      <Grid container spacing={2.5} sx={{ mb: 2.5 }}>
-        <Grid item xs={12} sm={4}>
-          <ScoreGauge label="Governance Score" {...data.governance_score} />
-        </Grid>
-        <Grid item xs={12} sm={4}>
-          <ScoreGauge label="Security Score" {...data.security_score} />
-        </Grid>
-        <Grid item xs={12} sm={4}>
-          <ScoreGauge label="Identity Score" {...data.identity_score} />
-        </Grid>
-      </Grid>
-
-      <Grid container spacing={2.5}>
-        {/* Severity breakdown */}
-        <Grid item xs={12} md={4}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle2" sx={{ mb: 2, color: alpha('#fff', 0.7) }}>
-                Findings by Severity
-              </Typography>
-              {severityPieData.length === 0 ? (
-                <Typography variant="body2" sx={{ color: alpha('#fff', 0.4), py: 4, textAlign: 'center' }}>
-                  No open findings — nice work.
-                </Typography>
-              ) : (
-                <>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <PieChart>
-                      <Pie
-                        data={severityPieData}
-                        dataKey="value"
-                        nameKey="name"
-                        innerRadius={50}
-                        outerRadius={80}
-                        paddingAngle={2}
-                      >
-                        {severityPieData.map((entry, i) => (
-                          <Cell key={i} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <RechartsTooltip
-                        contentStyle={{ background: '#0D1B2A', border: '1px solid rgba(0,212,255,0.2)' }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'center', mt: 1 }}>
-                    {severityPieData.map((d) => (
-                      <Chip
-                        key={d.name}
-                        size="small"
-                        label={`${d.name}: ${d.value}`}
-                        sx={{ bgcolor: alpha(d.color, 0.15), color: d.color, fontWeight: 600 }}
-                      />
-                    ))}
-                  </Box>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Cost trend */}
-        <Grid item xs={12} md={8}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle2" sx={{ mb: 2, color: alpha('#fff', 0.7) }}>
-                Cost Trend (6 months)
-              </Typography>
-              {data.cost_trend.length === 0 ? (
-                <Typography variant="body2" sx={{ color: alpha('#fff', 0.4), py: 4, textAlign: 'center' }}>
-                  No cost trend data yet. Run a cost sync to populate this chart.
-                </Typography>
-              ) : (
-                <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={data.cost_trend}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={alpha('#fff', 0.08)} />
-                    <XAxis dataKey="month" stroke={alpha('#fff', 0.4)} fontSize={12} />
-                    <YAxis stroke={alpha('#fff', 0.4)} fontSize={12} />
-                    <RechartsTooltip
-                      contentStyle={{ background: '#0D1B2A', border: '1px solid rgba(0,212,255,0.2)' }}
-                    />
-                    <Line type="monotone" dataKey="total_cost" stroke="#00D4FF" strokeWidth={2} name="Total Cost" dot={false} />
-                    <Line type="monotone" dataKey="savings_identified" stroke="#4CAF50" strokeWidth={2} name="Savings Identified" dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Score trend over time */}
-        <Grid item xs={12} md={8}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2, flexWrap: 'wrap', gap: 1 }}>
-                <Typography variant="subtitle2" sx={{ color: alpha('#fff', 0.7) }}>
-                  Score Trend
-                </Typography>
-                <ToggleButtonGroup
-                  size="small"
-                  exclusive
-                  value={trendDays}
-                  onChange={(_, val) => val !== null && setTrendDays(val)}
-                >
-                  <ToggleButton value={7} sx={{ fontSize: 11, px: 1.5 }}>7d</ToggleButton>
-                  <ToggleButton value={30} sx={{ fontSize: 11, px: 1.5 }}>30d</ToggleButton>
-                  <ToggleButton value={90} sx={{ fontSize: 11, px: 1.5 }}>90d</ToggleButton>
-                </ToggleButtonGroup>
-              </Box>
-              {trendLoading ? (
-                <Skeleton variant="rounded" height={220} sx={{ bgcolor: alpha('#fff', 0.05) }} />
-              ) : scoreHistory.length === 0 ? (
-                <Typography variant="body2" sx={{ color: alpha('#fff', 0.4), py: 4, textAlign: 'center' }}>
-                  Not enough history yet — scores are snapshotted once daily, so check back after
-                  tomorrow's snapshot to see a trend.
-                </Typography>
-              ) : (
-                <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={scoreHistory}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={alpha('#fff', 0.08)} />
-                    <XAxis dataKey="date" stroke={alpha('#fff', 0.4)} fontSize={12} />
-                    <YAxis domain={[0, 100]} stroke={alpha('#fff', 0.4)} fontSize={12} />
-                    <RechartsTooltip
-                      contentStyle={{ background: '#0D1B2A', border: '1px solid rgba(0,212,255,0.2)' }}
-                    />
-                    <Line type="monotone" dataKey="governance_score" stroke="#00D4FF" strokeWidth={2} name="Governance" dot={false} />
-                    <Line type="monotone" dataKey="security_score" stroke="#FF9800" strokeWidth={2} name="Security" dot={false} />
-                    <Line type="monotone" dataKey="identity_score" stroke="#9C27B0" strokeWidth={2} name="Identity" dot={false} connectNulls />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Top findings table */}
-        <Grid item xs={12}>
-          <Card>
-            <CardContent>
-              <Typography variant="subtitle2" sx={{ mb: 2, color: alpha('#fff', 0.7) }}>
-                Top Findings
-              </Typography>
-              {data.top_findings.length === 0 ? (
-                <Typography variant="body2" sx={{ color: alpha('#fff', 0.4), py: 2 }}>
-                  No findings to show.
-                </Typography>
-              ) : (
-                <TableContainer sx={{ overflowX: 'auto' }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Severity</TableCell>
-                      <TableCell>Title</TableCell>
-                      <TableCell>Resource</TableCell>
-                      <TableCell>Category</TableCell>
-                      <TableCell align="right">Savings/mo</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {data.top_findings.map((f) => (
-                      <TableRow key={f.id} hover>
-                        <TableCell>
-                          <Chip
-                            size="small"
-                            label={f.severity.toUpperCase()}
-                            sx={{
-                              bgcolor: alpha(SEVERITY_COLORS[f.severity] ?? '#9E9E9E', 0.15),
-                              color: SEVERITY_COLORS[f.severity] ?? '#9E9E9E',
-                              fontWeight: 700,
-                              fontSize: 11,
-                            }}
-                          />
-                        </TableCell>
-                        <TableCell>{f.title}</TableCell>
-                        <TableCell sx={{ color: alpha('#fff', 0.6) }}>{f.resource_name ?? '—'}</TableCell>
-                        <TableCell sx={{ color: alpha('#fff', 0.6) }}>{f.category}</TableCell>
-                        <TableCell align="right">
-                          {f.estimated_savings ? `$${f.estimated_savings.toFixed(2)}` : '—'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                </TableContainer>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-    </Box>
-  );
+  if (loading) return <Box aria-label="Loading estate overview"><Skeleton height={160} /><Skeleton height={360} /></Box>;
+  if (!data) return <Alert severity="error">{error ?? 'Dashboard unavailable'}</Alert>;
+  const scanned = Boolean(data.last_scan_completed_at);
+  const connected = data.total_subscriptions > 0;
+  const urgent = data.findings_by_severity.critical + data.findings_by_severity.high;
+  return <div className="estate-overview">
+    {error && <Alert severity="warning" sx={{ mb: 3 }}>Showing the last available data. Refresh failed; retrying automatically.</Alert>}
+    <header className="overview-heading"><div><p className="eyebrow">WORKSPACE / OVERVIEW</p><h1>Know your estate.<br /><span>Decide what comes next.</span></h1></div><div className="overview-date"><span className={`status-dot ${scanned ? 'ready' : ''}`} />{scanned ? 'Assessment available' : 'Awaiting first assessment'}<small>{scanned ? new Date(data.last_scan_completed_at!).toLocaleString() : 'Connect Azure to begin'}</small></div></header>
+    <section className="estate-summary" aria-label="Estate summary">
+      <div className="summary-lead"><p className="eyebrow">AZURE FOOTPRINT</p><strong>{data.total_resources.toLocaleString()}</strong><span>discovered resources</span><Link to="/subscriptions">{data.total_subscriptions} connected subscriptions <ArrowForward fontSize="small" /></Link></div>
+      <div className="summary-metric"><span>Open findings</span><strong>{data.total_findings_open.toLocaleString()}</strong><small>{scanned ? `${urgent} critical or high priority` : 'No scan results yet'}</small></div>
+      <div className="summary-metric"><span>Potential savings / month</span><strong>{scanned ? money(data.total_monthly_savings_usd) : '—'}</strong><small>{scanned ? `${money(data.total_annual_savings_usd)} annual opportunity` : 'Calculated after assessment'}</small></div>
+      <div className="summary-metric"><span>Orphaned resources</span><strong>{scanned ? data.total_orphaned.toLocaleString() : '—'}</strong><small>{data.drift_findings} drift findings · {data.entra_findings_open} identity issues</small></div>
+    </section>
+    {!scanned && <section className="onboarding-panel" aria-label="Get started"><div className="onboarding-intro"><span className="section-number">01 / GET STARTED</span><h2>Your next clear step.</h2><p>Bring your subscriptions into view, then build a baseline for cost, security, and governance.</p><Button component={Link} to={connected ? '/scans' : '/settings'} variant="contained" endIcon={<ArrowForward />}>{connected ? 'Configure your first scan' : 'Connect your Azure tenant'}</Button></div><ol className="setup-steps">
+      <li><span className="step-icon">{connected ? <CheckCircleOutline /> : <Tune />}</span><div><strong>Connect your tenant</strong><p>Add your Azure credentials in Settings.</p></div><span className="step-state">{connected ? 'Connected' : 'Start here'}</span></li>
+      <li><span className="step-icon"><CloudQueue /></span><div><strong>Choose your scope</strong><p>Sync and select the subscriptions to assess.</p></div></li>
+      <li><span className="step-icon"><ShieldOutlined /></span><div><strong>Run a baseline scan</strong><p>Review evidence and savings before taking action.</p></div></li>
+    </ol></section>}
+    <div className="overview-grid">
+      <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">PRIORITIES</p><h2>Needs your attention</h2></div><Link to="/findings" className="text-link">All findings <NorthEast fontSize="small" /></Link></div>
+        {data.top_findings.length ? <div className="priority-list">{data.top_findings.slice(0, 5).map(f => <Link to="/findings" className="priority-item" key={f.id}><span className="severity-marker" style={{ background: severityColor[f.severity] }} /><div><strong>{f.title}</strong><small>{f.resource_name ?? 'Subscription-level finding'} · {f.category}</small></div><Chip size="small" label={f.severity} sx={{ color: severityColor[f.severity], borderColor: severityColor[f.severity] }} variant="outlined" /><span className="finding-savings">{f.estimated_savings != null ? money(f.estimated_savings) : '—'}</span></Link>)}</div>
+        : <div className="empty-assessment"><ShieldOutlined /><h3>{scanned ? 'No open findings' : 'Your findings will appear here'}</h3><p>{scanned ? 'Review scan coverage to confirm which resources and checks were assessed.' : 'A completed scan turns your resource inventory into a prioritized action list.'}</p><Link className="text-link" to="/scans">{scanned ? 'Review scan coverage' : 'Explore scan options'} <ArrowForward fontSize="small" /></Link></div>}
+      </section>
+      <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">POSTURE</p><h2>Assessment coverage</h2></div></div><Posture title="Governance" value={data.governance_score} path="/governance" /><Posture title="Security" value={data.security_score} path="/security" /><Posture title="Identity" value={data.identity_score} path="/identity" /><p className="panel-note">Scores appear after a successful assessment. Unchecked areas remain unscored.</p></section>
+      <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">FINANCIAL PICTURE</p><h2>Recorded Azure spend</h2></div><Link to="/costs" className="text-link">Costs <NorthEast fontSize="small" /></Link></div>
+        {data.cost_trend.length ? <ResponsiveContainer width="100%" height={225}><AreaChart data={data.cost_trend} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="month" stroke="#94aaa5" fontSize={11} /><YAxis stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Area dataKey="total_cost" name="Recorded cost (USD)" stroke="#a6d7bc" fill="#a6d7bc" fillOpacity={0.1} strokeWidth={2} /></AreaChart></ResponsiveContainer>
+        : <div className="quiet-empty"><span className="empty-rule" /><p>No billing data recorded yet.</p><small>Recorded monthly costs will appear here when available. Missing data is never shown as zero spend.</small></div>}
+      </section>
+      <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">OVER TIME</p><h2>Posture history</h2></div><ToggleButtonGroup size="small" exclusive value={trendDays} onChange={(_, v) => v !== null && setTrendDays(v)} aria-label="History window">{[7, 30, 90].map(d => <ToggleButton key={d} value={d} aria-label={`${d} days`}>{d}d</ToggleButton>)}</ToggleButtonGroup></div>
+        {trendLoading ? <Skeleton height={225} /> : trendError ? <Alert severity="warning">History is unavailable. Choose another range to retry.</Alert> : scoreHistory.length ? <ResponsiveContainer width="100%" height={225}><LineChart data={scoreHistory} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="date" stroke="#94aaa5" fontSize={11} /><YAxis domain={[0, 100]} stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Line dataKey="governance_score" name="Governance" stroke="#a6d7bc" dot={false} /><Line dataKey="security_score" name="Security" stroke="#e9bc79" dot={false} /><Line dataKey="identity_score" name="Identity" stroke="#98b5db" dot={false} /></LineChart></ResponsiveContainer>
+        : <div className="quiet-empty"><span className="empty-rule" /><p>A baseline comes before a trend.</p><small>Daily score snapshots will build this history after your first assessment.</small></div>}
+      </section>
+    </div><footer className="overview-footer"><span>RESOURCE GUARDIAN</span><span>Azure estate intelligence · Refreshes every 30 seconds</span></footer>
+  </div>;
 };

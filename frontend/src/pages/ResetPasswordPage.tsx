@@ -23,7 +23,7 @@ import {
 import { Visibility, VisibilityOff } from '@mui/icons-material';
 import { useNavigate, useSearchParams, Link as RouterLink } from 'react-router-dom';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1';
+const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
 
 export const ResetPasswordPage: React.FC = () => {
   const navigate = useNavigate();
@@ -75,7 +75,7 @@ export const ResetPasswordPage: React.FC = () => {
     <Box
       sx={{
         minHeight: '100vh',
-        bgcolor: '#0A0F1E',
+        bgcolor: '#101b17',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -86,12 +86,12 @@ export const ResetPasswordPage: React.FC = () => {
           Set a new password
         </Typography>
 
-        <Card sx={{ bgcolor: '#0D1B2A', border: `1px solid ${alpha('#00D4FF', 0.15)}` }}>
+        <Card sx={{ bgcolor: '#17241f', border: `1px solid ${alpha('#b8d9ba', 0.15)}` }}>
           <CardContent sx={{ p: 3 }}>
             {!token ? (
               <Alert severity="error">
                 This link is missing its reset token. Please use the link from your email, or{' '}
-                <RouterLink to="/login" style={{ color: '#00D4FF' }}>return to sign in</RouterLink> to
+                <RouterLink to="/login" style={{ color: '#b8d9ba' }}>return to sign in</RouterLink> to
                 request a new one.
               </Alert>
             ) : success ? (
@@ -141,7 +141,7 @@ export const ResetPasswordPage: React.FC = () => {
                   disabled={submitting || !newPassword || !confirmPassword}
                   sx={{
                     py: 1.25,
-                    background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)',
+                    
                     fontWeight: 700,
                   }}
                 >

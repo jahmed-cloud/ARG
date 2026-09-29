@@ -37,11 +37,12 @@ import {
   Divider,
   alpha,
 } from '@mui/material';
+import './login.css';
 import { Visibility, VisibilityOff } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAppDispatch, loginSuccess, setLoading } from '../store/store';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1';
+const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -161,85 +162,25 @@ export const LoginPage: React.FC = () => {
   };
 
   return (
-    <Box
-      sx={{
-        minHeight: '100vh',
-        bgcolor: '#0A0F1E',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Ambient background orbs */}
-      <Box
-        sx={{
-          position: 'absolute',
-          width: 600,
-          height: 600,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0,212,255,0.06) 0%, transparent 70%)',
-          top: -100,
-          right: -100,
-          pointerEvents: 'none',
-        }}
-      />
-      <Box
-        sx={{
-          position: 'absolute',
-          width: 400,
-          height: 400,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0,102,255,0.08) 0%, transparent 70%)',
-          bottom: -50,
-          left: -50,
-          pointerEvents: 'none',
-        }}
-      />
-
-      <Box sx={{ width: '100%', maxWidth: 400, px: 2, position: 'relative', zIndex: 1 }}>
-        {/* Logo */}
-        <Box sx={{ textAlign: 'center', mb: 4 }}>
-          <Box
-            sx={{
-              width: 52,
-              height: 52,
-              borderRadius: 2,
-              background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              mb: 2,
-              fontSize: 24,
-              fontWeight: 800,
-              color: '#fff',
-              fontFamily: 'monospace',
-              boxShadow: '0 0 32px rgba(0,212,255,0.3)',
-            }}
-          >
-            A
-          </Box>
-          <Typography variant="h5" sx={{ fontWeight: 700, color: '#fff', letterSpacing: '-0.02em' }}>
-            Azure Resource Guardian
-          </Typography>
-          <Typography variant="body2" sx={{ color: alpha('#fff', 0.4), mt: 0.5 }}>
-            Discover. Govern. Optimize.
-          </Typography>
-        </Box>
-
+    <Box className="login-workspace">
+      <Box className="login-story">
+        <div className="login-brand"><span>ARG</span><small>RESOURCE GUARDIAN</small></div>
+        <div className="login-editorial"><p className="eyebrow">CLARITY ACROSS YOUR AZURE ESTATE</p><h1>Every resource.<br />A clearer picture.</h1><p>Understand what you run, where you spend,<br />and what deserves your attention.</p></div>
+        <div className="login-capabilities"><div><span>01</span> Discover your footprint</div><div><span>02</span> Assess risk and governance</div><div><span>03</span> Make informed changes</div></div>
+        <div className="login-colophon">AZURE RESOURCE GUARDIAN <span>SELF-HOSTED / OPEN SOURCE</span></div>
+      </Box>
+      <Box className="login-form-panel">
+        <div className="login-form-heading"><p className="eyebrow">YOUR WORKSPACE</p><h2>Welcome back.</h2><p>Sign in to your Resource Guardian workspace.</p></div>
         {/* Login card */}
         <Card
           sx={{
-            bgcolor: '#0D1B2A',
-            border: `1px solid ${alpha('#00D4FF', 0.15)}`,
-            boxShadow: '0 24px 48px rgba(0,0,0,0.4)',
+            bgcolor: 'transparent',
+            border: 0,
+            boxShadow: 'none', overflow: 'visible',
           }}
         >
-          <CardContent sx={{ p: 3 }}>
-            <Typography variant="h6" sx={{ fontWeight: 600, color: '#fff', mb: 3 }}>
-              Sign in
-            </Typography>
+          <CardContent sx={{ p: 0, "&:last-child": { pb: 0 } }}>
+
 
             {error && (
               <Alert severity="error" sx={{ mb: 2 }}>
@@ -249,7 +190,7 @@ export const LoginPage: React.FC = () => {
 
             <Box component="form" onSubmit={handleLogin}>
               <TextField
-                label="Username"
+                label="Email or username"
                 fullWidth
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -271,7 +212,7 @@ export const LoginPage: React.FC = () => {
                 InputProps={{
                   endAdornment: (
                     <InputAdornment position="end">
-                      <IconButton onClick={() => setShowPassword(!showPassword)} edge="end" size="small">
+                      <IconButton aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword(!showPassword)} edge="end" size="small">
                         {showPassword ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
                       </IconButton>
                     </InputAdornment>
@@ -300,7 +241,7 @@ export const LoginPage: React.FC = () => {
                 disabled={submitting || !username || !password}
                 sx={{
                   py: 1.25,
-                  background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)',
+                  background: '#b8d9ba', color: '#183426',
                   fontWeight: 700,
                   fontSize: 15,
                   '&:disabled': { opacity: 0.5 },
@@ -347,7 +288,7 @@ export const LoginPage: React.FC = () => {
           </CardContent>
         </Card>
 
-        <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', mt: 3, color: alpha('#fff', 0.2) }}>
+        <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', mt: 3, color: alpha('#fff', 0.55) }}>
           Azure Resource Guardian • Open Source • MIT License
         </Typography>
       </Box>

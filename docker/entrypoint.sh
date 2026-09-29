@@ -3,15 +3,15 @@
 # Azure Resource Guardian — Backend entrypoint
 # =============================================================================
 # Runs on every container start:
-#   1. Wait for Postgres to be ready
+#   Compose waits for Postgres health before starting this container.
 #   2. Run Alembic migrations (idempotent — safe to run on every start)
-#   3. Seed the admin user from .env (idempotent — skips if user exists)
+#   3. Seed the admin user from .env (syncs the configured password)
 #   4. Start uvicorn
 #
 # The admin user credentials come from .env:
 #   ADMIN_EMAIL, ADMIN_USERNAME, ADMIN_PASSWORD
-# If the user already exists, step 3 prints "already exists — skipping"
-# and continues immediately. No manual seed command needed.
+# If the user already exists, step 3 syncs its password from ADMIN_PASSWORD.
+# No manual seed command is needed.
 # =============================================================================
 
 set -e

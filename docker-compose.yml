@@ -22,9 +22,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arg}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arg} -d ${POSTGRES_DB:-arg}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -52,6 +52,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      REPORT_STORAGE_PATH: /tmp/arg/reports
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
@@ -61,8 +62,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - report_data:/tmp/arg/reports
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     networks:
       - arg-network
 
@@ -82,7 +85,7 @@ services:
       redis:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
     networks:
       - arg-network
     deploy:
@@ -93,13 +96,17 @@ services:
       context: .
       dockerfile: docker/Dockerfile.worker
     restart: unless-stopped
-    command: celery -A workers.scan_worker beat --loglevel=info
+    command: celery -A workers.scan_worker beat --loglevel=info --schedule=/app/beat/celerybeat-schedule
+    volumes:
+      - beat_data:/app/beat
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
     depends_on:
+      backend:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -115,7 +122,8 @@ services:
         VITE_API_URL: /api/v1
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "${FRONTEND_PORT:-3000}:80"
     networks:
@@ -124,6 +132,8 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  report_data:
+  beat_data:
 
 networks:
   arg-network:

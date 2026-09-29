@@ -62,7 +62,7 @@ const ROLES = ['viewer', 'analyst', 'auditor', 'admin', 'super_admin'];
 const ROLE_COLORS: Record<string, string> = {
   super_admin: '#F44336',
   admin: '#FF9800',
-  analyst: '#00D4FF',
+  analyst: '#b8d9ba',
   auditor: '#9C27B0',
   viewer: '#9E9E9E',
 };
@@ -206,7 +206,7 @@ export const UserManagementSection: React.FC = () => {
             setCreatedCredential(null);
             setDialogOpen(true);
           }}
-          sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700 }}
+          sx={{  fontWeight: 700 }}
         >
           Add User
         </Button>

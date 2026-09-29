@@ -118,7 +118,7 @@ export const ChangePasswordCard: React.FC = () => {
             type="submit"
             variant="contained"
             disabled={submitting || !currentPassword || !newPassword || !confirmPassword}
-            sx={{ background: 'linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)', fontWeight: 700, alignSelf: 'flex-start', mt: 0.5 }}
+            sx={{  fontWeight: 700, alignSelf: 'flex-start', mt: 0.5 }}
           >
             {submitting ? 'Updating…' : 'Update Password'}
           </Button>

@@ -71,6 +71,43 @@ def _login(client):
     return r
 
 
+def test_simultaneous_estate_refresh_starts_one_collection(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import scripts.subscription_analysis.estate as estate
+
+    _login(client)
+    release = Event()
+    calls = []
+
+    def slow_status(refresh=False):
+        time.sleep(0.05)
+        return {"signed_in": True, "tenant_id": "tenant-1"}
+
+    def fake_refresh(*args):
+        calls.append(args)
+        assert release.wait(timeout=5)
+
+    monkeypatch.setattr(client.app.state.azure, 'status', slow_status)
+    monkeypatch.setattr(estate, 'refresh_estate', fake_refresh)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: client.post('/api/estate/refresh', headers=ORIGIN), range(2)))
+        assert all(r.status_code == 200 and r.json()['running'] for r in responses)
+        for _ in range(100):
+            if calls:
+                break
+            time.sleep(0.01)
+        assert len(calls) == 1
+    finally:
+        release.set()
+    for _ in range(100):
+        if not client.get('/api/estate/status').json()['running']:
+            break
+        time.sleep(0.01)
+
+
 def test_pages_and_api_require_portal_login(client):
     assert client.get("/", follow_redirects=False).headers["location"].startswith("/login")
     assert client.get("/api/state").status_code == 401

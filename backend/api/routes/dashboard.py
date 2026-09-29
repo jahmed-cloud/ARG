@@ -5,25 +5,24 @@ Provides aggregated metrics for the executive dashboard.
 
 Optimized for frontend performance:
 - Single endpoint returns all dashboard data
-- Results cached in Redis (configurable TTL)
-- Parallel async queries for each metric category
+- Sequential queries share the request transaction safely
+- Subscription filters apply consistently across metric categories
 """
 
-import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, case, cast, String, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies.auth import get_current_user, require_roles
+from backend.api.dependencies.auth import get_current_user
 from backend.api.dependencies.database import get_db
 from backend.models.models import (
     CostSaving, EntraFinding, Finding, FindingStatus,
-    ResourceInventory, ScanJob, ScanResult, ScanStatus, Subscription,
-    ScoreSnapshot, User, UserRole
+    ResourceInventory, ResourceCost, ScanJob, ScanResult, ScanStatus, Subscription,
+    ScoreSnapshot, SeverityLevel, User
 )
 
 router = APIRouter()
@@ -114,7 +113,7 @@ class DashboardSummary(BaseModel):
     summary="Executive dashboard summary",
     description=(
         "Returns aggregated governance, security, cost, and identity metrics "
-        "for the executive dashboard. Scoped to subscriptions the user has access to."
+        "for the executive dashboard. Optionally filtered by subscription. Access requires authentication."
     ),
 )
 async def get_dashboard(
@@ -124,25 +123,16 @@ async def get_dashboard(
 ):
     """
     Main dashboard endpoint.
-    Runs all aggregation queries concurrently for fast response.
+    Runs aggregation queries within the request transaction.
     """
-    (
-        resource_stats,
-        finding_stats,
-        cost_stats,
-        score_stats,
-        entra_stats,
-        scan_stats,
-        top_findings,
-    ) = await asyncio.gather(
-        _get_resource_stats(db, subscription_id),
-        _get_finding_stats(db, subscription_id),
-        _get_cost_stats(db, subscription_id),
-        _get_score_stats(db, subscription_id),
-        _get_entra_stats(db),
-        _get_scan_stats(db),
-        _get_top_findings(db, subscription_id),
-    )
+    # AsyncSession owns one transaction/connection and cannot run queries concurrently.
+    resource_stats = await _get_resource_stats(db, subscription_id)
+    finding_stats = await _get_finding_stats(db, subscription_id)
+    cost_stats = await _get_cost_stats(db, subscription_id)
+    score_stats = await _get_score_stats(db, subscription_id)
+    entra_stats = await _get_entra_stats(db, subscription_id)
+    scan_stats = await _get_scan_stats(db, subscription_id)
+    top_findings = await _get_top_findings(db, subscription_id)
 
     return DashboardSummary(
         total_resources=resource_stats["total"],
@@ -181,8 +171,8 @@ class ScoreHistoryPoint(BaseModel):
 async def get_score_history(
     subscription_id: Optional[str] = Query(None, description="Filter to a specific subscription"),
     days: int = Query(30, ge=1, le=365, description="Number of days of history to return"),
-    start_date: Optional[str] = Query(None, description="ISO date (YYYY-MM-DD) — overrides 'days' if set"),
-    end_date: Optional[str] = Query(None, description="ISO date (YYYY-MM-DD), defaults to today"),
+    start_date: Optional[date] = Query(None, description="ISO date (YYYY-MM-DD) â€” overrides 'days' if set"),
+    end_date: Optional[date] = Query(None, description="ISO date (YYYY-MM-DD), defaults to today"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -193,26 +183,28 @@ async def get_score_history(
     an explicit start_date/end_date range.
 
     When no subscription_id is given, scores across all subscriptions
-    for the same day are averaged into a single org-wide point — this
+    for the same day are averaged into a single org-wide point â€” this
     matches how the live (non-historical) dashboard score already
     aggregates across subscriptions when none is selected.
 
     Returns an empty list, not an error, until snapshot_scores has run
-    at least once — a fresh deployment genuinely has zero history yet,
+    at least once â€” a fresh deployment genuinely has zero history yet,
     which the frontend should render as "not enough data" rather than
     a failure.
     """
     from datetime import date as date_cls, timedelta as td
 
     if start_date:
-        range_start = date_cls.fromisoformat(start_date)
+        range_start = start_date
     else:
         range_start = date_cls.today() - td(days=days)
-    range_end = date_cls.fromisoformat(end_date) if end_date else date_cls.today()
+    range_end = end_date or date_cls.today()
+    if range_start > range_end:
+        raise HTTPException(status_code=422, detail="start_date must be on or before end_date")
 
     filters = [ScoreSnapshot.snapshot_date >= range_start, ScoreSnapshot.snapshot_date <= range_end]
     if subscription_id:
-        filters.append(ScoreSnapshot.subscription_id == subscription_id)
+        filters.append(_scope(ScoreSnapshot, subscription_id))
 
     result = await db.execute(
         select(ScoreSnapshot).where(*filters).order_by(ScoreSnapshot.snapshot_date.asc())
@@ -230,7 +222,7 @@ async def get_score_history(
             for r in rows
         ]
 
-    # No subscription filter — average across all subscriptions captured
+    # No subscription filter â€” average across all subscriptions captured
     # on each given day, since multiple subscriptions can each have a
     # snapshot row for the same date.
     by_date: dict[str, list[ScoreSnapshot]] = {}
@@ -253,43 +245,38 @@ async def get_score_history(
 # Aggregation Helpers
 # ---------------------------------------------------------------------------
 
+def _subscription_ids(sub_id: str):
+    # Accept either ARG's database ID or the Azure subscription ID.
+    return select(Subscription.id).where(or_(
+        cast(Subscription.id, String) == sub_id, Subscription.subscription_id == sub_id,
+    ))
+
+
+def _scope(model, sub_id):
+    return model.subscription_id.in_(_subscription_ids(sub_id)) if sub_id else true()
+
+
 async def _get_resource_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
-    base_query = select(ResourceInventory)
-    if sub_id:
-        base_query = base_query.join(Subscription).where(
-            Subscription.subscription_id == sub_id
-        )
-
-    total = await db.scalar(
-        select(func.count()).select_from(ResourceInventory)
-    ) or 0
-
-    orphaned = await db.scalar(
-        select(func.count()).select_from(ResourceInventory).where(
-            ResourceInventory.is_orphaned == True
-        )
-    ) or 0
-
-    subscription_count = await db.scalar(
-        select(func.count()).select_from(Subscription).where(
-            Subscription.is_active == True
-        )
-    ) or 0
-
+    total = await db.scalar(select(func.count()).select_from(ResourceInventory).where(_scope(ResourceInventory, sub_id))) or 0
+    orphaned = await db.scalar(select(func.count()).select_from(ResourceInventory).where(
+        ResourceInventory.is_orphaned.is_(True), _scope(ResourceInventory, sub_id))) or 0
+    subscription_count = await db.scalar(select(func.count()).select_from(Subscription).where(
+        Subscription.is_active.is_(True),
+        Subscription.id.in_(_subscription_ids(sub_id)) if sub_id else true())) or 0
     return {"total": total, "orphaned": orphaned, "subscriptions": subscription_count}
 
 
 async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     # Open findings count
     open_query = select(func.count()).select_from(Finding).where(
-        Finding.status == FindingStatus.OPEN
+        Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id)
     )
     total_open = await db.scalar(open_query) or 0
 
     # By severity
     severity_result = await db.execute(
         select(Finding.severity, func.count(Finding.id))
-        .where(Finding.status == FindingStatus.OPEN)
+        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id))
         .group_by(Finding.severity)
     )
     by_severity_raw = dict(severity_result.all())
@@ -306,7 +293,7 @@ async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     # By category
     category_result = await db.execute(
         select(Finding.category, func.count(Finding.id))
-        .where(Finding.status == FindingStatus.OPEN)
+        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id))
         .group_by(Finding.category)
     )
     by_category = dict(category_result.all())
@@ -315,7 +302,7 @@ async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     drift_count = await db.scalar(
         select(func.count()).select_from(Finding).where(
             Finding.category == "terraform",
-            Finding.status == FindingStatus.OPEN,
+            Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id),
         )
     ) or 0
 
@@ -331,12 +318,12 @@ async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     # Total potential monthly savings
     monthly_result = await db.scalar(
         select(func.sum(CostSaving.estimated_monthly_savings_usd))
-        .where(CostSaving.is_actioned == False)
+        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id))
     ) or 0.0
 
     annual_result = await db.scalar(
         select(func.sum(CostSaving.estimated_annual_savings_usd))
-        .where(CostSaving.is_actioned == False)
+        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id))
     ) or 0.0
 
     # Top 10 savings opportunities
@@ -349,7 +336,7 @@ async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
             CostSaving.estimated_monthly_savings_usd,
             CostSaving.action_required,
         )
-        .where(CostSaving.is_actioned == False)
+        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id))
         .order_by(CostSaving.estimated_monthly_savings_usd.desc())
         .limit(10)
     )
@@ -365,15 +352,17 @@ async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
         for row in top_10_result.all()
     ]
 
-    # Cost trend (last 6 months — placeholder; real data comes from ResourceCost)
-    trend = [
-        CostTrendPoint(
-            month=(datetime.now(timezone.utc) - timedelta(days=30 * i)).strftime("%Y-%m"),
-            total_cost=0.0,
-            savings_identified=0.0,
-        )
-        for i in range(5, -1, -1)
-    ]
+    # Report recorded costs only; a missing billing month is not a zero-cost month.
+    today = date.today()
+    month_index = today.year * 12 + today.month - 1 - 5
+    first_month = f"{month_index // 12:04d}-{month_index % 12 + 1:02d}"
+    rows = await db.execute(select(ResourceCost.billing_month, func.sum(ResourceCost.cost_usd))
+        .join(ResourceInventory, ResourceCost.resource_id == ResourceInventory.id)
+        .where(ResourceCost.billing_month >= first_month,
+               ResourceCost.billing_month <= today.strftime("%Y-%m"), _scope(ResourceInventory, sub_id))
+        .group_by(ResourceCost.billing_month).order_by(ResourceCost.billing_month))
+    trend = [CostTrendPoint(month=month, total_cost=round(cost, 2), savings_identified=0.0)
+             for month, cost in rows.all()]
 
     return {
         "monthly": round(monthly_result, 2),
@@ -393,8 +382,8 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
       CRITICAL = -10, HIGH = -5, MEDIUM = -2, LOW = -0.5
     - Floor at 0, cap at 100
 
-    Previously this used a category_map that routed compute→governance,
-    network/storage→security etc., which caused the dashboard scores to
+    Previously this used a category_map that routed computeâ†’governance,
+    network/storageâ†’security etc., which caused the dashboard scores to
     be far lower than the dedicated Governance/Security pages (which only
     count their own category). Now uses the same category filter as each
     dedicated page so scores are consistent across the app.
@@ -402,7 +391,7 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     finding_result = await db.execute(
         select(Finding.category, Finding.severity, func.count(Finding.id))
         .where(
-            Finding.status == FindingStatus.OPEN,
+            Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id),
             Finding.category.in_(["governance", "security", "identity"]),
         )
         .group_by(Finding.category, Finding.severity)
@@ -419,7 +408,11 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     def compute_score(deduction: float) -> float:
         return max(0.0, min(100.0, 100.0 - deduction))
 
-    now = datetime.now(timezone.utc)
+    checked_result = await db.execute(select(ScanResult.category, func.max(ScanResult.completed_at))
+        .join(ScanJob, ScanResult.scan_job_id == ScanJob.id)
+        .where(ScanResult.status == ScanStatus.COMPLETED, ScanResult.error_message.is_(None), _scope(ScanJob, sub_id))
+        .group_by(ScanResult.category))
+    checked_at = dict(checked_result.all())
 
     # Identity score needs the same honesty check as GET /identity/stats:
     # a clean 100 here is indistinguishable from "identity scanners were
@@ -437,7 +430,7 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
         row = await db.execute(
             select(ScanResult, ScanJob.completed_at)
             .join(ScanJob, ScanResult.scan_job_id == ScanJob.id)
-            .where(ScanResult.scanner_name == scanner_name)
+            .where(ScanResult.scanner_name == scanner_name, ScanResult.status == ScanStatus.COMPLETED, _scope(ScanJob, sub_id))
             .order_by(ScanJob.completed_at.desc())
             .limit(1)
         )
@@ -445,7 +438,7 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
         if match:
             sr, completed_at = match
             msg = (sr.error_message or "").lower()
-            if "prerequisites not met" not in msg and "no client provided" not in msg:
+            if not msg:
                 identity_checked = True
             if completed_at and (identity_last_updated is None or completed_at > identity_last_updated):
                 identity_last_updated = completed_at
@@ -455,17 +448,17 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
             score=round(compute_score(deductions["governance"]), 1),
             trend="stable",
             delta=0.0,
-            last_updated=now,
+            last_updated=checked_at.get("governance"),
         ),
         "security": ScoreCard(
             score=round(compute_score(deductions["security"]), 1),
             trend="stable",
             delta=0.0,
-            last_updated=now,
+            last_updated=checked_at.get("security"),
         ),
         "identity": ScoreCard(
             # When identity scanners have never genuinely run, score stays
-            # at the floor (0) rather than a clean-looking 100 — 0 reads
+            # at the floor (0) rather than a clean-looking 100 â€” 0 reads
             # as "needs attention," which is the accurate signal here,
             # whereas 100 would read as "verified clean." last_updated is
             # left null in this case so the UI can distinguish a real
@@ -478,19 +471,20 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str]) -> dict:
     }
 
 
-async def _get_entra_stats(db: AsyncSession) -> dict:
+async def _get_entra_stats(db: AsyncSession, sub_id: Optional[str] = None) -> dict:
     open_count = await db.scalar(
         select(func.count()).select_from(EntraFinding).where(
-            EntraFinding.status == FindingStatus.OPEN
+            EntraFinding.status == FindingStatus.OPEN,
+            EntraFinding.tenant_id.in_(select(Subscription.tenant_id).where(Subscription.id.in_(_subscription_ids(sub_id)))) if sub_id else true()
         )
     ) or 0
     return {"open": open_count}
 
 
-async def _get_scan_stats(db: AsyncSession) -> dict:
+async def _get_scan_stats(db: AsyncSession, sub_id: Optional[str] = None) -> dict:
     last_scan = await db.execute(
         select(ScanJob)
-        .where(ScanJob.status == ScanStatus.COMPLETED)
+        .where(ScanJob.status == ScanStatus.COMPLETED, _scope(ScanJob, sub_id))
         .order_by(ScanJob.completed_at.desc())
         .limit(1)
     )
@@ -509,8 +503,10 @@ async def _get_top_findings(db: AsyncSession, sub_id: Optional[str]) -> List[Top
             ResourceInventory.resource_name, ResourceInventory.resource_group,
         )
         .outerjoin(ResourceInventory, Finding.resource_id == ResourceInventory.id)
-        .where(Finding.status == FindingStatus.OPEN)
-        .order_by(Finding.severity.asc(), Finding.estimated_monthly_savings_usd.desc())
+        .where(Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id))
+        .order_by(case(*[(Finding.severity == level, rank) for rank, level in enumerate(
+            [SeverityLevel.CRITICAL, SeverityLevel.HIGH, SeverityLevel.MEDIUM, SeverityLevel.LOW, SeverityLevel.INFO]
+        )], else_=5), Finding.estimated_monthly_savings_usd.desc().nullslast())
         .limit(10)
     )
     return [

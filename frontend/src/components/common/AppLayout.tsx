@@ -51,15 +51,15 @@ import {
   CloudQueue,
   BugReport,
   Logout,
-  Notifications,
   PlayArrow,
   Menu as MenuIcon,
 } from "@mui/icons-material";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useAppDispatch, useAppSelector, logout, setUser } from "../../store/store";
 import { useApi } from "../../hooks/useApi";
+import { RouteBoundary } from "./RouteBoundary";
 
-const SIDEBAR_EXPANDED = 240;
+const SIDEBAR_EXPANDED = 224;
 const SIDEBAR_COLLAPSED = 64;
 
 interface NavItem {
@@ -70,7 +70,8 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Dashboard", path: "/dashboard", icon: <Dashboard /> },
+  { label: "Overview", path: "/dashboard", icon: <Dashboard /> },
+  { label: "Scans", path: "/scans", icon: <SearchOutlined /> },
   { label: "Findings", path: "/findings", icon: <BugReport /> },
   { label: "Cost Savings", path: "/costs", icon: <AttachMoney /> },
   { label: "Identity", path: "/identity", icon: <Person /> },
@@ -97,7 +98,7 @@ export function AppLayout() {
   // closed by default and slides over the content — a permanent 240px
   // sidebar on a ~375-414px phone screen previously consumed roughly
   // 60% of the viewport with no way to hide it at all.
-  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const [mobileOpen, setMobileOpen] = useState(false);
 
   // Refresh the user profile from the server on every app mount. The
@@ -138,7 +139,8 @@ export function AppLayout() {
     setMobileOpen(false);
   }, [location.pathname]);
 
-  const sidebarWidth = isMobile ? SIDEBAR_EXPANDED : collapsed ? SIDEBAR_COLLAPSED : SIDEBAR_EXPANDED;
+  const compact = !isMobile && collapsed;
+  const sidebarWidth = isMobile ? SIDEBAR_EXPANDED : compact ? SIDEBAR_COLLAPSED : SIDEBAR_EXPANDED;
 
   const handleLogout = () => {
     dispatch(logout());
@@ -147,6 +149,10 @@ export function AppLayout() {
 
   return (
     <Box sx={{ display: "flex", minHeight: "100vh", bgcolor: "background.default" }}>
+      <Box component="a" href="#main-content" sx={{ position: 'fixed', top: -80, left: 16, zIndex: 2000,
+        bgcolor: 'primary.main', color: '#101b17', p: 1.5, borderRadius: 2, '&:focus': { top: 8 } }}>
+        Skip to content
+      </Box>
       {/* ── Sidebar ───────────────────────────────────────────────── */}
       <Drawer
         variant={isMobile ? "temporary" : "permanent"}
@@ -154,13 +160,13 @@ export function AppLayout() {
         onClose={() => setMobileOpen(false)}
         ModalProps={{ keepMounted: true }}
         sx={{
-          width: sidebarWidth,
+          width: isMobile ? 0 : sidebarWidth,
           flexShrink: 0,
           "& .MuiDrawer-paper": {
             width: sidebarWidth,
             boxSizing: "border-box",
-            bgcolor: "#0D1B2A",
-            borderRight: `1px solid ${alpha("#00D4FF", 0.12)}`,
+            bgcolor: "#14211b",
+            borderRight: `1px solid ${alpha("#b8d9ba", 0.12)}`,
             transition: theme.transitions.create("width", {
               easing: theme.transitions.easing.sharp,
               duration: theme.transitions.duration.standard,
@@ -177,7 +183,7 @@ export function AppLayout() {
             px: 2,
             py: 2.5,
             gap: 1.5,
-            borderBottom: `1px solid ${alpha("#00D4FF", 0.1)}`,
+            borderBottom: `1px solid ${alpha("#b8d9ba", 0.1)}`,
             minHeight: 64,
           }}
         >
@@ -186,7 +192,7 @@ export function AppLayout() {
               width: 32,
               height: 32,
               borderRadius: 1,
-              background: "linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)",
+              background: "#365b47",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -199,13 +205,13 @@ export function AppLayout() {
           >
             A
           </Box>
-          {!collapsed && (
+          {!compact && (
             <Box>
               <Typography
                 variant="subtitle2"
                 sx={{
-                  fontWeight: 700,
-                  color: "#fff",
+                  fontWeight: 500,
+                  color: "#ebece3",
                   lineHeight: 1,
                   letterSpacing: "-0.02em",
                 }}
@@ -214,30 +220,33 @@ export function AppLayout() {
               </Typography>
               <Typography
                 variant="caption"
-                sx={{ color: "#00D4FF", lineHeight: 1, display: "block" }}
+                sx={{ color: "#b8d9ba", lineHeight: 1, display: "block" }}
               >
-                Resource Guardian
+                Azure intelligence
               </Typography>
             </Box>
           )}
         </Box>
 
         {/* Nav items */}
-        <List sx={{ pt: 1, px: 0.5, flex: 1 }}>
-          {NAV_ITEMS.map((item) => {
+        <List component="nav" aria-label="Main navigation" sx={{ pt: 1, px: 0.5, flex: 1 }}>
+          {NAV_ITEMS.map((item, index) => {
             const active = location.pathname.startsWith(item.path);
             return (
-              <ListItem key={item.path} disablePadding sx={{ mb: 0.25 }}>
-                <Tooltip title={collapsed ? item.label : ""} placement="right">
+              <React.Fragment key={item.path}>{!compact && [0, 4, 8].includes(index) && <Typography component="div" sx={{ px: 2, pt: index ? 2.5 : 1.5, pb: 1, color: "#90a79a", fontSize: 9, letterSpacing: ".15em", fontFamily: "Consolas, monospace" }}>{index === 0 ? "WORKSPACE" : index === 4 ? "ASSESSMENT" : "OPERATIONS"}</Typography>}<ListItem disablePadding sx={{ mb: 0.25 }}>
+                <Tooltip title={compact ? item.label : ""} placement="right">
                   <ListItemButton
+                    aria-label={item.label}
+                    aria-current={active ? "page" : undefined}
+                    selected={active}
                     onClick={() => navigate(item.path)}
                     sx={{
                       borderRadius: 1.5,
                       minHeight: 42,
-                      px: collapsed ? 1.5 : 1.5,
-                      bgcolor: active ? alpha("#00D4FF", 0.12) : "transparent",
+                      px: compact ? 1.5 : 1.5,
+                      bgcolor: active ? alpha("#b8d9ba", 0.12) : "transparent",
                       "&:hover": {
-                        bgcolor: alpha("#00D4FF", 0.08),
+                        bgcolor: alpha("#b8d9ba", 0.08),
                       },
                       ...(active && {
                         "&::before": {
@@ -248,21 +257,21 @@ export function AppLayout() {
                           height: "60%",
                           width: 3,
                           borderRadius: "0 2px 2px 0",
-                          bgcolor: "#00D4FF",
+                          bgcolor: "#b8d9ba",
                         },
                       }),
                     }}
                   >
                     <ListItemIcon
                       sx={{
-                        minWidth: collapsed ? 0 : 36,
-                        color: active ? "#00D4FF" : alpha("#fff", 0.6),
+                        minWidth: compact ? 0 : 36,
+                        color: active ? "#b8d9ba" : alpha("#fff", 0.6),
                         "& svg": { fontSize: 20 },
                       }}
                     >
                       {item.icon}
                     </ListItemIcon>
-                    {!collapsed && (
+                    {!compact && (
                       <ListItemText
                         primary={item.label}
                         primaryTypographyProps={{
@@ -274,25 +283,26 @@ export function AppLayout() {
                     )}
                   </ListItemButton>
                 </Tooltip>
-              </ListItem>
+              </ListItem></React.Fragment>
             );
           })}
         </List>
 
         {/* Bottom nav */}
-        <Box sx={{ p: 0.5, borderTop: `1px solid ${alpha("#00D4FF", 0.1)}` }}>
+        <Box sx={{ p: 0.5, borderTop: `1px solid ${alpha("#b8d9ba", 0.1)}` }}>
           <ListItem disablePadding sx={{ mb: 0.25 }}>
-            <Tooltip title={collapsed ? "Settings" : ""} placement="right">
+            <Tooltip title={compact ? "Settings" : ""} placement="right">
               <ListItemButton
+                aria-label="Settings"
                 onClick={() => navigate("/settings")}
                 sx={{ borderRadius: 1.5, minHeight: 42, px: 1.5 }}
               >
                 <ListItemIcon
-                  sx={{ minWidth: collapsed ? 0 : 36, color: alpha("#fff", 0.5), "& svg": { fontSize: 20 } }}
+                  sx={{ minWidth: compact ? 0 : 36, color: alpha("#fff", 0.5), "& svg": { fontSize: 20 } }}
                 >
                   <Settings />
                 </ListItemIcon>
-                {!collapsed && (
+                {!compact && (
                   <ListItemText
                     primary="Settings"
                     primaryTypographyProps={{ fontSize: 13, color: alpha("#fff", 0.6) }}
@@ -306,13 +316,14 @@ export function AppLayout() {
               overlay drawer the user just explicitly opened to read
               full labels. */}
           {!isMobile && (
-            <Box sx={{ display: "flex", justifyContent: collapsed ? "center" : "flex-end", px: 1, pb: 1 }}>
+            <Box sx={{ display: "flex", justifyContent: compact ? "center" : "flex-end", px: 1, pb: 1 }}>
               <IconButton
                 size="small"
+                aria-label={compact ? "Expand navigation" : "Collapse navigation"}
                 onClick={() => setCollapsed(!collapsed)}
-                sx={{ color: alpha("#fff", 0.4), "&:hover": { color: "#00D4FF" } }}
+                sx={{ color: alpha("#fff", 0.4), "&:hover": { color: "#b8d9ba" } }}
               >
-                {collapsed ? <ChevronRight fontSize="small" /> : <ChevronLeft fontSize="small" />}
+                {compact ? <ChevronRight fontSize="small" /> : <ChevronLeft fontSize="small" />}
               </IconButton>
             </Box>
           )}
@@ -338,9 +349,9 @@ export function AppLayout() {
           position="sticky"
           elevation={0}
           sx={{
-            bgcolor: alpha("#0D1B2A", 0.95),
+            bgcolor: alpha("#14211b", 0.95),
             backdropFilter: "blur(8px)",
-            borderBottom: `1px solid ${alpha("#00D4FF", 0.1)}`,
+            borderBottom: `1px solid ${alpha("#b8d9ba", 0.1)}`,
             zIndex: theme.zIndex.drawer - 1,
           }}
         >
@@ -349,6 +360,8 @@ export function AppLayout() {
               <IconButton
                 size="small"
                 edge="start"
+                aria-label="Open navigation"
+                aria-expanded={mobileOpen}
                 onClick={() => setMobileOpen(true)}
                 sx={{ color: alpha("#fff", 0.7), mr: 0.5 }}
               >
@@ -362,7 +375,7 @@ export function AppLayout() {
               noWrap
               sx={{ color: alpha("#fff", 0.6), fontWeight: 400, flex: 1, fontSize: { xs: 14, sm: 16 } }}
             >
-              {NAV_ITEMS.find((n) => location.pathname.startsWith(n.path))?.label ?? ""}
+              {NAV_ITEMS.find((n) => location.pathname.startsWith(n.path))?.label ?? "Settings"}
             </Typography>
 
             {/* Takes the user to the Scans page to start a scan there,
@@ -373,10 +386,11 @@ export function AppLayout() {
               variant="contained"
               size="small"
               disableElevation
+              aria-label="Start a scan"
               onClick={() => navigate("/scans")}
               startIcon={isMobile ? undefined : <PlayArrow sx={{ fontSize: "16px !important" }} />}
               sx={{
-                background: "linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)",
+                background: "#365b47",
                 color: "#fff",
                 fontWeight: 700,
                 fontSize: 13,
@@ -384,23 +398,23 @@ export function AppLayout() {
                 px: { xs: 1.25, sm: 2 },
                 minWidth: { xs: 0, sm: "auto" },
                 borderRadius: 1.5,
-                boxShadow: "0 2px 8px rgba(0,212,255,0.25)",
+                boxShadow: "none",
                 "&:hover": {
-                  boxShadow: "0 4px 14px rgba(0,212,255,0.4)",
-                  background: "linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)",
+                  boxShadow: "none",
+                  background: "#365b47",
                 },
               }}
             >
               {isMobile ? <PlayArrow sx={{ fontSize: "18px !important" }} /> : "Start a Scan"}
             </Button>
 
-            <IconButton size="small" sx={{ color: alpha("#fff", 0.6) }}>
-              <Notifications fontSize="small" />
-            </IconButton>
 
             {/* User avatar */}
             <IconButton
               size="small"
+              aria-label="Account menu"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(anchorEl)}
               onClick={(e) => setAnchorEl(e.currentTarget)}
             >
               <Avatar
@@ -410,7 +424,7 @@ export function AppLayout() {
                   fontSize: 13,
                   fontWeight: 700,
                   bgcolor: "primary.main",
-                  background: "linear-gradient(135deg, #00D4FF 0%, #0066FF 100%)",
+                  background: "#365b47",
                 }}
               >
                 {(user?.email?.[0] ?? "U").toUpperCase()}
@@ -424,7 +438,7 @@ export function AppLayout() {
               transformOrigin={{ horizontal: "right", vertical: "top" }}
               anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
               PaperProps={{
-                sx: { bgcolor: "#0D1B2A", border: `1px solid ${alpha("#00D4FF", 0.2)}`, minWidth: 180 },
+                sx: { bgcolor: "#14211b", border: `1px solid ${alpha("#b8d9ba", 0.2)}`, minWidth: 180 },
               }}
             >
               <Box sx={{ px: 2, py: 1 }}>
@@ -435,7 +449,7 @@ export function AppLayout() {
                   {user?.role}
                 </Typography>
               </Box>
-              <Divider sx={{ borderColor: alpha("#00D4FF", 0.1) }} />
+              <Divider sx={{ borderColor: alpha("#b8d9ba", 0.1) }} />
               <MenuItem
                 onClick={handleLogout}
                 sx={{ color: alpha("#fff", 0.7), gap: 1.5, fontSize: 13 }}
@@ -448,8 +462,8 @@ export function AppLayout() {
         </AppBar>
 
         {/* Page content */}
-        <Box sx={{ flex: 1, overflow: "auto", p: { xs: 1.5, sm: 3 } }}>
-          <Outlet />
+        <Box id="main-content" tabIndex={-1} sx={{ flex: 1, minWidth: 0, overflow: "auto", p: { xs: 2, sm: 3, lg: 4 }, width: "100%", maxWidth: 1800, mx: "auto" }}>
+          <RouteBoundary><Outlet /></RouteBoundary>
         </Box>
       </Box>
     </Box>

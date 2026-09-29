@@ -11,8 +11,8 @@ FROM node:20-alpine AS builder
 
 WORKDIR /build
 
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci || npm install
+COPY frontend/package.json frontend/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 
 COPY frontend/ ./
 

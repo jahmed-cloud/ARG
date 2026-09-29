@@ -57,6 +57,15 @@ The full cycle (sign in, fresh start, estate, all subscriptions, portal, tests, 
 
 ## Things that bit us
 
+- Local setup / deployment / architecture: `docs/local-development.md`, `docs/docker-deployment.md`,
+  `docs/architecture.md`. `scripts.configure_env` creates fresh credentials and refuses to overwrite `.env`.
+- Local launchers cache the requirements SHA-256 in `.venv-local/.requirements-local.sha256`; remove that marker
+  to force reinstall after manually changing an environment.
+- Portal Estate refresh admission is serialized across Azure status/subscription awaits. Preserve this when changing
+  background collection so two tabs cannot start duplicate expensive metrics requests.
+- The 2026-09-26 local reconciliation is on `codex/merge-optimize-ui`; validation and remaining Docker/live-Azure
+  checks are recorded in `docs/merge-validation.md`. The integration has not been pushed or published.
+
 - Cost Management rejects custom periods longer than 364 days.
 - KQL: `time` is reserved - `pack('time', ...)` gives a bare `ParserFailure`; bisect `case()` branches to find it.
 - Cosmos DB `TotalRequests` supports only the Count aggregation.

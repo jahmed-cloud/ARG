@@ -18,6 +18,10 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   resource providers and validated VM right-sizing.
 
 ### Added
+- **Podman on Windows.** `scripts/Start-PodmanStack.ps1` builds and starts the Docker stack with Podman Desktop:
+  it builds with `podman build` (podman-compose on Windows drops the `dockerfile:` path) from a clean
+  `git archive` of HEAD (the Windows client ignores `.dockerignore`) and runs the stack rootless, so its ports
+  reach Windows `localhost`. See local-run.md, section 8.
 - **Resource providers.** Each report (01 - Current findings, section 7) shows which providers the subscription
   accepts (registered) and which not, against what it uses: in use, registered but not in use, platform (always
   registered), not registered, registering, and in use but not registered. It lists the "Allowed resource types" /
@@ -30,6 +34,10 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 - `MEMORY.md` is no longer part of the repository; maintainers keep their AI-assistant notes locally.
 
 ### Fixed
+- The backend container stopped at once when its image was built from a Windows checkout
+  (`exec /entrypoint.sh: No such file or directory`, CRLF line endings). `.gitattributes` keeps shell and docker
+  files LF, and the image strips carriage returns from the entrypoint. `.dockerignore` keeps `reports/` and
+  `.venv-local/` out of the build context.
 - **Budgets were compared with the whole subscription.** Resource-group budgets and budgets filtered to a meter (for
   example one per AI model) were judged against the entire subscription's monthly cost, producing "exceeded by
   80,391 %" on a 20 CHF budget. Each budget is now evaluated like Azure does: actual cost at its own scope and with

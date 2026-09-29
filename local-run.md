@@ -148,6 +148,31 @@ The Docker stack (backend, Celery worker, frontend) runs **the same scanner modu
 its findings match the local reports once its images are rebuilt from the same code (`./build-push.sh`, or
 `docker compose up -d --build`). The markdown / HTML reports and the Estate page are local-tool features.
 
+### Podman on Windows
+
+With Podman Desktop the Docker stack runs without Docker. Once: `python -m pip install podman-compose`, and copy
+`.env.example` to `.env` (set `POSTGRES_PASSWORD`, `SECRET_KEY`, `ENCRYPTION_KEY` and `ADMIN_PASSWORD`). Then:
+
+```powershell
+.\scripts\Start-PodmanStack.ps1          # builds the images on the first run, starts http://localhost:3000
+.\scripts\Start-PodmanStack.ps1 -Build   # after committing code changes (the build uses HEAD)
+.\scripts\Start-PodmanStack.ps1 -Down    # stop; the database volume is kept
+```
+
+The script works around three Windows issues: podman-compose drops the `dockerfile:` path (the script builds with
+`podman build`), the Windows client ignores `.dockerignore` (it builds from a clean `git archive` of HEAD), and the
+ports of rootful containers are not forwarded to Windows `localhost` (it runs the stack rootless). Sign in with
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`; scanning needs a service principal per tenant (Settings).
+
+If image pulls fail with `Temporary failure in name resolution` (the WSL DNS relay fails on some VPN and Wi-Fi
+networks), give the Podman machine fixed DNS servers - yours are listed by `Get-DnsClientServerAddress`:
+
+1. `podman machine ssh`, then inside the machine:
+   `sudo sh -c 'printf "\n[network]\ngenerateResolvConf = false\n" >> /etc/wsl.conf'` and `exit`.
+2. `podman machine stop; podman machine start` (WSL reads `wsl.conf` at start).
+3. `podman machine ssh`, then:
+   `sudo sh -c 'rm -f /etc/resolv.conf; printf "nameserver 1.1.1.1\nnameserver 1.0.0.1\n" > /etc/resolv.conf'`.
+
 ## 9. Troubleshooting
 
 | Symptom | Fix |
@@ -159,3 +184,6 @@ its findings match the local reports once its images are rebuilt from the same c
 | Portal shows old behaviour after a code change | Restart the portal (3.1 + 3.2), then reload the page |
 | Portal login fails after setting variables | Open a new terminal (user variables only reach new processes); names are case-sensitive |
 | Estate cost "-" | That subscription has no report yet - run 3.4 or 3.5 |
+| `podman`: `...\.ssh\known_hosts: The system cannot find the path specified` | Create it once: `New-Item -ItemType Directory -Force $HOME\.ssh; if (-not (Test-Path $HOME\.ssh\known_hosts)) { New-Item -ItemType File $HOME\.ssh\known_hosts }` |
+| Podman containers run but `localhost:3000` refuses | They run rootful (ports not forwarded to Windows): start them with `.\scripts\Start-PodmanStack.ps1` (rootless) |
+| `podman version` shows different client and server versions | An older Podman is first on `PATH`; the script prefers Podman Desktop's (`%LOCALAPPDATA%\Programs\Podman`) |

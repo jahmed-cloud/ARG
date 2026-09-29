@@ -226,6 +226,30 @@ every type that reports them.
 | Application Gateway, APIM, Front Door, Firewall, Load balancer | requests / capacity, data processed, bytes |
 | Data Explorer | `CPU`, `IngestionUtilization` |
 
+### VM right-sizing (`vm_rightsizing_opportunity`)
+
+A resize is suggested only when the new size passes **every** check below - the aim is no false positives. Each
+VM gets two candidates: Azure Advisor's own target (when Advisor has one) and one size down in the same family
+(half the vCPUs and memory, never below 2 vCPU). The cheapest candidate that passes wins; an Advisor target that
+fails is named in the finding with the check it failed (for example memory that would reach 88 % on Advisor's
+burstable size).
+
+| Check | Rule | Source |
+|---|---|---|
+| CPU on the target | P95 of 30-minute CPU peaks at most 40 %, P99 at most 80 %, over 30 days | Azure Advisor's user-facing limit (40 %); P99 and 30 days added |
+| Memory on the target | P99 of memory used (from the lowest available memory per 30 minutes) at most 60 % | Azure Advisor, user-facing |
+| Burstable target (B-series) | Projected average at most 80 % of the size's base CPU performance, P95 at most twice the baseline | Azure Advisor burstable rule; baselines from the Microsoft Learn Bv1 / Bsv2 / Basv2 pages |
+| Disk | VM cached / uncached IOPS and bandwidth consumed %, projected on the target's limits, at most 40 % at P95 | Advisor's performance metrics |
+| Network | P95 outbound at most 100 Mbps | Fixed ceiling (bandwidth is not in the SKU catalogue) |
+| Compatibility | Same Premium Storage, Accelerated Networking when a NIC uses it, CPU architecture, Hyper-V generation, disk / NIC counts, not restricted in the region / zone, a temp disk when the current size has one | Advisor rules; Azure resize limitations |
+| Data | At least 90 % of the 30 days measured; VM at least 30 days old | Added |
+| Never suggested | Network virtual appliances, Spot, scale-set / AKS / Databricks VMs, ephemeral OS disks, `arg-ignore` / `arg-reserved` tags | Advisor's own list of cases where resizing does not apply |
+| Value | Retail pay-as-you-go difference; capped at what the VM actually costs, and a VM covered by a reservation or savings plan says so (the resize frees commitment rather than cutting its invoice line); end-of-life series are named | Advisor's limitation note |
+
+The finding states the utilisation now and projected on the new size, the monthly and yearly value, whether Azure
+Advisor agrees, and the steps (owner confirmation, maintenance-window resize with a restart, one week of
+monitoring). Resizing within an availability set may require deallocating the whole set.
+
 **Hourly profile.** For every CPU, memory and percentage metric a second batch reads hourly points: the **CPU
 busiest hour** column, P95 and burst hours in the CPU tooltip, the memory busiest hour, and "... busiest hour N %"
 for capacity / RU / ingestion percentages in the Usage column. A 30-day average alone hides busy hours; a daily

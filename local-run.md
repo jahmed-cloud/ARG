@@ -113,8 +113,13 @@ metric:
 | P95 | 95 % of hours are at or below this |
 | 1-minute peak and burst hours | The highest single minute, and in how many hours a minute reached 90 % |
 
-"Saturated" findings need a busy **hour** (80 %+); one-minute spikes are reported as bursts. Right-sizing needs a
-low average **and** a quiet busiest hour **and** memory that fits one size down.
+"Saturated" findings need a busy **hour** (80 %+); one-minute spikes are reported as bursts.
+
+**VM right-sizing suggestions** (`vm_rightsizing_opportunity`) are validated, not estimated: the new size must keep
+CPU P95 at most 40 %, memory P99 at most 60 %, disk and network headroom and every hardware capability the VM uses,
+over 30 days - Azure Advisor's rules for user-facing workloads, applied to every VM. Advisor's own suggestion is
+checked the same way and named when it fails. The estate's average-CPU list is only a screening list. Details:
+[docs/subscription-analysis.md](docs/subscription-analysis.md).
 
 ## 6. After changing code
 

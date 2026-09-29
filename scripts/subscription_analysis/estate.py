@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from scanners.base.azure_api import point_profile
-from scanners.base.naming import env_from_name, env_from_tags
+from scanners.base.naming import env_from_name, env_from_tags, is_nva_image
 
 ESTATE_DIR = "_estate"
 ESTATE_FILE = "estate.json"
@@ -1363,17 +1363,9 @@ def is_dormant(row: Dict[str, Any]) -> bool:
             and (row.get("usedGB") or 0) > DORMANT_MIN_GB)
 
 
-# Marketplace images of network virtual appliances: vendor-sized and licensed per vCPU, and they report ~100 %
-# memory used, so average CPU says nothing about whether they can be downsized.
-NVA_IMAGE_HINTS = ("fortinet", "fortigate", "paloalto", "vmseries", "checkpoint", "check-point", "cisco", "csr1000v",
-                   "asav", "barracuda", "f5-big-ip", "sophos", "vsrx", "juniper", "netscaler", "citrix-adc", "versa",
-                   "silver-peak", "silverpeak", "aviatrix", "vyos", "pfsense", "opnsense", "zscaler", "watchguard",
-                   "arista", "meraki", "cloudguard", "vseries")
-
-
 def is_nva(row: Dict[str, Any]) -> bool:
-    image = f"{row.get('imageOffer') or ''} {row.get('imageSku') or ''}".lower()
-    return any(hint in image for hint in NVA_IMAGE_HINTS)
+    """Network virtual appliance (firewall, router) - never a right-sizing candidate."""
+    return is_nva_image(row.get("imageOffer"), row.get("imageSku"))
 
 
 def human(n: Optional[float]) -> str:
@@ -1678,8 +1670,27 @@ def _rightsizing_note(r: Dict[str, Any]) -> str:
     return "; ".join(notes) or "one size down"
 
 
-def _utilisation(resources: List[Dict[str, Any]]) -> List[str]:
-    """Running VMs by 30-day average CPU, and the largest ones that barely use their CPU (right-sizing candidates)."""
+def _validated_rightsizing(resources: List[Dict[str, Any]], suggestions: List[Dict[str, Any]]) -> List[str]:
+    """VM resizes that passed every check of vm_rightsizing_scanner (30 days of CPU, memory, disk, network)."""
+    by_id = {r["id"].lower(): r for r in resources}
+    rows = sorted((s for s in suggestions if s.get("type") == "vm_rightsizing_opportunity"),
+                  key=lambda s: -(s.get("savingsUsd") or 0))
+    if not rows:
+        return []
+    lines = [f"### Validated right-sizing suggestions ({len(rows)})", "",
+             "Each resize passed every check of the VM right-sizing scanner: on the new size, CPU P95 at most 40 % "
+             "and memory P99 at most 60 % over 30 days (Azure Advisor's limits for user-facing workloads), disk and "
+             "network headroom, and the same Premium Storage / Accelerated Networking / temp-disk capabilities. "
+             "Details and the evidence are in each subscription's report.", "",
+             _table(["VM", "Suggestion", "Est. saving / month (USD)", "Subscription"], [
+                 [s["resourceName"], s["title"].split(": ", 1)[-1], f"{s['savingsUsd']:,.0f}" if s.get("savingsUsd") else "0",
+                  (by_id.get((s.get("resourceId") or "").lower()) or {}).get("subscription") or s.get("subscriptionId")]
+                 for s in rows], ["---", "---", "---:", "---"]), ""]
+    return lines
+
+
+def _utilisation(resources: List[Dict[str, Any]], suggestions: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """Running VMs by 30-day average CPU, validated right-sizing suggestions, then a low-CPU screening list."""
     vms = [r for r in resources if r["type"] == "microsoft.compute/virtualmachines" and r["state"] == "running"]
     if not vms:
         return []
@@ -1688,9 +1699,12 @@ def _utilisation(resources: List[Dict[str, Any]]) -> List[str]:
     candidates, excluded = rightsizing(vms)
     lines = ["### Running VMs by average CPU (last 30 days)", "",
              _table(["Average CPU", "VMs"], [[b, bands[b]] for b in order if bands.get(b)], ["---", "---:"]), ""]
+    lines += _validated_rightsizing(resources, suggestions or [])
     if candidates or excluded:
-        lines += [f"### Right-sizing candidates: {len(candidates)} running VM(s) with {RIGHTSIZE_MIN_VCPU}+ vCPU, under "
-                  f"{RIGHTSIZE_MAX_CPU:.0f} % average CPU and under {RIGHTSIZE_MAX_MEM:.0f} % memory used", ""]
+        lines += [f"### Right-sizing screening: {len(candidates)} running VM(s) with {RIGHTSIZE_MIN_VCPU}+ vCPU, under "
+                  f"{RIGHTSIZE_MAX_CPU:.0f} % average CPU and under {RIGHTSIZE_MAX_MEM:.0f} % memory used", "",
+                  "_A screening list from averages, not a recommendation: only the validated suggestions above passed "
+                  "the full checks._", ""]
     if candidates:
         lines += [_table(["VM", "Size", "vCPU / RAM", "Avg CPU", "Busiest hour", "1-min peak", "Avg memory",
                           "Last 30 days", "Note", "Subscription"], [
@@ -1841,7 +1855,7 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
     lines += _sizes(resources, "microsoft.azurearcdata/sqlserverinstances",
                     "Arc SQL Server instances by version · edition · vCores")
     lines += _sizes(resources, "microsoft.sqlvirtualmachine/sqlvirtualmachines", "SQL Server on VMs by edition · license")
-    lines += _utilisation(resources)
+    lines += _utilisation(resources, suggestions)
     lines += _usage_overview(resources, estate.get("usage"))
 
     regions = Counter(r["location"] or "(none)" for r in resources)

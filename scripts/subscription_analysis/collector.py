@@ -11,7 +11,14 @@ from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from scanners.base.azure_api import ArmClient, get_resource_costs, query_resource_graph, run_cost_query
+from scanners.base.azure_api import (
+    ArmClient,
+    AzureAuthExpiredError,
+    FailFastCredential,
+    get_resource_costs,
+    query_resource_graph,
+    run_cost_query,
+)
 from scanners.base.base_scanner import ScanContext, ScannerRegistry
 
 from scripts.subscription_analysis.estate import DETAIL_COLUMNS, RESOURCE_DETAILS
@@ -268,6 +275,7 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
     load_scanners()
     selected = [n for n in ScannerRegistry.all() if not scanners or n in scanners]
     total = len(selected) + 3
+    credential = FailFastCredential(credential)
     arm = ArmClient(credential)
     try:
         progress("Resolving subscription", 0, total)
@@ -283,6 +291,10 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
             logger.info("Querying Cost Management")
             await collect_costs(context, data)
         await run_scanners(context, scanners, config or {}, data, progress=progress, step_offset=3, total_steps=total)
+        if credential.error:
+            # Scanners swallow per-call errors as warnings; an expired sign-in would
+            # otherwise produce a silently incomplete report.
+            raise AzureAuthExpiredError(credential.error + " No report was written for this run.")
         return data
     finally:
         arm.close()

@@ -204,7 +204,8 @@ reports/
 ```
 
 Your account needs **Reader**, **Cost Management Reader** and **Security Reader** on each subscription.
-Savings estimates are calculated in USD (list prices or actual `CostUSD`) and shown in the billing
+Savings estimates are calculated in USD at each resource's own amortized cost, so negotiated discounts,
+reservations and savings plans count (list prices only when a resource has no cost data), and shown in the billing
 currency at the subscription's implied exchange rate. Re-running a subscription replaces its folder; subscriptions
 that share a display name get `<name>_<first 8 of ID>/` so they never overwrite each other.
 Reports contain resource IDs and principal IDs - `reports/` is git-ignored. Entra ID (Graph) scanners
@@ -218,7 +219,8 @@ from the Microsoft FinOps toolkit. It reads cost data **live** at scan time, str
 - **Cost Management Query API** (`Microsoft.CostManagement/query`) - 12-month cost by service, and 30-day
   cost by resource group, meter and resource
 - **Consumption Budgets API** (`Microsoft.Consumption/budgets`) - budgets and overspend
-- **Azure Retail Prices API** (`prices.azure.com`, public, USD) - list prices for savings estimates
+- **Azure Retail Prices API** (`prices.azure.com`, public, USD) - list prices, the starting point for savings
+  estimates (scaled to each resource's actual cost)
 - **Resource Graph** and **Azure Monitor metrics** - inventory and 30-day usage for idle detection
 
 The two tools answer different questions and work well together:

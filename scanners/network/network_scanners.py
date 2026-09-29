@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from scanners.base.azure_api import price_at_actual_cost
 from scanners.base.base_scanner import (
     BaseScanner,
     ScanContext,
@@ -83,7 +84,7 @@ class UnusedPublicIPScanner(BaseScanner):
             saving = monthly_cost if is_static else 0.0
             severity = SeverityLevel.HIGH if is_static else SeverityLevel.MEDIUM
 
-            findings.append(self.make_finding(
+            findings.append(await price_at_actual_cost(context, self.make_finding(
                 finding_type="unused_public_ip",
                 title=f"Unattached public IP: {ip['name']}",
                 description=(
@@ -117,7 +118,7 @@ class UnusedPublicIPScanner(BaseScanner):
                 },
                 estimated_monthly_savings_usd=saving,
                 caf_control="Cost Optimization",
-            ))
+            )))
 
         return ScanOutput(
             findings=findings,
@@ -308,7 +309,7 @@ class EmptyLoadBalancerScanner(BaseScanner):
                 monthly_cost = 0.0
                 severity = SeverityLevel.LOW
 
-            findings.append(self.make_finding(
+            findings.append(await price_at_actual_cost(context, self.make_finding(
                 finding_type="empty_load_balancer",
                 title=f"Empty load balancer: {lb['name']}",
                 description=(
@@ -339,7 +340,7 @@ class EmptyLoadBalancerScanner(BaseScanner):
                 evidence={"sku": sku, "rule_count": rule_count},
                 estimated_monthly_savings_usd=monthly_cost,
                 caf_control="Cost Optimization",
-            ))
+            )))
 
         return ScanOutput(
             findings=findings,
@@ -421,7 +422,7 @@ class EmptyApplicationGatewayScanner(BaseScanner):
             is_v2 = "v2" in tier
             monthly_cost = self.MONTHLY_COST_V2 if is_v2 else self.MONTHLY_COST_V1
 
-            findings.append(self.make_finding(
+            findings.append(await price_at_actual_cost(context, self.make_finding(
                 finding_type="empty_application_gateway",
                 title=f"Empty Application Gateway: {agw['name']}",
                 description=(
@@ -451,7 +452,7 @@ class EmptyApplicationGatewayScanner(BaseScanner):
                 evidence={"tier": tier, "is_v2": is_v2},
                 estimated_monthly_savings_usd=monthly_cost,
                 caf_control="Cost Optimization",
-            ))
+            )))
 
         return ScanOutput(
             findings=findings,

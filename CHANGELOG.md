@@ -6,6 +6,13 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Savings at your own price.** Savings that were list-price estimates are now valued at the resource's own
+  30-day amortized cost, so negotiated discounts, reservations and savings plans count. Removals (idle IoT Hub,
+  unattached disk, old snapshot, unused or orphaned public IP, public IP next to Bastion, empty load balancer and
+  Application Gateway, unused Private Link DNS zone) save what the resource actually costs; price changes (App
+  Service plan generation) are scaled to it, never above the list-price difference. Without cost data the list
+  estimate stays, labelled as such (`saving_basis`, `list_price_saving_usd`, `amortized_cost_usd_30d` in the
+  evidence). See the guide, section 5a-2.
 - **Cost basis is amortized cost.** Actual cost put reservation and savings-plan purchases on the subscription that
   bought them, so a VM covered by a savings plan bought elsewhere showed ~2 CHF a month instead of ~147 CHF, and
   the buying subscription looked expensive. Per-resource cost, subscription totals, trends, savings and the estate

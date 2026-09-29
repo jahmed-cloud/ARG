@@ -23,6 +23,7 @@ from scanners.base.azure_api import (
     cost_for,
     gather_limited,
     get_resource_costs,
+    price_at_actual_cost,
 )
 from scanners.base.base_scanner import (
     ScanContext,
@@ -76,7 +77,7 @@ class IdleIoTHubScanner(PostureScanner):
                 continue
             sku, units = hub.get("sku_name") or "S1", hub.get("units") or 1
             saving = IOT_HUB_UNIT_USD.get(sku, 0.0) * units
-            findings.append(self.resource_finding(
+            findings.append(await price_at_actual_cost(context, self.resource_finding(
                 hub,
                 finding_type="idle_iot_hub",
                 title=f"Idle IoT Hub ({sku}): {hub['name']}",
@@ -90,7 +91,7 @@ class IdleIoTHubScanner(PostureScanner):
                 evidence={"max_connected_devices_30d": 0, "max_daily_messages_30d": 0, "sku": sku, "units": units},
                 estimated_monthly_savings_usd=saving,
                 caf_control="Cost Optimization",
-            ))
+            )))
         return ScanOutput(findings=findings, resources_scanned=len(hubs), warnings=warnings)
 
     def _mock_data(self) -> List[Dict[str, Any]]:

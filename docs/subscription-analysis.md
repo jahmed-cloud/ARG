@@ -132,8 +132,8 @@ reports/
 
 - Findings are numbered `F-001…` by severity then savings. The same reference is used in every file.
 - **Savings waves:** wave 1 is no-regret cleanup, wave 2 is optimisation, and wave 3 is structural (no direct saving).
-- **Currency:** savings are computed in USD (list prices or actual `CostUSD`) and shown in the billing currency at the
-  subscription's implied rate.
+- **Currency:** savings are computed in USD - at each resource's own amortized cost where it is known, otherwise at list
+  prices (see *Savings at your own price* in 5a-2) - and shown in the billing currency at the subscription's implied rate.
 - Re-running a subscription **replaces** its generated files. Copy the folder first if you want history.
 - **Same display name:** each folder records its owner in `.subscription-id`, so subscriptions that share a name
   (e.g. several "Visual Studio Professional Subscription"s) never overwrite each other. The index and the portal show
@@ -177,6 +177,21 @@ Actual cost is still used where it is the right measure: **budgets** (Azure eval
 budget's own scope - subscription or resource group - and filter, for example one AI model's meter) and
 **Marketplace SaaS** (purchases are not amortized). VM right-sizing reads both: when most of a VM's amortized cost is
 not invoiced as pay-as-you-go, it is covered by a commitment and the resize frees that commitment for other VMs.
+
+**Savings at your own price.** A saving is valued at what the resource actually costs you - its amortized cost over
+the last 30 days, so negotiated discounts, reservations and savings plans count - not at the public list price:
+
+| Recommendation | Saving |
+|---|---|
+| Remove it (idle, unattached, orphaned, empty) | Its 30-day amortized cost. This can be above the list estimate, e.g. an idle WAF_v2 Application Gateway with capacity units |
+| Change its price (VM size, App Service plan generation) | The list-price difference scaled by actual / list cost (your discount), never more than the list-price difference |
+| No cost data (no Cost Management access, or no cost row for the resource yet) | The list-price estimate, labelled as such |
+
+Each finding's evidence records `saving_basis` (`amortized cost, last 30 days` or `list price`),
+`list_price_saving_usd` and `amortized_cost_usd_30d`, and the description gives both figures when they differ.
+Savings that already start from the resource's own cost (idle storage and SQL, one size down, AI accounts,
+Marketplace SaaS, SQL Hyperscale storage) are unchanged. Storage-account sprawl stays a list-price estimate: its
+saving is the Defender for Storage price per account.
 
 ## 5a-3. Resource providers
 

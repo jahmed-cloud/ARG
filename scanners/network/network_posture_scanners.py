@@ -27,6 +27,7 @@ from scanners.base.azure_api import (
     cost_for,
     get_resource_costs,
     get_retail_price,
+    price_at_actual_cost,
 )
 from scanners.base.base_scanner import (
     ScanContext,
@@ -395,7 +396,7 @@ class PublicIPOnOrphanedNICScanner(PostureScanner):
         findings = []
         for pip in pips:
             sku = (pip.get("sku_name") or "basic").lower()
-            findings.append(self.resource_finding(
+            findings.append(await price_at_actual_cost(context, self.resource_finding(
                 pip,
                 finding_type="public_ip_on_orphaned_nic",
                 title=f"Public IP on orphaned NIC: {pip['name']}",
@@ -418,7 +419,7 @@ class PublicIPOnOrphanedNICScanner(PostureScanner):
                 evidence={"nic_name": pip.get("nic_name"), "sku": sku, "ip_address": pip.get("ip_address")},
                 estimated_monthly_savings_usd=self.MONTHLY_USD.get(sku, 3.65),
                 caf_control="Cost Optimization",
-            ))
+            )))
         return ScanOutput(findings=findings, resources_scanned=len(pips))
 
     def _mock_data(self) -> List[Dict[str, Any]]:
@@ -480,7 +481,7 @@ class VMPublicIPWithBastionScanner(PostureScanner):
                 continue
             vm_name = (nic.get("vm_id") or "").split("/")[-1]
             pip_name = (nic.get("pip_id") or "").split("/")[-1]
-            findings.append(self.make_finding(
+            findings.append(await price_at_actual_cost(context, self.make_finding(
                 finding_type="vm_public_ip_bypasses_bastion",
                 title=f"VM public IP next to Bastion: {vm_name}",
                 description=(
@@ -503,7 +504,7 @@ class VMPublicIPWithBastionScanner(PostureScanner):
                           "bastion": bastion["bastion"], "bastion_sku": bastion.get("sku")},
                 nist_control="AC-17",
                 estimated_monthly_savings_usd=3.65,
-            ))
+            ), cost_resource_id=nic.get("pip_id")))   # the saving is the public IP, not the VM
         return ScanOutput(findings=findings, resources_scanned=len(nics))
 
     async def _rows(self, context: ScanContext, query: str, kind: str) -> List[Dict[str, Any]]:
@@ -574,6 +575,7 @@ class PrivateDnsZoneWithoutEndpointsScanner(PostureScanner):
             )
             for z in zones
         ]
+        findings = [await price_at_actual_cost(context, f) for f in findings]
         return ScanOutput(findings=findings, resources_scanned=len(zones))
 
     def _mock_data(self) -> List[Dict[str, Any]]:

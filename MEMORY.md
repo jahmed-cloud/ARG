@@ -49,6 +49,9 @@ The full cycle (sign in, fresh start, estate, all subscriptions, portal, tests, 
 - **Utilisation** = average + busiest hour + P95 + one-minute peak / burst hours (hourly points,
   `azure_api.point_profile`). Saturated needs a busy hour (80 %+); one-minute peaks are bursts. Over-provisioned
   plans: P95 < 10 %, busiest hour < 30 %, memory < 40 %.
+- **VM right-sizing** (`vm_rightsizing_scanner`) = Advisor's documented rules with the user-facing limits for all
+  VMs (target CPU P95 <= 40 %, memory P99 <= 60 %) + disk / network / capability / 30-day checks; candidates are
+  Advisor's target and one size down; value capped at actual cost. No false positives beats more suggestions.
 - **No emoji** in code, reports, docs or UI - plain words ("Critical", "Warning:").
 - **No blank cells:** reports drop all-blank columns (`md_table(drop_empty=True)`), show `0.00` for no charge
   (`Model.cost30`) and an Impact label; the Estate page renders empty values as a muted `-` with a reason tooltip.

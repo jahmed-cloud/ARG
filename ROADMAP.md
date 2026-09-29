@@ -5,7 +5,7 @@ This reflects what's actually planned, based on known gaps in the current build 
 ## Near-term
 
 - **Estate history and trend.** The estate inventory (`reports/_estate/`) is a snapshot: keep dated copies and show new / removed resources, usage and cost trend between refreshes.
-- **P95 rightsizing.** The estate has 30-day averages and peaks for CPU and memory; add percentiles and SKU recommendations with prices for VMs and App Service plans.
+- **Rightsizing beyond VMs.** VMs have validated right-sizing (30-day percentiles, Advisor cross-check, prices); scale-set instance counts and current-series targets for end-of-life sizes are next.
 - **More usage metrics.** Managed-disk IOPS / throughput vs provisioned, AKS node pools, VPN / ExpressRoute bandwidth, App Insights and Log Analytics ingestion, and caching metrics between refreshes to make them faster.
 - **Configuration-level Terraform drift detection.** Today, drift detection only compares *existence* (managed / unmanaged / missing). It doesn't yet detect when a resource exists in both Terraform state and Azure but has drifted in *configuration* (e.g. a tag or SKU changed out-of-band). `TerraformState.drifted_count` is wired up but always reports `0` until this is built.
 - **Dormant-user × privileged-role cross-reference.** `dormant_user_scanner` currently always reports `is_privileged=False` for real (non-mock) results - it doesn't cross-reference against `permanent_global_admin_scanner`'s role membership data, so a dormant account that also holds Global Admin won't get the elevated severity it should. Needs either a shared lookup within one scan pass or a second targeted Graph call.

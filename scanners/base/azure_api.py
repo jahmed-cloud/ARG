@@ -447,6 +447,157 @@ async def get_retail_price(context: Any, odata_filter: str, *, fallback: Optiona
     return price if price is not None else fallback
 
 
+_VM_PRICE_CACHE: Dict[str, Optional[float]] = {}
+HOURS_BILLED_PER_MONTH = 730
+
+
+def _size_key(name: str) -> str:
+    """'Standard_D8als_v6' and 'D8als v6' -> 'd8als v6'."""
+    name = name.strip()
+    name = name[len("Standard_"):] if name.lower().startswith("standard_") else name
+    return name.replace("_", " ").lower()
+
+
+async def vm_hourly_usd(context: Any, size: str, region: str, windows: bool) -> Optional[float]:
+    """
+    Pay-as-you-go retail price (USD/hour) of one VM size: the exact size (not Spot / Low Priority) and the Windows
+    meter only for Windows without Azure Hybrid Benefit. None offline or when the size has no price in the region.
+    """
+    if getattr(context, "arm_client", None) is None or not size or not region:
+        return None
+    key = f"{size.lower()}|{region.lower()}|{windows}"
+    if key in _VM_PRICE_CACHE:
+        return _VM_PRICE_CACHE[key]
+
+    def _fetch() -> Optional[float]:
+        import httpx
+
+        odata = (f"serviceName eq 'Virtual Machines' and armRegionName eq '{region.lower()}' "
+                 f"and armSkuName eq '{size}' and priceType eq 'Consumption'")
+        response = httpx.get(RETAIL_PRICES_URL, params={"$filter": odata}, timeout=30)
+        response.raise_for_status()
+        wanted = _size_key(size)
+        for item in response.json().get("Items", []):
+            # skuName is "Standard_D8s_v5" for some series and "D8als v6" for others; "... Spot" / "... Low
+            # Priority" rows never match.
+            if _size_key(item.get("skuName") or "") != wanted:
+                continue
+            if item.get("unitOfMeasure") != "1 Hour":
+                continue
+            if (item.get("productName") or "").endswith("Windows") == windows:
+                return float(item["retailPrice"])
+        return None
+
+    try:
+        price = await asyncio.to_thread(_fetch)
+    except Exception as exc:
+        logger.info("VM price lookup failed (%s %s): %s", size, region, exc)
+        price = None
+    _VM_PRICE_CACHE[key] = price
+    return price
+
+
+async def compute_skus(context: Any, subscription_id: str, location: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Compute SKU catalogue of one region as seen by the subscription: {lower(size): {"name", "family",
+    "caps": {capability: value}, "restricted": bool, "restricted_zones": set}}. Cached per scan.
+    """
+    cache = getattr(context, "cache", None)
+    key = f"skus:{subscription_id}:{location.lower()}"
+    if cache is not None and key in cache:
+        return cache[key]
+    items = await context.arm_client.get_all(f"/subscriptions/{subscription_id}/providers/Microsoft.Compute/skus",
+                                             "2021-07-01", {"$filter": f"location eq '{location.lower()}'"})
+    out: Dict[str, Dict[str, Any]] = {}
+    for s in items:
+        if s.get("resourceType") != "virtualMachines" or not s.get("name"):
+            continue
+        restricted, zones = False, set()
+        for r in s.get("restrictions") or []:
+            if r.get("reasonCode") != "NotAvailableForSubscription":
+                continue
+            if r.get("type") == "Location":
+                restricted = True
+            elif r.get("type") == "Zone":
+                zones |= set((r.get("restrictionInfo") or {}).get("zones") or [])
+        out[s["name"].lower()] = {"name": s["name"], "family": s.get("family") or "",
+                                  "caps": {c.get("name"): c.get("value") for c in s.get("capabilities") or []},
+                                  "restricted": restricted, "restricted_zones": zones}
+    if cache is not None:
+        cache[key] = out
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Credential guard
+# ---------------------------------------------------------------------------
+
+class AzureAuthExpiredError(RuntimeError):
+    """The az login (or other) credential stopped issuing tokens during a run."""
+
+
+class FailFastCredential:
+    """
+    Wraps a credential so that after the FIRST failed get_token every later call
+    fails immediately. Without it an expired `az login` (e.g. Conditional Access
+    sign-in frequency) makes each of hundreds of ARM calls spawn `az` and wait for
+    it to time out, so a run crawls for many minutes and ends with a partial report.
+
+    get_token also has a hard timeout: on Windows, with an expired session,
+    `az account get-access-token` can block forever waiting for an interactive
+    prompt, which would otherwise hang the whole run.
+    """
+
+    TIMEOUT_SECONDS = 60
+
+    def __init__(self, inner: Any, timeout: float = TIMEOUT_SECONDS):
+        self._inner = inner
+        self._timeout = timeout
+        self.error: Optional[str] = None
+        self._lock = threading.Lock()
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> Any:
+        if self.error is not None:
+            raise AzureAuthExpiredError(self.error)
+        try:
+            return call_with_timeout(self._inner.get_token, self._timeout, *scopes, **kwargs)
+        except Exception as exc:
+            with self._lock:
+                if self.error is None:
+                    if isinstance(exc, TimeoutError):
+                        reason = f"the Azure CLI did not return a token within {int(self._timeout)}s"
+                    else:
+                        reason = (str(exc).strip().splitlines() or [exc.__class__.__name__])[-1][:200]
+                    self.error = (f"Azure sign-in is no longer valid ({reason}). "
+                                  f"Run 'az login' in a terminal and run the analysis again.")
+            raise AzureAuthExpiredError(self.error) from exc
+
+    def close(self) -> None:
+        close = getattr(self._inner, "close", None)
+        if close:
+            close()
+
+
+def call_with_timeout(fn, timeout: float, *args: Any, **kwargs: Any) -> Any:
+    """Run fn in a daemon thread; raise TimeoutError if it does not finish in time (the thread is abandoned)."""
+    result: Dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except BaseException as exc:  # re-raised in the caller's thread
+            result["error"] = exc
+
+    worker = threading.Thread(target=target, daemon=True, name="token-call")
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"call did not finish within {timeout}s")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
 # ---------------------------------------------------------------------------
 # Small shared utilities
 # ---------------------------------------------------------------------------

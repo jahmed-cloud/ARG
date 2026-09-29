@@ -5,6 +5,31 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Validated VM right-sizing** (`vm_rightsizing_scanner`, finding `vm_rightsizing_opportunity`). Based on Azure
+  Advisor's documented resize criteria with the stricter user-facing limits for every VM: over 30 days of 30-minute
+  windows, the target size must keep CPU P95 at or below 40 % (P99 at or below 80 %), memory P99 at or below 60 %,
+  disk use at or below 40 % of its limits and network under 100 Mbps; keep Premium Storage, Accelerated Networking,
+  CPU architecture, Hyper-V generation, the temp disk and the disk / NIC counts; be offered in the region and be
+  cheaper. Burstable targets must also stay under their documented base CPU performance. Candidates are Azure
+  Advisor's own target and one size down in the same family; the cheapest that passes wins, and Advisor targets
+  that fail are named with the failed check. Network appliances, Spot, scale-set / AKS / Databricks VMs, ephemeral
+  OS disks and VMs younger than 30 days are never suggested. The value is the retail price difference, capped at
+  the VM's actual cost; commitment-covered VMs and end-of-life series are called out. The estate overview lists
+  the validated suggestions first; its average-CPU list is now labelled a screening list.
+
+### Fixed
+- VM retail prices match both price-list name formats (`Standard_D8s_v5` and `D8als v6`).
+- **An expired `az login` no longer produces a partial report.** Conditional Access can expire the CLI token in the
+  middle of a run; every scanner then logged warnings and the report was written with holes. The credential now
+  fails fast after the first token error (`FailFastCredential`) and the run stops with "run az login again"; token
+  calls time out after 60 s instead of hanging when `az` waits for an interactive prompt.
+- The local portal no longer hangs on start-up or page loads when the Azure CLI session has expired (20 s token
+  timeout, clear message to run `az login`).
+- `docs/run-locally.md` (portal start, sign-in, reports, stop, troubleshooting) - `local-run.md` linked to it.
+- `python -m scripts.generate_scanner_catalog` regenerates `docs/scanner-catalog.md` from the scanner registry.
+- `.env` is no longer tracked (it only held the `.env.example` placeholders; `.gitignore` already excluded it).
+
 ## [0.2] - 2026-09-28
 
 ### Fixed

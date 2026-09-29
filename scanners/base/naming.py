@@ -18,6 +18,19 @@ ENV_TAG_KEYS = ("environment", "env", "environmen")
 NON_PROD_PHRASE = re.compile(r"non[\s_-]*prod")
 
 
+# Marketplace images of network virtual appliances: vendor-sized and licensed per vCPU, and they report ~100 %
+# memory used, so utilisation says nothing about whether they can be downsized.
+NVA_IMAGE_HINTS = ("fortinet", "fortigate", "paloalto", "vmseries", "checkpoint", "check-point", "cisco", "csr1000v",
+                   "asav", "barracuda", "f5-big-ip", "sophos", "vsrx", "juniper", "netscaler", "citrix-adc", "versa",
+                   "silver-peak", "silverpeak", "aviatrix", "vyos", "pfsense", "opnsense", "zscaler", "watchguard",
+                   "arista", "meraki", "cloudguard", "vseries")
+
+
+def is_nva_image(offer: Optional[str], sku: Optional[str] = None) -> bool:
+    image = f"{offer or ''} {sku or ''}".lower()
+    return any(hint in image for hint in NVA_IMAGE_HINTS)
+
+
 def name_tokens(name: str) -> List[str]:
     """Split on any non-alphanumeric, and also on '0' separators used where '-' is illegal (storage/SQL names)."""
     tokens = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t]

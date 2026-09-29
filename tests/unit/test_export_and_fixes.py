@@ -118,3 +118,58 @@ def test_backup_vault_with_protected_items_is_not_orphaned(items, expected):
     assert output.finding_count == expected
     if expected:
         assert output.findings[0].title.startswith("Empty vault")
+
+
+def test_fail_fast_credential_stops_calling_az_after_first_failure():
+    from scanners.base.azure_api import AzureAuthExpiredError, FailFastCredential
+
+    class Expiring:
+        calls = 0
+
+        def get_token(self, *scopes, **kwargs):
+            Expiring.calls += 1
+            raise RuntimeError("AADSTS70043: The refresh token has expired due to sign-in frequency checks")
+
+    cred = FailFastCredential(Expiring())
+    for _ in range(5):
+        with pytest.raises(AzureAuthExpiredError, match="az login"):
+            cred.get_token("https://management.azure.com/.default")
+    assert Expiring.calls == 1 and "AADSTS70043" in cred.error
+
+
+def test_hanging_token_call_times_out_instead_of_blocking():
+    import threading
+
+    from scanners.base.azure_api import AzureAuthExpiredError, FailFastCredential, call_with_timeout
+
+    never = threading.Event()
+
+    class Hanging:
+        def get_token(self, *scopes, **kwargs):
+            never.wait(5)
+            return SimpleNamespace(token="late", expires_on=0)
+
+    with pytest.raises(TimeoutError):
+        call_with_timeout(Hanging().get_token, 0.2, "scope")
+    cred = FailFastCredential(Hanging(), timeout=0.2)
+    with pytest.raises(AzureAuthExpiredError, match="did not return a token"):
+        cred.get_token("https://management.azure.com/.default")
+    never.set()
+
+
+def test_portal_status_reports_hanging_az_cli():
+    import threading
+
+    from scripts.local_portal.azure_session import AzureCliSession
+
+    never = threading.Event()
+
+    class Hanging:
+        def get_token(self, *scopes, **kwargs):
+            never.wait(5)
+
+    session = AzureCliSession(credential_factory=Hanging)
+    session.TOKEN_TIMEOUT_SECONDS = 0.2
+    status = session.status()
+    never.set()
+    assert status["signed_in"] is False and "az login" in status["error"]

@@ -173,7 +173,8 @@ python -m scripts.local_portal                                                  
   transactions, requests, connections, messages, runs, calls, tokens, used capacity) with an **idle** flag, for 31
   resource types. CPU and other percentages come with the **busiest hour**, P95 and one-minute bursts, so a 1.5 %
   average and a 100 % portal peak are shown together; idle storage that still holds data is flagged **dormant**, and
-  right-sizing skips network appliances, memory-bound and busy-hour VMs. Filter by any of these, click breakdowns
+  VM right-sizing suggestions are validated against 30 days of CPU, memory, disk and network on the new size
+  (Azure Advisor's user-facing limits, applied to every VM) and cross-checked with Advisor. Filter by any of these, click breakdowns
   to drill down, switch to the Suggestions view, export CSV and share filtered links. [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#5c-estate-inventory-all-subscriptions).
 
 - **Portal login** is a simple local username/password that only protects the portal:

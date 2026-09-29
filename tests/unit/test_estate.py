@@ -435,7 +435,7 @@ def test_rightsizing_skips_appliances_and_memory_bound_vms():
     by = {r["name"]: r for r in estate["resources"]}
     assert by["fw01"]["nva"] and not by["app01"]["nva"]
     md = render_estate_markdown(estate)
-    section = md.split("### Right-sizing candidates")[1].split("###")[0]
+    section = md.split("### Right-sizing screening")[1].split("###")[0]
     assert ": 3 running VM(s)" in section
     assert "| app01 |" in section and "| burst01 |" in section and "| nomem01 |" in section
     assert "fw01" not in section and "search01" not in section and "busy01" not in section

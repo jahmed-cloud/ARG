@@ -37,6 +37,8 @@ The mobile shell switches to an overlay below 900px. It reserves no sidebar widt
 
 ## Local portal and CLI
 
+The worker authenticates per tenant with the stored service principal (`ClientSecretCredential`); `scripts.connect_azure` creates that principal from the operator's `az login` and registers it through the API, and the secret can be replaced in place with `PATCH /tenants/{id}`.
+
 `scripts.subscription_analysis` uses the Azure CLI credential from `az login`. It collects paginated inventory, runs scanners and writes subscription-specific files under `reports/`. The local FastAPI/Jinja portal adds a loopback web UI and a bounded thread pool for analyses. It does not require PostgreSQL, Redis, Docker, or the React build.
 
 Local portal sessions are in memory, use HttpOnly/SameSite cookies, and reset when the process restarts. Host/origin guards and report path containment remain in place. The portal password does not authenticate to Azure. Login throttling runs in a thread so it does not block the async server. Subscription filtering and selection run in the browser; job status polling prevents overlapping requests and reports connection failures inline.

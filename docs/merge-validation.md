@@ -85,3 +85,13 @@ The Docker UI is a separate React application from the Python local portal. Its 
 Review fixes: dashboard queries no longer share an AsyncSession concurrently; all summary queries honor subscription scope; cost history uses ResourceCost records rather than fabricated zeros; unassessed categories retain null assessment timestamps; history date validation returns 422; severity ordering is explicit. The upstream percentile helper now follows its documented nearest-rank definition.
 
 Validation: 236 Python tests passed, including upstream storage/utilisation cases and new dashboard/percentile regressions. TypeScript/Vite production build and targeted Python lint passed. Existing dependency deprecation warnings remain. This review does not establish tenant-level authorization isolation: the existing application uses authenticated, role-based workspace access. Live Azure scans, OAuth, SMTP and remediation were not exercised.
+
+## 2026-09-29 upstream merge, deployment and Azure connection
+
+Committed the local redesign (`3341345`) and merged nine upstream commits through `9f8b159` as a real two-parent merge (`da07cbd`). Conflicts in `.dockerignore`, `.gitattributes`, `CHANGELOG.md` and `docker/Dockerfile.backend` kept both sides; `MEMORY.md` is untracked as upstream decided and kept locally. Pushed to `origin main`.
+
+Deployed locally with `docker compose up -d --build`: backend, worker and beat images rebuilt from the merged code; the frontend was recreated after its health check was fixed (`127.0.0.1` instead of `localhost`). All services healthy; administrator sign-in through the frontend proxy returned 200.
+
+Added `scripts.connect_azure` (one-command Azure connection) and in-place tenant credential updates. Its read-only Azure CLI calls (account, principal lookup, role listing) were exercised against a real tenant; creating the principal, role assignments and registration are covered by offline tests with a fake CLI and API, not yet run end to end.
+
+Validation: 281 Python tests passed; `ruff check --select F,E9 scripts tests` passed; frontend production build passed.

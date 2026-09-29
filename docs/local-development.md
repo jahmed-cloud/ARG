@@ -103,7 +103,7 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:5173>; backend docs are at <http://localhost:8000/docs>. Sign in using `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env`. Vite proxies `/api/v1` to port 8000; set `VITE_BACKEND_URL` before starting Vite when that port differs. The full stack uses encrypted tenant credentials entered in Settings, not the local portal's CLI credential.
+Open <http://localhost:5173>; backend docs are at <http://localhost:8000/docs>. Sign in using `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env`. Vite proxies `/api/v1` to port 8000; set `VITE_BACKEND_URL` before starting Vite when that port differs. The full stack uses encrypted tenant credentials, not the local portal's CLI credential: `python -m scripts.connect_azure --url http://localhost:5173` registers them from your `az login` (or enter them in Settings; see [Connect Azure](connect-azure.md)).
 
 ## Validation
 
@@ -124,5 +124,6 @@ The Python suite covers scanner fixtures, pagination, subscription reports, loca
 - **Portal connection refused:** keep the launcher running and use its printed port; see the existing troubleshooting section in the subscription guide.
 - **Database errors:** verify PostgreSQL health, credentials and the async driver URL; apply migrations before starting the app.
 - **Scans remain queued:** verify Redis URLs match between API/worker and all four queues are consumed.
-- **New admin password appears ignored:** the Docker entrypoint syncs ADMIN_PASSWORD on startup; recreate the backend container after changing .env so its environment is refreshed.
+- **New admin password appears ignored:** the Docker entrypoint syncs ADMIN_PASSWORD on startup; recreate the backend container after changing .env so its environment is refreshed (`python -m scripts.configure_env --rotate-admin` generates one). A password changed in Settings is reset the same way.
+- **Scans fail with "No active subscriptions found for scan":** no tenant or subscription is registered; run `python -m scripts.connect_azure`.
 - **Frontend can't reach API:** inspect `/api/v1/health`; check the Vite proxy target and the backend process.

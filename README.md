@@ -33,6 +33,7 @@
 | Goal | Guide |
 |---|---|
 | Run the local portal or develop the full stack | [Local setup](docs/local-development.md) |
+| Connect Azure subscriptions to the Docker stack | [Connect Azure](docs/connect-azure.md) |
 | Build, deploy, back up or upgrade containers | [Docker deployment](docs/docker-deployment.md) |
 | Understand components and data flow | [Architecture](docs/architecture.md) |
 | Review merge decisions and verified behavior | [Merge and validation record](docs/merge-validation.md) |
@@ -428,6 +429,15 @@ reset to `ADMIN_PASSWORD` the next time the backend starts, so change the admin 
 
 The backend API and interactive docs are available directly at `http://localhost:8000/docs` if you want to explore or test endpoints outside the UI.
 
+### 5. Connect Azure
+
+```bash
+az login
+python -m scripts.connect_azure --scan
+```
+
+See [Connect your Azure subscription](#connect-your-azure-subscription) for what it does and the manual steps.
+
 ### Stopping / resetting
 
 ```bash
@@ -458,42 +468,34 @@ This prints a `appId` (client ID) and `password` (client secret) - enter those a
 
 ### Connect your Azure subscription
 
-A scan needs a registered tenant **and** at least one registered subscription. Without them every scan fails with
-"No active subscriptions found for scan".
+A scan needs a registered tenant **and** at least one registered subscription; without them every scan fails with
+"No active subscriptions found for scan". Full guide: [docs/connect-azure.md](docs/connect-azure.md).
 
-1. **Create the service principal** (Azure CLI, signed in as someone who can assign roles on the subscription):
+**Option A - one command** (as simple as the local scanner: sign in, run one command):
 
-   ```bash
-   az login
-   az account show --query "{tenant:tenantId, subscription:id, name:name}" -o table
-   az ad sp create-for-rbac --name "arg-scanner" --role Reader --scopes /subscriptions/<subscription-id>
-   ```
+```bash
+az login
+python -m scripts.connect_azure                                   # every enabled subscription in the tenant
+python -m scripts.connect_azure --subscription <subscription-id>  # or only these (repeat the flag)
+python -m scripts.connect_azure --scan                            # connect and start a scan
+```
 
-   Note `appId` (client ID), `password` (client secret) and `tenant` from the output. The secret is shown only once.
+It uses your `az login` to create (or reuse) the read-only service principal `arg-scanner`, assigns Reader, Cost
+Management Reader and Security Reader on each subscription, and registers the tenant and subscriptions in ARG with
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`. The client secret goes straight from Azure into ARG (encrypted)
+and is never printed. Run it again to add subscriptions; `--new-secret` replaces an expiring secret.
 
-2. **Add the other read-only roles** for cost and security findings:
+**Option B - manual:**
 
-   ```bash
-   az role assignment create --assignee <appId> --role "Cost Management Reader" --scope /subscriptions/<subscription-id>
-   az role assignment create --assignee <appId> --role "Security Reader" --scope /subscriptions/<subscription-id>
-   ```
-
-   Repeat steps 1-2 per subscription (or assign the roles once on a management group).
-
-3. **Optional - identity scanners.** In Entra ID, App registrations → `arg-scanner` → API permissions, add these
-   **Application** Microsoft Graph permissions and click **Grant admin consent**: `User.Read.All`,
-   `AuditLog.Read.All`, `Reports.Read.All`, `RoleManagement.Read.Directory`, `Application.Read.All`. Without them
-   the identity scanners are skipped, not failed.
-
-4. **Register the tenant in ARG:** Settings → Azure Tenants → **Register Tenant**. Enter a display name, the
-   Azure tenant ID, the client ID (`appId`) and client secret (`password`). Tick "Microsoft Graph API permissions
-   granted" only if you did step 3.
-
-5. **Register the subscription:** Subscriptions → **Register Subscription** → display name, Azure subscription ID, and the tenant
-   from step 4.
-
-6. **Scan:** Scans → **Start a Scan**. Findings, cost savings and the overview fill in when it completes; Reports
-   then generates PDF / Excel / CSV / JSON output.
+1. `az ad sp create-for-rbac --name "arg-scanner" --role Reader --scopes /subscriptions/<subscription-id>` - note
+   `appId`, `password` and `tenant`.
+2. Add `Cost Management Reader` and `Security Reader`:
+   `az role assignment create --assignee <appId> --role "<role>" --scope /subscriptions/<subscription-id>`.
+3. Optional, identity scanners: Microsoft Graph **Application** permissions `User.Read.All`, `AuditLog.Read.All`,
+   `Reports.Read.All`, `RoleManagement.Read.Directory`, `Application.Read.All`, then **Grant admin consent**.
+4. Settings - **Register Tenant**: tenant ID, client ID (`appId`), client secret (`password`).
+5. Subscriptions - **Register Subscription**: subscription ID and the tenant.
+6. Scans - **Start a Scan**.
 
 All access is read-only. Remediation scripts are generated for review and never run against Azure by ARG.
 

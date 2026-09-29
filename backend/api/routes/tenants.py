@@ -133,7 +133,9 @@ async def create_tenant(
 
 
 class TenantUpdate(BaseModel):
-    graph_permissions_granted: bool
+    graph_permissions_granted: bool | None = None
+    client_id: str | None = None
+    client_secret: str | None = None  # Replaces the stored secret (encrypted); never returned
 
 
 @router.patch("/{tenant_id}", response_model=TenantResponse)
@@ -145,17 +147,23 @@ async def update_tenant(
 ) -> dict:
     """
     Update a tenant's Graph API permission flag after granting (or revoking)
-    admin consent in Azure AD — avoids needing to delete and re-register
-    the tenant just to flip this, which would also discard the stored
-    encrypted client secret.
+    admin consent in Azure AD, or replace its service principal credentials
+    when a secret expires — avoids deleting and re-registering the tenant,
+    which would require removing its subscriptions and their scan history.
+    Omitted fields are left unchanged.
     """
     tenant = await db.get(Tenant, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    tenant.graph_permissions_granted = (
-        REQUIRED_GRAPH_PERMISSIONS if body.graph_permissions_granted else []
-    )
+    if body.graph_permissions_granted is not None:
+        tenant.graph_permissions_granted = (
+            REQUIRED_GRAPH_PERMISSIONS if body.graph_permissions_granted else []
+        )
+    if body.client_id:
+        tenant.client_id = body.client_id
+    if body.client_secret:
+        tenant.client_secret_encrypted = encrypt(body.client_secret)
     await db.commit()
     await db.refresh(tenant)
     return _serialize(tenant)

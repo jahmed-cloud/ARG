@@ -14,10 +14,10 @@ See [Local setup](docs/local-development.md), [Architecture](docs/architecture.m
 ```bash
 git clone https://github.com/jahmed-cloud/ARG.git
 cd ARG
-cp .env.example .env
-# edit .env - at minimum set POSTGRES_PASSWORD, SECRET_KEY, ENCRYPTION_KEY, ADMIN_PASSWORD
-docker compose up -d --build
-docker compose exec backend python -m scripts.seed_admin
+python -m scripts.configure_env      # fresh .env; or copy .env.example and set the four secrets yourself
+docker compose up -d --build         # the admin user is created on first start
+az login
+python -m scripts.connect_azure      # register a tenant and subscriptions to scan
 ```
 
 Frontend hot-reload during UI work:

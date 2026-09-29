@@ -5,6 +5,21 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Connect Azure in one command - 2026-09-29
+
+- `python -m scripts.connect_azure` connects the Docker stack the way the local scanner works: after `az login` it
+  creates or reuses the read-only service principal `arg-scanner`, assigns Reader, Cost Management Reader and
+  Security Reader on each subscription (existing roles skipped), and registers the tenant and subscriptions in ARG.
+  `--subscription` limits it, `--scan` starts a scan, `--new-secret` replaces an expiring secret. The secret goes
+  from Azure straight to ARG's API and is never printed. The manual Settings / Subscriptions steps remain.
+- `PATCH /api/v1/tenants/{id}` also accepts `client_id` / `client_secret`, so an expired secret no longer means
+  deleting the tenant (which requires deleting its subscriptions and their scan history). Omitted fields are kept.
+- The frontend container health check uses `127.0.0.1`: busybox `wget` resolved `localhost` to `::1`, nginx listens
+  on IPv4 only, and the container always reported unhealthy.
+- New guide [docs/connect-azure.md](docs/connect-azure.md) (one command, manual, secret rotation, troubleshooting);
+  README, deployment, local development, runbook, contributing and architecture docs updated. README shows scans
+  and reports screenshots.
+
 ### UI screenshots and sign-in - 2026-09-29
 
 - README shows the redesigned Docker UI (sign-in, overview, findings, settings; `docs/images/`) and a default

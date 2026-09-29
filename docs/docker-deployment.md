@@ -20,7 +20,23 @@ docker compose ps
 
 Alternatively copy `.env.example` to `.env` and replace `POSTGRES_PASSWORD`, `SECRET_KEY`, `ENCRYPTION_KEY` and `ADMIN_PASSWORD`. Generate a 32-byte random hex JWT key and a base64-encoded 32-byte encryption key. Examples are templates, never shared deployment secrets. Preserve the encryption key with your backup; changing it makes existing stored Azure credentials unreadable.
 
-The backend runs Alembic migrations and creates the initial administrator if absent. Open <http://localhost:3000> and sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env`. API docs are available on <http://localhost:8000/docs> in the base configuration. The PostgreSQL and API host ports bind to `127.0.0.1`; Redis remains internal. Use Settings to add tenant scanning credentials.
+The backend runs Alembic migrations and creates the initial administrator if absent. Open <http://localhost:3000> and sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env`. API docs are available on <http://localhost:8000/docs> in the base configuration. The PostgreSQL and API host ports bind to `127.0.0.1`; Redis remains internal.
+
+The username is `ADMIN_USERNAME` (default `admin`) or `ADMIN_EMAIL`. The backend syncs the administrator password
+from `ADMIN_PASSWORD` on every start, so a password changed in Settings is reset at the next restart - change it in
+`.env`. To generate a new one: `python -m scripts.configure_env --rotate-admin` (writes it to `.env` and prints it),
+then `docker compose up -d backend`.
+
+## Connect Azure
+
+```bash
+az login
+python -m scripts.connect_azure --scan
+```
+
+This creates or reuses the read-only service principal `arg-scanner`, assigns Reader, Cost Management Reader and
+Security Reader, and registers the tenant and subscriptions through the API. The manual alternative (Settings -
+Register Tenant, Subscriptions - Register Subscription) and secret rotation are in [Connect Azure](connect-azure.md).
 
 Do not generate new credentials over an existing deployment. Match the existing PostgreSQL password and encryption key. The environment generator deliberately refuses to overwrite `.env`.
 
@@ -59,7 +75,7 @@ PostgreSQL and Redis become healthy first. The backend migrates and seeds before
 | `/api/v1/health` | Database query succeeds; returns 503 when unavailable or timed out |
 | `docker compose exec worker celery -A workers.scan_worker inspect ping` | A worker responds through the broker |
 
-Compose's backend healthcheck uses database readiness. Startup dependencies do not automatically restart already-running dependents when the database later fails; monitor service health and logs.
+Compose's backend healthcheck uses database readiness. The frontend image checks nginx on `127.0.0.1` (busybox `wget` resolves `localhost` to `::1`, where nginx does not listen). Startup dependencies do not automatically restart already-running dependents when the database later fails; monitor service health and logs.
 
 ```bash
 docker compose logs --tail=100 backend worker beat

@@ -145,7 +145,9 @@ Run the tests and lint (section 6), keep generated text free of emoji and em / e
 
 ## 8. Docker vs local
 
-The Docker stack (backend, Celery worker, frontend) runs **the same scanner modules** with a service principal, so
+The Docker stack (backend, Celery worker, frontend) runs **the same scanner modules** with a service principal
+(`az login`, then `python -m scripts.connect_azure` creates and registers it - see
+[docs/connect-azure.md](docs/connect-azure.md)), so
 its findings match the local reports once its images are rebuilt from the same code (`./build-push.sh`, or
 `docker compose up -d --build`). The markdown / HTML reports and the Estate page are local-tool features.
 
@@ -163,7 +165,7 @@ With Podman Desktop the Docker stack runs without Docker. Once: `python -m pip i
 The script works around three Windows issues: podman-compose drops the `dockerfile:` path (the script builds with
 `podman build`), the Windows client ignores `.dockerignore` (it builds from a clean `git archive` of HEAD), and the
 ports of rootful containers are not forwarded to Windows `localhost` (it runs the stack rootless). Sign in with
-`ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`; scanning needs a service principal per tenant (Settings).
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`; connect Azure with `python -m scripts.connect_azure`.
 
 If image pulls fail with `Temporary failure in name resolution` (the WSL DNS relay fails on some VPN and Wi-Fi
 networks), give the Podman machine fixed DNS servers - yours are listed by `Get-DnsClientServerAddress`:

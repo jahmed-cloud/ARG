@@ -21,6 +21,8 @@
 | Sign in | Overview |
 |---|---|
 | ![ARG sign-in page](docs/images/login.png) | ![ARG overview dashboard before the first scan](docs/images/dashboard.png) |
+| **Scans** | **Reports** |
+| ![ARG scans page with scan history](docs/images/scans.png) | ![ARG reports page with report depth and format options](docs/images/reports.png) |
 | **Findings** | **Settings** |
 | ![ARG findings page with severity and status filters](docs/images/findings.png) | ![ARG settings page with profile, password and integrations](docs/images/settings.png) |
 
@@ -453,6 +455,47 @@ az ad sp create-for-rbac --name "arg-scanner" --role Reader --scopes /subscripti
 ```
 
 This prints a `appId` (client ID) and `password` (client secret) - enter those along with your Azure AD tenant ID into ARG's Settings → Azure Tenants page after logging in. The secret is encrypted with AES-256-GCM before being stored.
+
+### Connect your Azure subscription
+
+A scan needs a registered tenant **and** at least one registered subscription. Without them every scan fails with
+"No active subscriptions found for scan".
+
+1. **Create the service principal** (Azure CLI, signed in as someone who can assign roles on the subscription):
+
+   ```bash
+   az login
+   az account show --query "{tenant:tenantId, subscription:id, name:name}" -o table
+   az ad sp create-for-rbac --name "arg-scanner" --role Reader --scopes /subscriptions/<subscription-id>
+   ```
+
+   Note `appId` (client ID), `password` (client secret) and `tenant` from the output. The secret is shown only once.
+
+2. **Add the other read-only roles** for cost and security findings:
+
+   ```bash
+   az role assignment create --assignee <appId> --role "Cost Management Reader" --scope /subscriptions/<subscription-id>
+   az role assignment create --assignee <appId> --role "Security Reader" --scope /subscriptions/<subscription-id>
+   ```
+
+   Repeat steps 1-2 per subscription (or assign the roles once on a management group).
+
+3. **Optional - identity scanners.** In Entra ID, App registrations → `arg-scanner` → API permissions, add these
+   **Application** Microsoft Graph permissions and click **Grant admin consent**: `User.Read.All`,
+   `AuditLog.Read.All`, `Reports.Read.All`, `RoleManagement.Read.Directory`, `Application.Read.All`. Without them
+   the identity scanners are skipped, not failed.
+
+4. **Register the tenant in ARG:** Settings → Azure Tenants → **Register Tenant**. Enter a display name, the
+   Azure tenant ID, the client ID (`appId`) and client secret (`password`). Tick "Microsoft Graph API permissions
+   granted" only if you did step 3.
+
+5. **Register the subscription:** Subscriptions → **Register Subscription** → display name, Azure subscription ID, and the tenant
+   from step 4.
+
+6. **Scan:** Scans → **Start a Scan**. Findings, cost savings and the overview fill in when it completes; Reports
+   then generates PDF / Excel / CSV / JSON output.
+
+All access is read-only. Remediation scripts are generated for review and never run against Azure by ARG.
 
 ---
 

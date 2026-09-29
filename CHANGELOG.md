@@ -13,6 +13,9 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   the basis and shows the invoiced (actual) cost next to it. Budgets are still compared with actual cost (that is
   what Azure evaluates), and Marketplace SaaS stays on actual cost (purchases are not amortized). VM right-sizing
   detects commitment coverage from invoiced vs amortized cost. The Docker cost dashboard uses the same basis.
+- The Copilot skill (`.github/skills/arg-subscription-analysis`) stays in the repository and is up to date: PDF
+  export, `-Parallel` / `-Estate` runs, the idle and utilisation logic, amortized cost, budgets on their own scope,
+  resource providers and validated VM right-sizing.
 
 ### Added
 - **Resource providers.** Each report (01 - Current findings, section 7) shows which providers the subscription
@@ -24,8 +27,7 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   policy denies. Registered but unused providers are not findings - Azure registers many on its own.
 
 ### Removed
-- `MEMORY.md` and the Copilot skill (`.github/skills/`) are no longer part of the repository; maintainers keep
-  their AI-assistant notes locally.
+- `MEMORY.md` is no longer part of the repository; maintainers keep their AI-assistant notes locally.
 
 ### Fixed
 - **Budgets were compared with the whole subscription.** Resource-group budgets and budgets filtered to a meter (for

@@ -5,6 +5,15 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### UI screenshots and sign-in - 2026-09-29
+
+- README shows the redesigned Docker UI (sign-in, overview, findings, settings; `docs/images/`) and a default
+  sign-in table for the Docker UI and the local portal.
+- `python -m scripts.configure_env --rotate-admin` writes a new random `ADMIN_PASSWORD` to an existing `.env` and
+  prints it; the backend applies it on its next start.
+- Merged upstream through `9f8b159` (amortized cost, resource providers, VM right-sizing, Podman) with the redesigned
+  UI; `MEMORY.md` is kept locally as upstream decided.
+
 ### Changed
 - **Savings at your own price.** Savings that were list-price estimates are now valued at the resource's own
   30-day amortized cost, so negotiated discounts, reservations and savings plans count. Removals (idle IoT Hub,

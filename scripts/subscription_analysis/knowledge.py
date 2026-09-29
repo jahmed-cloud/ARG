@@ -84,6 +84,7 @@ FINDING_CLASSIFICATION: Dict[str, Classification] = {
     "app_service_plan_cpu_saturated": Classification(PERFORMANCE, "compute-appservice", WAVE_OPTIMISE, "appservice"),
     "app_service_plan_underutilized": Classification(FINOPS, "compute-appservice", WAVE_OPTIMISE, "appservice"),
     "vm_rightsizing_opportunity": Classification(FINOPS, "compute-appservice", WAVE_OPTIMISE),
+    "resource_type_denied_by_policy": Classification(FINOPS, "observability-operations", WAVE_OPTIMISE),
     "app_service_plan_mixed_environments": Classification(STRUCTURAL, "compute-appservice", WAVE_OPTIMISE, "appservice"),
     "web_app_https_not_enforced": Classification(SECURITY, "compute-appservice", WAVE_NO_REGRET),
     "web_app_managed_identity_missing": Classification(SECURITY, "compute-appservice", WAVE_OPTIMISE, "datapath"),

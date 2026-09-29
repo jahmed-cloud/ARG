@@ -16,7 +16,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, cached_metrics, cost_for, get_resource_costs
+from scanners.base.azure_api import (
+    ACTUAL_COST,
+    DEFAULT_ARM_CONCURRENCY,
+    cached_metrics,
+    cost_for,
+    gather_limited,
+    get_resource_costs,
+)
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -324,7 +331,7 @@ class MarketplaceSaaSScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            costs = await get_resource_costs(context, days=self.COST_DAYS)
+            costs = await get_resource_costs(context, days=self.COST_DAYS, cost_type=ACTUAL_COST)
             if costs is None:
                 warnings.append("12-month SaaS cost unavailable (Cost Management query failed); commitments not assessed.")
             for r in rows:

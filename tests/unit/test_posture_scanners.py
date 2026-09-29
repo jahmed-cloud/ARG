@@ -50,6 +50,7 @@ EXPECTED = {
     "app_service_plan_generation_scanner": {"app_service_plan_previous_generation", "app_service_plan_single_instance"},
     "app_service_plan_utilization_scanner": {"app_service_plan_cpu_saturated", "app_service_plan_underutilized"},
     "vm_rightsizing_scanner": {"vm_rightsizing_opportunity"},
+    "resource_provider_policy_scanner": {"resource_type_denied_by_policy"},
     "app_service_mixed_environment_scanner": {"app_service_plan_mixed_environments"},
     "web_app_https_identity_scanner": {"web_app_https_not_enforced", "web_app_managed_identity_missing"},
     "web_app_configuration_scanner": {"web_app_eol_runtime", "web_app_health_check_missing", "web_app_32bit_worker"},

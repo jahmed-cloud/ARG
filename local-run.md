@@ -115,6 +115,11 @@ metric:
 
 "Saturated" findings need a busy **hour** (80 %+); one-minute spikes are reported as bursts.
 
+**Costs are amortized** (reservations and savings plans spread over the resources that use them); the invoiced
+amount is shown next to it and budgets are compared with the invoice, each on its own scope and filter. Section 7
+of *01 - Current findings* shows the subscription's **resource providers** (registered = accepted, not registered)
+against what it uses, and any allow / deny resource-type policy.
+
 **VM right-sizing suggestions** (`vm_rightsizing_opportunity`) are validated, not estimated: the new size must keep
 CPU P95 at most 40 %, memory P99 at most 60 %, disk and network headroom and every hardware capability the VM uses,
 over 30 days - Azure Advisor's rules for user-facing workloads, applied to every VM. Advisor's own suggestion is
@@ -135,7 +140,7 @@ Python changes need a portal restart (3.1 + 3.2); JavaScript / CSS and report da
 ## 7. Contributing changes
 
 Run the tests and lint (section 6), keep generated text free of emoji and em / en dashes, and follow
-[CONTRIBUTING.md](CONTRIBUTING.md). Project conventions and decisions are in [MEMORY.md](MEMORY.md).
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 8. Docker vs local
 

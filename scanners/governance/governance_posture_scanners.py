@@ -12,6 +12,7 @@ Scanners in this module:
 8. BudgetScanner                   - Missing budget, or budget exceeded month after month
 """
 
+import json
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -19,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-from scanners.base.azure_api import run_cost_query
+from scanners.base.azure_api import ACTUAL_COST, run_cost_query
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -29,6 +30,7 @@ from scanners.base.base_scanner import (
 )
 from scanners.base.naming import env_from_name, env_from_tags
 from scanners.base.posture_scanner import PostureScanner
+from scanners.base.providers import build_analysis, get_provider_analysis
 
 STANDARD_TAG_KEYS = ["environment", "owner", "costcenter", "cost-center", "application", "projectname",
                      "resourceowner", "billingcontact", "technicalcontact", "securitycontact", "managedby"]
@@ -498,10 +500,27 @@ class EmptyResourceGroupScanner(PostureScanner):
 # 8. Budgets
 # ---------------------------------------------------------------------------
 
+def budget_scope(budget: Dict[str, Any]) -> str:
+    """'/subscriptions/x' or '/subscriptions/x/resourcegroups/rg' - where the budget applies (lower case)."""
+    return str(budget.get("id") or "").lower().split("/providers/microsoft.consumption/budgets/")[0]
+
+
+def describe_budget_filter(cost_filter: Dict[str, Any]) -> str:
+    """'MeterSubCategory in Azure OpenAI GPT5' for a budget filter (dimensions / tags, and-combined)."""
+    parts = []
+    for clause in (cost_filter.get("and") or []) + [cost_filter]:
+        for kind in ("dimensions", "tags"):
+            c = clause.get(kind) if isinstance(clause, dict) else None
+            if c:
+                parts.append(f"{'tag ' if kind == 'tags' else ''}{c.get('name')} in {', '.join(map(str, c.get('values') or []))}")
+    return "; ".join(parts) or "a filter"
+
+
 @register_scanner
 class BudgetScanner(PostureScanner):
     """
-    Live mode reads Consumption budgets and 6 full months of actual cost.
+    Live mode reads Consumption budgets and 6 full months of actual cost at each budget's own scope (subscription
+    or resource group) and filter (e.g. one model's meter) - the way Azure evaluates it.
     A monthly budget exceeded in most months is not a control: either the
     budget is unrealistic or nobody acts on the alerts.
     """
@@ -517,6 +536,7 @@ class BudgetScanner(PostureScanner):
     MISSING_HIGH_MONTHLY_USD = 10000.0
 
     async def scan(self, context: ScanContext) -> ScanOutput:
+        warnings: List[str] = []
         if not self.is_live(context):
             budgets, monthly = self._mock_sets()
         else:
@@ -544,57 +564,83 @@ class BudgetScanner(PostureScanner):
             )])
 
         findings = []
+        signatures = [(budget_scope(x), json.dumps((x.get("properties") or {}).get("filter") or {}, sort_keys=True))
+                      for x in budgets]
         for b in budgets:
             props = b.get("properties") or {}
             if (props.get("timeGrain") or "").lower() != "monthly":
                 continue
+            scope = budget_scope(b)
+            cost_filter = props.get("filter") or {}
+            # Each budget is judged like Azure judges it: its own scope (subscription or resource group) and filter.
+            if self.is_live(context) and (scope != f"/subscriptions/{context.subscription_id}".lower() or cost_filter):
+                try:
+                    months = await self._monthly_costs(context, scope=scope, cost_filter=cost_filter or None)
+                except Exception as exc:
+                    warnings.append(f"Budget '{b.get('name')}': scoped cost unavailable ({exc}); not evaluated.")
+                    continue
+            else:
+                months = monthly
             amount = float(props.get("amount") or 0)
-            start = str((props.get("timePeriod") or {}).get("startDate") or "")[:7]
-            eligible = [m for m in monthly if not start or m["month"] >= start]
+            start_month = str((props.get("timePeriod") or {}).get("startDate") or "")[:7]
+            eligible = [m for m in months if not start_month or m["month"] >= start_month]
             over = [m for m in eligible if amount and m["cost"] > amount]
             required = min(int(self.setting("overrun_months", self.OVERRUN_MONTHS)), len(eligible))
             if len(eligible) < 2 or len(over) < required:
                 continue
             notifications = props.get("notifications") or {}
             owner_contacts = any(n.get("contactEmails") or n.get("contactRoles") for n in notifications.values())
-            currency = monthly[0].get("currency") if monthly else ""
+            currency = next((m.get("currency") for m in eligible if m.get("currency")), "")
             peak = max(m["cost"] for m in eligible)
+            current = props.get("currentSpend") or {}
+            duplicates = signatures.count((scope, json.dumps(cost_filter, sort_keys=True))) - 1
+            rg = scope.split("/resourcegroups/")[1] if "/resourcegroups/" in scope else None
+            covers = (f"resource group {rg}" if rg else "the whole subscription") + (
+                f", filtered to {describe_budget_filter(cost_filter)}" if cost_filter else "")
             findings.append(self.make_finding(
                 finding_type="budget_consistently_exceeded",
                 title=f"Budget '{b.get('name')}' exceeded in {len(over)}/{len(eligible)} months",
                 description=(
-                    f"Monthly budget '{b.get('name')}' is {amount:,.0f} {currency}; actual cost exceeded it in "
-                    f"{len(over)} of the {len(eligible)} full months since it applies (peak {peak:,.0f} {currency}, "
-                    f"{peak / amount:.0%} of budget). "
+                    f"Monthly budget '{b.get('name')}' ({amount:,.0f} {currency}, covering {covers}): its actual cost "
+                    f"exceeded it in {len(over)} of the {len(eligible)} full months since it applies (peak "
+                    f"{peak:,.0f} {currency}, {peak / amount:.0%} of budget)"
+                    + (f"; this month so far {float(current.get('amount') or 0):,.0f} {current.get('unit') or currency}"
+                       if current.get("amount") is not None else "") + ". "
                     + ("Alerts reach only action groups - no owner e-mail or role is notified. "
                        if not owner_contacts else "Owners are notified, yet spend stays above budget. ")
-                    + (f"{len(budgets)} budgets exist on this subscription; overlapping budgets dilute ownership."
-                       if len(budgets) > 1 else "")
+                    + (f"{duplicates} other budget(s) cover exactly the same scope and filter; duplicates dilute "
+                       f"ownership." if duplicates else "")
                 ),
                 resource_id=b.get("id") or f"/subscriptions/{context.subscription_id}/providers/Microsoft.Consumption/budgets/{b.get('name')}",
                 resource_name=b.get("name"),
                 resource_type="microsoft.consumption/budgets",
-                resource_group="(subscription)",
+                resource_group=rg or "(subscription)",
                 subscription_id=context.subscription_id,
                 location="global",
                 remediation_steps=("Agree a realistic budget per workload with its owner, add owner e-mails/roles to "
                                    "the notifications, and define what happens on breach (review, freeze, escalate)."),
-                evidence={"budget_amount": amount, "budget_start": start, "months": eligible,
-                          "owner_contacts": owner_contacts,
+                evidence={"budget_amount": amount, "budget_start": start_month, "scope": scope,
+                          "filter": cost_filter or None, "months": eligible, "current_spend": current or None,
+                          "owner_contacts": owner_contacts, "duplicate_budgets": duplicates,
                           "budgets_on_subscription": [x.get("name") for x in budgets]},
                 estimated_monthly_savings_usd=0.0,
             ))
-        return ScanOutput(findings=findings, resources_scanned=len(budgets))
+        return ScanOutput(findings=findings, resources_scanned=len(budgets), warnings=warnings)
 
-    async def _monthly_costs(self, context: ScanContext) -> List[Dict[str, Any]]:
+    async def _monthly_costs(self, context: ScanContext, scope: Optional[str] = None,
+                             cost_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         first_this_month = date.today().replace(day=1)
         start = first_this_month
         for _ in range(self.MONTHS):
             start = (start - timedelta(days=1)).replace(day=1)
-        rows = await run_cost_query(context, start, first_this_month - timedelta(days=1), [], granularity="Monthly") or []
+        # Budgets are evaluated on actual (invoiced) cost, not amortized, at their own scope and filter.
+        rows = await run_cost_query(context, start, first_this_month - timedelta(days=1), [], granularity="Monthly",
+                                    cost_type=ACTUAL_COST, scope=scope, cost_filter=cost_filter) or []
         months = []
         for r in rows:
             month = str(r.get("BillingMonth") or r.get("UsageDate") or "")[:7]
+            if len(month) == 8 and month.isdigit():
+                month = f"{month[:4]}-{month[4:6]}"
             cost = float(r.get("Cost") or 0.0)
             usd = r.get("CostUSD")
             if usd is None and (r.get("Currency") or "").upper() == "USD":
@@ -604,7 +650,8 @@ class BudgetScanner(PostureScanner):
         return sorted(months, key=lambda m: m["month"])
 
     def _mock_sets(self):
-        budgets = [{"name": "governance_budget", "properties": {
+        budgets = [{"name": "governance_budget", "id": "/subscriptions/sub-1/providers/Microsoft.Consumption/budgets/"
+                    "governance_budget", "properties": {
             "timeGrain": "Monthly", "amount": 2600,
             "notifications": {"actual_90": {"contactGroups": ["/subscriptions/sub-1/.../actionGroups/ag-ccoe"],
                                             "contactEmails": [], "contactRoles": []}}}}]
@@ -612,3 +659,66 @@ class BudgetScanner(PostureScanner):
                    (("2026-03", 4549), ("2026-04", 4699), ("2026-05", 6733),
                     ("2026-06", 6937), ("2026-07", 8056), ("2026-08", 7513))]
         return budgets, monthly
+
+
+# ---------------------------------------------------------------------------
+# 9. Resource types that Azure Policy denies but that exist
+# ---------------------------------------------------------------------------
+
+@register_scanner
+class ResourceProviderPolicyScanner(PostureScanner):
+    """
+    Resource types in use that an applicable "Allowed resource types" / "Not allowed resource types" assignment
+    denies - usually resources created before the policy, which now sit outside the governance model. Registered
+    but unused providers are shown in the report's provider section, not raised as findings (Azure registers many
+    on its own).
+
+    Emits finding_type="resource_type_denied_by_policy".
+    """
+
+    scanner_name = "resource_provider_policy_scanner"
+    display_name = "Resource Types Denied by Policy"
+    description = "Detects resources whose type an applicable allow / deny resource-type policy does not permit"
+    category = ScannerCategory.GOVERNANCE
+    severity = SeverityLevel.MEDIUM
+
+    async def scan(self, context: ScanContext) -> ScanOutput:
+        if self.is_live(context) and context.resource_graph_client is not None:
+            try:
+                analysis = await get_provider_analysis(context)
+            except Exception as e:
+                return ScanOutput(warnings=[f"Resource provider analysis unavailable: {e}"])
+        else:
+            analysis = self._mock_data()[0]
+        denied = (analysis or {}).get("denied_in_use") or []
+        if not denied:
+            return ScanOutput(resources_scanned=len((analysis or {}).get("providers") or []))
+        resources = sum(d["resources"] for d in denied)
+        types = sorted({d["type"] for d in denied})
+        finding = self.subscription_finding(
+            context,
+            finding_type="resource_type_denied_by_policy",
+            title=f"{resources} resource(s) of {len(types)} type(s) that Azure Policy denies",
+            description=("Resources exist whose type an assigned resource-type policy does not allow: "
+                         + "; ".join(f"{d['type']} x{d['resources']} ({d['effect']} '{d['policy']}'"
+                                     f"{'' if d['enforced'] else ', not enforced'})" for d in denied)
+                         + ". They were usually created before the policy or through an exemption, and now sit "
+                           "outside the agreed governance model."),
+            remediation_steps=("1. Confirm with the owner whether each resource is still needed.\n"
+                               "2. Migrate it to an allowed type or remove it, or record a policy exemption with an "
+                               "expiry date if it must stay."),
+            evidence={"denied_in_use": denied, "policies": (analysis or {}).get("policies")},
+        )
+        return ScanOutput(findings=[finding], resources_scanned=len((analysis or {}).get("providers") or []))
+
+    def _mock_data(self) -> List[Dict[str, Any]]:
+        return [build_analysis(
+            "sub-1",
+            [{"namespace": "Microsoft.Compute", "registrationState": "Registered",
+              "registrationPolicy": "RegistrationRequired"},
+             {"namespace": "Microsoft.Storage", "registrationState": "Registered",
+              "registrationPolicy": "RegistrationRequired"}],
+            {"microsoft.compute/virtualmachines": 2, "microsoft.storage/storageaccounts": 3}, ["mg-prod"],
+            [{"name": "VM creation not allowed (prod)", "scope": "/providers/microsoft.management/managementgroups/mg-prod",
+              "def": "/providers/microsoft.authorization/policydefinitions/6c112d4e-5bc7-47ae-a041-ea2d9dccd749",
+              "enforcement": "Default", "denied": ["Microsoft.Compute/virtualMachines"]}])]

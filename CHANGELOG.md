@@ -20,6 +20,8 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - VM retail prices match both price-list name formats (`Standard_D8s_v5` and `D8als v6`).
+- A portal analysis that fails with an `ImportError` (code updated while the portal was running) now says to restart
+  the portal instead of only showing the import error.
 - **An expired `az login` no longer produces a partial report.** Conditional Access can expire the CLI token in the
   middle of a run; every scanner then logged warnings and the report was written with holes. The credential now
   fails fast after the first token error (`FailFastCredential`) and the run stops with "run az login again"; token

@@ -248,3 +248,18 @@ def test_pdf_export_endpoint_print_view_and_pdf_download(client, tmp_path, monke
     assert client.get("/print/sub-demo?detail=full").status_code == 200
     assert client.post("/api/export-pdf", json={"folder": "..", "detail": "summary"}, headers=ORIGIN).status_code == 400
     assert client.get("/print/nope").status_code == 404
+
+
+def test_stale_code_import_error_says_restart_the_portal(tmp_path):
+    def stale_runner(credential, subscription_id, reports_dir, progress):
+        raise ImportError("cannot import name 'HOURS_BILLED_PER_MONTH' from 'scanners.base.azure_api'")
+
+    jobs = JobManager(tmp_path, lambda: object(), max_workers=1, runner=stale_runner)
+    job = jobs.submit("sub-1", "sub")
+    for _ in range(50):
+        if jobs.get(job.id).status == "failed":
+            break
+        time.sleep(0.02)
+    jobs.shutdown()
+    assert jobs.get(job.id).status == "failed"
+    assert jobs.get(job.id).error.endswith("restart the portal and try again.")

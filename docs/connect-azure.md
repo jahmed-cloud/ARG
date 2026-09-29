@@ -74,6 +74,21 @@ New registration, then Certificates & secrets - New client secret, then Access c
 
 ### 2. Assign the read-only roles
 
+To every subscription you can manage, in one go (PowerShell, uses only `az`; preview first with `-WhatIf`):
+
+```powershell
+.\scripts\Grant-ArgRoles.ps1 -Assignee arg-scanner -IncludeReader -WhatIf
+.\scripts\Grant-ArgRoles.ps1 -Assignee arg-scanner -IncludeReader
+```
+
+It assigns Cost Management Reader and Security Reader (plus Reader with `-IncludeReader`) on every subscription
+your `az login` can see, in all signed-in tenants, skips roles already there (also inherited ones), skips
+subscriptions where you cannot assign roles with the reason, and prints a summary. `-SubscriptionId` and
+`-CurrentTenantOnly` limit it. The same script gives people the roles the **local scanner** needs:
+`-Assignee me` (default) or `-Assignee colleague@contoso.com`.
+
+Or one subscription at a time:
+
 ```bash
 az role assignment create --assignee <appId> --role "Cost Management Reader" --scope /subscriptions/<subscription-id>
 az role assignment create --assignee <appId> --role "Security Reader" --scope /subscriptions/<subscription-id>

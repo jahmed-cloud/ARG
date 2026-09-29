@@ -491,8 +491,9 @@ skipped with the reason, and a summary lists what was connected. Run it again to
 
 1. `az ad sp create-for-rbac --name "arg-scanner" --role Reader --scopes /subscriptions/<subscription-id>` - note
    `appId`, `password` and `tenant`.
-2. Add `Cost Management Reader` and `Security Reader`:
-   `az role assignment create --assignee <appId> --role "<role>" --scope /subscriptions/<subscription-id>`.
+2. Add `Cost Management Reader` and `Security Reader` on every subscription you can manage:
+   `.\scripts\Grant-ArgRoles.ps1 -Assignee arg-scanner -IncludeReader` (preview with `-WhatIf`), or per
+   subscription `az role assignment create --assignee <appId> --role "<role>" --scope /subscriptions/<subscription-id>`.
 3. Optional, identity scanners: Microsoft Graph **Application** permissions `User.Read.All`, `AuditLog.Read.All`,
    `Reports.Read.All`, `RoleManagement.Read.Directory`, `Application.Read.All`, then **Grant admin consent**.
 4. Settings - **Register Tenant**: tenant ID, client ID (`appId`), client secret (`password`).

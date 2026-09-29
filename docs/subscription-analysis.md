@@ -37,7 +37,9 @@ folder you started from. `reports/` is git-ignored.
    | Security Reader | Defender plans, secure score, Defender recommendations |
 
    If a role is missing, that part of the report is empty and the reason appears under *Collection Warnings* in
-   `05-deep-dive/README.md`.
+   `05-deep-dive/README.md`. `scripts\Grant-ArgRoles.ps1 -Assignee <user> -IncludeReader` assigns the missing
+   roles on every subscription the person running it can manage (Owner or User Access Administrator); preview with
+   `-WhatIf`.
 
 The launch scripts create `.venv-local` in the repository root and install
 [`requirements-local.txt`](../requirements-local.txt) on first use. To do it by hand:

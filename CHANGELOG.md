@@ -5,6 +5,14 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Reader roles on every subscription - 2026-09-29
+
+- `scripts/Grant-ArgRoles.ps1` assigns Cost Management Reader and Security Reader (plus Reader with
+  `-IncludeReader`) on every subscription the `az login` can see, in all signed-in tenants, to yourself (`me`,
+  default), a user, a group or a service principal such as `arg-scanner`. Roles already in place, also inherited
+  ones, are skipped; subscriptions where you cannot assign roles are skipped with the reason; `-WhatIf` previews.
+  Documented as the manual step for the Docker stack and for the local scanner's prerequisites.
+
 ### Connect Azure in one command - 2026-09-29
 
 - `python -m scripts.connect_azure` connects the Docker stack the way the local scanner works: after `az login` it

@@ -1,5 +1,10 @@
 * text=auto
-*.sh text eol=lf
+
+# Files that run in Linux containers or shells keep LF line endings, also in Windows checkouts. With
+# core.autocrlf=true, "#!/bin/sh" becomes "#!/bin/sh\r" and the backend container stops with
+# "exec /entrypoint.sh: No such file or directory".
+*.sh        text eol=lf
+docker/*    text eol=lf
 Dockerfile* text eol=lf
-*.yml text eol=lf
-*.ps1 text eol=crlf
+*.yml       text eol=lf
+*.ps1       text eol=crlf

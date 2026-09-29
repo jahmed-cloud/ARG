@@ -53,6 +53,7 @@ COPY workers/ ./workers/
 COPY alembic.ini ./
 COPY docker/entrypoint.sh /entrypoint.sh
 
+# sed: a Windows checkout may still carry CRLF line endings, which break the #!/bin/sh line
 RUN sed -i 's/\r$//' /entrypoint.sh \
     && mkdir -p /tmp/arg/reports \
     && chmod +x /entrypoint.sh \

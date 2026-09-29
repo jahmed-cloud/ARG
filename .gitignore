@@ -139,3 +139,6 @@ htmlcov/
 # Local merge backup and validation artifacts
 .merge/
 .validation/
+
+# Maintainer AI-assistant notes (kept locally)
+MEMORY.md

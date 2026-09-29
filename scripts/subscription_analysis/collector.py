@@ -11,8 +11,18 @@ from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from scanners.base.azure_api import ArmClient, get_resource_costs, query_resource_graph, run_cost_query
+from scanners.base.azure_api import (
+    ACTUAL_COST,
+    COST_BASIS,
+    ArmClient,
+    AzureAuthExpiredError,
+    FailFastCredential,
+    get_resource_costs,
+    query_resource_graph,
+    run_cost_query,
+)
 from scanners.base.base_scanner import ScanContext, ScannerRegistry
+from scanners.base.providers import get_provider_analysis
 
 from scripts.subscription_analysis.estate import DETAIL_COLUMNS, RESOURCE_DETAILS
 from scripts.subscription_analysis.knowledge import classify
@@ -56,6 +66,8 @@ class AnalysisData:
     warnings: List[str] = dataclasses.field(default_factory=list)
     # {lower(account id): [{"name", "model", "version", "sku", "capacity"}]} for OpenAI / AI Services accounts
     ai_deployments: Dict[str, List[Dict[str, Any]]] = dataclasses.field(default_factory=dict)
+    # Resource providers: registration state vs usage vs allow / deny resource-type policies (scanners.base.providers)
+    resource_providers: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 def to_jsonable(value: Any) -> Any:
@@ -222,6 +234,7 @@ async def collect_costs(context: ScanContext, data: AnalysisData, months: int = 
             data.warnings.append(f"cost query '{label}' failed: {exc}")
             return None
 
+    data.cost["cost_basis"] = COST_BASIS
     data.cost["window_12m"] = {"from": start_12m.isoformat(), "to": today.isoformat()}
     data.cost["window_30d"] = {"from": start_30d.isoformat(), "to": today.isoformat()}
     data.cost["monthly_by_service"] = await attempt(
@@ -233,6 +246,9 @@ async def collect_costs(context: ScanContext, data: AnalysisData, months: int = 
         "30d by meter", run_cost_query(context, start_30d, today, service + [{"type": "Dimension", "name": "Meter"}]))
     per_resource = await attempt("30d by resource", get_resource_costs(context, days=days))
     data.cost["last30_by_resource"] = per_resource or {}
+    # Invoiced (actual) monthly totals: what budgets are evaluated against, and the invoice view next to amortized.
+    data.cost["monthly_actual"] = await attempt(
+        "monthly actual", run_cost_query(context, start_12m, today, [], granularity="Monthly", cost_type=ACTUAL_COST))
 
     rows = data.cost.get("last30_by_rg_service") or []
     total = sum(float(r.get("Cost") or 0) for r in rows)
@@ -268,6 +284,7 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
     load_scanners()
     selected = [n for n in ScannerRegistry.all() if not scanners or n in scanners]
     total = len(selected) + 3
+    credential = FailFastCredential(credential)
     arm = ArmClient(credential)
     try:
         progress("Resolving subscription", 0, total)
@@ -278,11 +295,19 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
         progress("Collecting resource inventory", 1, total)
         await collect_inventory(context, arm, data)
         await collect_ai_deployments(arm, data)
+        try:
+            data.resource_providers = await get_provider_analysis(context) or {}
+        except Exception as exc:
+            data.warnings.append(f"resource providers unavailable: {exc}")
         if include_cost:
             progress("Querying Cost Management (throttled API, can take a minute)", 2, total)
             logger.info("Querying Cost Management")
             await collect_costs(context, data)
         await run_scanners(context, scanners, config or {}, data, progress=progress, step_offset=3, total_steps=total)
+        if credential.error:
+            # Scanners swallow per-call errors as warnings; an expired sign-in would
+            # otherwise produce a silently incomplete report.
+            raise AzureAuthExpiredError(credential.error + " No report was written for this run.")
         return data
     finally:
         arm.close()

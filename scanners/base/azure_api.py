@@ -14,11 +14,14 @@ ScanContext still holds.
   Management query) built on httpx and an azure-identity credential,
   with 429/503 retry that honours Retry-After and the Cost Management
   x-ms-ratelimit-*-retry-after headers.
-- get_resource_costs(): per-resource actual cost for the last N days,
+- get_resource_costs(): per-resource amortized cost for the last N days,
   cached on the ScanContext so several scanners can share one Cost
   Management call (the API is throttled to a few calls per minute).
 - get_retail_price(): public Azure Retail Prices API lookup (USD), used
   only in live mode to replace static fallback prices.
+- price_at_actual_cost(): re-values a list-price saving at the resource's
+  own amortized cost, so negotiated discounts, reservations and savings
+  plans count.
 """
 
 import asyncio
@@ -320,43 +323,59 @@ def _cost_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 # Cost helpers (shared per scan)
 # ---------------------------------------------------------------------------
 
+# Amortized cost spreads reservation and savings-plan purchases over the resources that use them, so a VM covered
+# by a savings plan bought in another subscription shows its real share instead of ~0 (actual cost). Budgets and
+# Marketplace purchases are judged on actual (invoiced) cost and ask for it explicitly.
+COST_BASIS = "AmortizedCost"
+ACTUAL_COST = "ActualCost"
+
+
 def _cost_body(start: date, end: date, grouping: List[Dict[str, str]], granularity: str = "None",
-               include_usd: bool = True) -> Dict[str, Any]:
+               include_usd: bool = True, cost_type: str = COST_BASIS,
+               cost_filter: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     aggregation = {"totalCost": {"name": "Cost", "function": "Sum"}}
     if include_usd:
         aggregation["totalCostUSD"] = {"name": "CostUSD", "function": "Sum"}
+    dataset: Dict[str, Any] = {"granularity": granularity, "aggregation": aggregation, "grouping": grouping}
+    if cost_filter:
+        dataset["filter"] = cost_filter  # same schema as a budget's filter (dimensions / tags / and / or)
     return {
-        "type": "ActualCost",
+        "type": cost_type,
         "timeframe": "Custom",
         "timePeriod": {"from": start.isoformat(), "to": end.isoformat()},
-        "dataset": {"granularity": granularity, "aggregation": aggregation, "grouping": grouping},
+        "dataset": dataset,
     }
 
 
 async def run_cost_query(context: Any, start: date, end: date, grouping: List[Dict[str, str]],
-                         granularity: str = "None") -> Optional[List[Dict[str, Any]]]:
+                         granularity: str = "None", cost_type: str = COST_BASIS, scope: Optional[str] = None,
+                         cost_filter: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
     """
-    Cost query that asks for CostUSD alongside the billing-currency Cost.
-    Some agreement types reject CostUSD - retry once without it.
+    Cost query (amortized unless cost_type says otherwise) that asks for CostUSD alongside the billing-currency
+    Cost, at the subscription or the given scope (e.g. a resource group), optionally filtered. Some agreement types
+    reject CostUSD - retry once without it.
     """
     arm = getattr(context, "arm_client", None)
     if arm is None:
         return None
-    scope = f"/subscriptions/{context.subscription_id}"
+    scope = scope or f"/subscriptions/{context.subscription_id}"
     try:
-        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=True))
+        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=True,
+                                                      cost_type=cost_type, cost_filter=cost_filter))
     except Exception as exc:
         logger.info("CostUSD aggregation rejected (%s); retrying with billing currency only", exc)
-        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=False))
+        return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=False,
+                                                      cost_type=cost_type, cost_filter=cost_filter))
 
 
-async def get_resource_costs(context: Any, days: int = 30) -> Optional[Dict[str, Dict[str, Any]]]:
+async def get_resource_costs(context: Any, days: int = 30,
+                             cost_type: str = COST_BASIS) -> Optional[Dict[str, Dict[str, Any]]]:
     """
     {lower(resource_id): {"cost", "cost_usd", "currency", "meters": {subcategory: cost}}}
-    for the last `days` days. Cached on context.cache for the whole scan.
+    for the last `days` days, amortized unless cost_type is ACTUAL_COST. Cached on context.cache for the whole scan.
     """
     cache = getattr(context, "cache", None)
-    key = f"resource_costs:{days}"
+    key = f"resource_costs:{days}:{cost_type}"
     if cache is not None and key in cache:
         return cache[key]
 
@@ -366,6 +385,7 @@ async def get_resource_costs(context: Any, days: int = 30) -> Optional[Dict[str,
         rows = await run_cost_query(
             context, start, end,
             [{"type": "Dimension", "name": "ResourceId"}, {"type": "Dimension", "name": "MeterSubCategory"}],
+            cost_type=cost_type,
         )
     except Exception as exc:
         logger.warning("Cost query failed: %s", exc)
@@ -399,6 +419,75 @@ def cost_for(costs: Optional[Dict[str, Dict[str, Any]]], resource_id: str) -> Op
     if not costs or not resource_id:
         return None
     return costs.get(resource_id.lower())
+
+
+LIST_PRICE_BASIS = "list price"
+ACTUAL_PRICE_BASIS = "amortized cost, last 30 days"
+
+
+def saving_at_actual_price(list_saving: Optional[float], actual_cost: Optional[float],
+                           list_cost: Optional[float] = None) -> Optional[float]:
+    """
+    Monthly saving at the subscription's own price, from the resource's 30-day amortized cost (which already
+    includes negotiated discounts, reservations and savings plans):
+    - removing the resource (no list_cost): what it actually cost;
+    - changing its price (list_cost = its current monthly list price): the list-price saving scaled by
+      actual / list cost, never more than the list-price saving.
+    Unchanged when the actual cost is unknown.
+    """
+    if actual_cost is None:
+        return list_saving
+    actual = max(0.0, actual_cost)
+    if list_cost is None:
+        return round(actual, 2)
+    if not list_saving or list_cost <= 0:
+        return list_saving
+    return round(min(list_saving, actual * list_saving / list_cost), 2)
+
+
+async def resource_cost_usd(context: Any, resource_id: Optional[str]) -> Optional[float]:
+    """The resource's 30-day amortized cost in USD; None offline, without cost access or without a cost row."""
+    if not resource_id or getattr(context, "arm_client", None) is None:
+        return None
+    row = cost_for(await get_resource_costs(context), resource_id)
+    return None if row is None or row.get("cost_usd") is None else float(row["cost_usd"])
+
+
+def _usd(value: float) -> str:
+    return f"USD {value:,.2f}" if value < 10 else f"USD {value:,.0f}"
+
+
+async def price_at_actual_cost(context: Any, finding: Any, list_cost: Optional[float] = None,
+                               cost_resource_id: Optional[str] = None) -> Any:
+    """
+    Re-values a finding whose estimated_monthly_savings_usd is a list-price estimate at the resource's own
+    30-day amortized cost (see saving_at_actual_price), records both figures in the evidence and, when they
+    differ, says so in the description. cost_resource_id: the resource whose cost is saved when it is not the
+    finding's own (e.g. the public IP of a VM finding). Returns the finding.
+    """
+    list_saving = finding.estimated_monthly_savings_usd
+    resource_id = cost_resource_id or finding.resource_id
+    name = (resource_id or "").rstrip("/").split("/")[-1] or "the resource"
+    actual = await resource_cost_usd(context, resource_id)
+    saving = saving_at_actual_price(list_saving, actual, list_cost)
+    finding.evidence.update({
+        "saving_basis": LIST_PRICE_BASIS if actual is None else ACTUAL_PRICE_BASIS,
+        "list_price_saving_usd": list_saving,
+        "amortized_cost_usd_30d": None if actual is None else round(actual, 2),
+    })
+    if actual is not None and list_saving is not None and abs((saving or 0.0) - list_saving) >= 0.01:
+        if list_cost is None:
+            finding.description += (
+                f" Valued at what {name} actually costs: {_usd(saving)}/month (amortized over the last 30 days, so "
+                f"discounts, reservations and savings plans count); the list-price estimate is "
+                f"{_usd(list_saving)}/month.")
+        else:
+            finding.description += (
+                f" Valued at {name}'s own price: about {_usd(saving)}/month, scaled to its 30-day amortized cost of "
+                f"{_usd(actual)} (discounts, reservations and savings plans count); the list-price difference is "
+                f"{_usd(list_saving)}/month.")
+    finding.estimated_monthly_savings_usd = saving
+    return finding
 
 
 async def cached_metrics(context: Any, resource_id: str, metric_names: List[str], *, days: int = 30,
@@ -446,6 +535,157 @@ async def get_retail_price(context: Any, odata_filter: str, *, fallback: Optiona
         price = None
     _RETAIL_PRICE_CACHE[odata_filter] = price
     return price if price is not None else fallback
+
+
+_VM_PRICE_CACHE: Dict[str, Optional[float]] = {}
+HOURS_BILLED_PER_MONTH = 730
+
+
+def _size_key(name: str) -> str:
+    """'Standard_D8als_v6' and 'D8als v6' -> 'd8als v6'."""
+    name = name.strip()
+    name = name[len("Standard_"):] if name.lower().startswith("standard_") else name
+    return name.replace("_", " ").lower()
+
+
+async def vm_hourly_usd(context: Any, size: str, region: str, windows: bool) -> Optional[float]:
+    """
+    Pay-as-you-go retail price (USD/hour) of one VM size: the exact size (not Spot / Low Priority) and the Windows
+    meter only for Windows without Azure Hybrid Benefit. None offline or when the size has no price in the region.
+    """
+    if getattr(context, "arm_client", None) is None or not size or not region:
+        return None
+    key = f"{size.lower()}|{region.lower()}|{windows}"
+    if key in _VM_PRICE_CACHE:
+        return _VM_PRICE_CACHE[key]
+
+    def _fetch() -> Optional[float]:
+        import httpx
+
+        odata = (f"serviceName eq 'Virtual Machines' and armRegionName eq '{region.lower()}' "
+                 f"and armSkuName eq '{size}' and priceType eq 'Consumption'")
+        response = httpx.get(RETAIL_PRICES_URL, params={"$filter": odata}, timeout=30)
+        response.raise_for_status()
+        wanted = _size_key(size)
+        for item in response.json().get("Items", []):
+            # skuName is "Standard_D8s_v5" for some series and "D8als v6" for others; "... Spot" / "... Low
+            # Priority" rows never match.
+            if _size_key(item.get("skuName") or "") != wanted:
+                continue
+            if item.get("unitOfMeasure") != "1 Hour":
+                continue
+            if (item.get("productName") or "").endswith("Windows") == windows:
+                return float(item["retailPrice"])
+        return None
+
+    try:
+        price = await asyncio.to_thread(_fetch)
+    except Exception as exc:
+        logger.info("VM price lookup failed (%s %s): %s", size, region, exc)
+        price = None
+    _VM_PRICE_CACHE[key] = price
+    return price
+
+
+async def compute_skus(context: Any, subscription_id: str, location: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Compute SKU catalogue of one region as seen by the subscription: {lower(size): {"name", "family",
+    "caps": {capability: value}, "restricted": bool, "restricted_zones": set}}. Cached per scan.
+    """
+    cache = getattr(context, "cache", None)
+    key = f"skus:{subscription_id}:{location.lower()}"
+    if cache is not None and key in cache:
+        return cache[key]
+    items = await context.arm_client.get_all(f"/subscriptions/{subscription_id}/providers/Microsoft.Compute/skus",
+                                             "2021-07-01", {"$filter": f"location eq '{location.lower()}'"})
+    out: Dict[str, Dict[str, Any]] = {}
+    for s in items:
+        if s.get("resourceType") != "virtualMachines" or not s.get("name"):
+            continue
+        restricted, zones = False, set()
+        for r in s.get("restrictions") or []:
+            if r.get("reasonCode") != "NotAvailableForSubscription":
+                continue
+            if r.get("type") == "Location":
+                restricted = True
+            elif r.get("type") == "Zone":
+                zones |= set((r.get("restrictionInfo") or {}).get("zones") or [])
+        out[s["name"].lower()] = {"name": s["name"], "family": s.get("family") or "",
+                                  "caps": {c.get("name"): c.get("value") for c in s.get("capabilities") or []},
+                                  "restricted": restricted, "restricted_zones": zones}
+    if cache is not None:
+        cache[key] = out
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Credential guard
+# ---------------------------------------------------------------------------
+
+class AzureAuthExpiredError(RuntimeError):
+    """The az login (or other) credential stopped issuing tokens during a run."""
+
+
+class FailFastCredential:
+    """
+    Wraps a credential so that after the FIRST failed get_token every later call
+    fails immediately. Without it an expired `az login` (e.g. Conditional Access
+    sign-in frequency) makes each of hundreds of ARM calls spawn `az` and wait for
+    it to time out, so a run crawls for many minutes and ends with a partial report.
+
+    get_token also has a hard timeout: on Windows, with an expired session,
+    `az account get-access-token` can block forever waiting for an interactive
+    prompt, which would otherwise hang the whole run.
+    """
+
+    TIMEOUT_SECONDS = 60
+
+    def __init__(self, inner: Any, timeout: float = TIMEOUT_SECONDS):
+        self._inner = inner
+        self._timeout = timeout
+        self.error: Optional[str] = None
+        self._lock = threading.Lock()
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> Any:
+        if self.error is not None:
+            raise AzureAuthExpiredError(self.error)
+        try:
+            return call_with_timeout(self._inner.get_token, self._timeout, *scopes, **kwargs)
+        except Exception as exc:
+            with self._lock:
+                if self.error is None:
+                    if isinstance(exc, TimeoutError):
+                        reason = f"the Azure CLI did not return a token within {int(self._timeout)}s"
+                    else:
+                        reason = (str(exc).strip().splitlines() or [exc.__class__.__name__])[-1][:200]
+                    self.error = (f"Azure sign-in is no longer valid ({reason}). "
+                                  f"Run 'az login' in a terminal and run the analysis again.")
+            raise AzureAuthExpiredError(self.error) from exc
+
+    def close(self) -> None:
+        close = getattr(self._inner, "close", None)
+        if close:
+            close()
+
+
+def call_with_timeout(fn, timeout: float, *args: Any, **kwargs: Any) -> Any:
+    """Run fn in a daemon thread; raise TimeoutError if it does not finish in time (the thread is abandoned)."""
+    result: Dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except BaseException as exc:  # re-raised in the caller's thread
+            result["error"] = exc
+
+    worker = threading.Thread(target=target, daemon=True, name="token-call")
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"call did not finish within {timeout}s")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
 
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ folder you started from. `reports/` is git-ignored.
    | Role | Used for |
    |---|---|
    | Reader | Resource Graph, ARM configuration, Azure Monitor metrics, diagnostic settings |
-   | Cost Management Reader | Cost trend, per-resource cost, budgets, actual-cost savings |
+   | Cost Management Reader | Cost trend, per-resource cost (amortized), budgets (actual), savings |
    | Security Reader | Defender plans, secure score, Defender recommendations |
 
    If a role is missing, that part of the report is empty and the reason appears under *Collection Warnings* in
@@ -132,8 +132,8 @@ reports/
 
 - Findings are numbered `F-001…` by severity then savings. The same reference is used in every file.
 - **Savings waves:** wave 1 is no-regret cleanup, wave 2 is optimisation, and wave 3 is structural (no direct saving).
-- **Currency:** savings are computed in USD (list prices or actual `CostUSD`) and shown in the billing currency at the
-  subscription's implied rate.
+- **Currency:** savings are computed in USD - at each resource's own amortized cost where it is known, otherwise at list
+  prices (see *Savings at your own price* in 5a-2) - and shown in the billing currency at the subscription's implied rate.
 - Re-running a subscription **replaces** its generated files. Copy the folder first if you want history.
 - **Same display name:** each folder records its owner in `.subscription-id`, so subscriptions that share a name
   (e.g. several "Visual Studio Professional Subscription"s) never overwrite each other. The index and the portal show
@@ -164,6 +164,53 @@ A missing budget (`budget_missing`) is **High** instead of Medium when the peak 
 is at least `budget_missing_high_monthly_usd` (10,000 USD).
 
 ---
+
+## 5a-2. Cost basis: amortized vs actual
+
+Reports use **amortized cost**: Cost Management spreads reservation and savings-plan purchases over the resources
+that use them. With actual cost a VM covered by a savings plan bought in another subscription shows almost nothing
+(for example 2 CHF instead of 147 CHF a month) and the buying subscription carries the whole commitment. The README
+states the basis and shows the **invoiced (actual)** cost for the same 12 months next to it; the 12-month trend has
+both columns.
+
+Actual cost is still used where it is the right measure: **budgets** (Azure evaluates them on actual cost, at the
+budget's own scope - subscription or resource group - and filter, for example one AI model's meter) and
+**Marketplace SaaS** (purchases are not amortized). VM right-sizing reads both: when most of a VM's amortized cost is
+not invoiced as pay-as-you-go, it is covered by a commitment and the resize frees that commitment for other VMs.
+
+**Savings at your own price.** A saving is valued at what the resource actually costs you - its amortized cost over
+the last 30 days, so negotiated discounts, reservations and savings plans count - not at the public list price:
+
+| Recommendation | Saving |
+|---|---|
+| Remove it (idle, unattached, orphaned, empty) | Its 30-day amortized cost. This can be above the list estimate, e.g. an idle WAF_v2 Application Gateway with capacity units |
+| Change its price (VM size, App Service plan generation) | The list-price difference scaled by actual / list cost (your discount), never more than the list-price difference |
+| No cost data (no Cost Management access, or no cost row for the resource yet) | The list-price estimate, labelled as such |
+
+Each finding's evidence records `saving_basis` (`amortized cost, last 30 days` or `list price`),
+`list_price_saving_usd` and `amortized_cost_usd_30d`, and the description gives both figures when they differ.
+Savings that already start from the resource's own cost (idle storage and SQL, one size down, AI accounts,
+Marketplace SaaS, SQL Hyperscale storage) are unchanged. Storage-account sprawl stays a list-price estimate: its
+saving is the Defender for Storage price per account.
+
+## 5a-3. Resource providers
+
+Section 7 of *01 - Current findings* shows which resource providers the subscription **accepts** (registered) and
+which it does not, against what it actually uses:
+
+| Status | Meaning |
+|---|---|
+| In use | Registered and resources exist |
+| Registered, not in use | Registered on request, nothing deployed - normal (portals and tools register on first use), not a finding |
+| Platform (always registered) | Registration-free providers Azure keeps registered |
+| Not registered | The subscription cannot create these resources until an Owner / Contributor registers the provider |
+| Registering / Unregistering | A registration change in progress |
+| In use, not registered | Resources exist although the provider is not registered (usually created before it was unregistered) |
+
+It also lists the **"Allowed resource types" / "Not allowed resource types"** policy assignments that apply -
+on the subscription, one of its resource groups or an ancestor management group - with their enforcement mode.
+Resource types in use that such a policy denies raise `resource_type_denied_by_policy`. The estate overview adds
+the same view across all subscriptions (where each provider is registered, used, or registered but unused).
 
 ## 5c. Estate inventory (all subscriptions)
 
@@ -225,6 +272,30 @@ every type that reports them.
 | Data Factory, Logic apps, Automation | succeeded / failed runs, jobs |
 | Application Gateway, APIM, Front Door, Firewall, Load balancer | requests / capacity, data processed, bytes |
 | Data Explorer | `CPU`, `IngestionUtilization` |
+
+### VM right-sizing (`vm_rightsizing_opportunity`)
+
+A resize is suggested only when the new size passes **every** check below - the aim is no false positives. Each
+VM gets two candidates: Azure Advisor's own target (when Advisor has one) and one size down in the same family
+(half the vCPUs and memory, never below 2 vCPU). The cheapest candidate that passes wins; an Advisor target that
+fails is named in the finding with the check it failed (for example memory that would reach 88 % on Advisor's
+burstable size).
+
+| Check | Rule | Source |
+|---|---|---|
+| CPU on the target | P95 of 30-minute CPU peaks at most 40 %, P99 at most 80 %, over 30 days | Azure Advisor's user-facing limit (40 %); P99 and 30 days added |
+| Memory on the target | P99 of memory used (from the lowest available memory per 30 minutes) at most 60 % | Azure Advisor, user-facing |
+| Burstable target (B-series) | Projected average at most 80 % of the size's base CPU performance, P95 at most twice the baseline | Azure Advisor burstable rule; baselines from the Microsoft Learn Bv1 / Bsv2 / Basv2 pages |
+| Disk | VM cached / uncached IOPS and bandwidth consumed %, projected on the target's limits, at most 40 % at P95 | Advisor's performance metrics |
+| Network | P95 outbound at most 100 Mbps | Fixed ceiling (bandwidth is not in the SKU catalogue) |
+| Compatibility | Same Premium Storage, Accelerated Networking when a NIC uses it, CPU architecture, Hyper-V generation, disk / NIC counts, not restricted in the region / zone, a temp disk when the current size has one | Advisor rules; Azure resize limitations |
+| Data | At least 90 % of the 30 days measured; VM at least 30 days old | Added |
+| Never suggested | Network virtual appliances, Spot, scale-set / AKS / Databricks VMs, ephemeral OS disks, `arg-ignore` / `arg-reserved` tags | Advisor's own list of cases where resizing does not apply |
+| Value | Retail pay-as-you-go difference; capped at what the VM actually costs (the title, severity and savings register show the capped value, and under USD 10/month is not suggested), and a VM covered by a reservation or savings plan says so (the resize frees commitment rather than cutting its invoice line); end-of-life series are named | Advisor's limitation note |
+
+The finding states the utilisation now and projected on the new size, the monthly and yearly value, whether Azure
+Advisor agrees, and the steps (owner confirmation, maintenance-window resize with a restart, one week of
+monitoring). Resizing within an availability set may require deallocating the whole set.
 
 **Hourly profile.** For every CPU, memory and percentage metric a second batch reads hourly points: the **CPU
 busiest hour** column, P95 and burst hours in the CPU tooltip, the memory busiest hour, and "... busiest hour N %"

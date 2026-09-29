@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from scanners.base.providers import STATUS_ORDER
 from scripts.subscription_analysis.collector import AnalysisData, to_jsonable
 from scripts.subscription_analysis.estate import ESTATE_DIR, HYGIENE_TYPES, config_of, os_of, size_of, state_of
 from scripts.subscription_analysis.knowledge import (
@@ -119,6 +120,34 @@ class Model:
         self.month_keys = sorted(self.months)
         self.total_12m = sum(self.months.values())
         self.lumpy = self._is_lumpy()
+        # Invoiced (actual) monthly totals: budgets are evaluated on these, not on the amortized basis above.
+        self.months_actual: Dict[str, float] = defaultdict(float)
+        for r in self.data.cost.get("monthly_actual") or []:
+            month = str(r.get("BillingMonth") or r.get("UsageDate") or "")[:7]
+            if len(month) == 8 and month.isdigit():
+                month = f"{month[:4]}-{month[4:6]}"
+            self.months_actual[month] += float(r.get("Cost") or 0)
+        self.total_12m_actual = sum(self.months_actual.values()) if self.months_actual else None
+
+    @property
+    def amortized(self) -> bool:
+        return (self.data.cost.get("cost_basis") or "ActualCost") == "AmortizedCost"
+
+    @property
+    def cost_basis_label(self) -> str:
+        return "amortized cost" if self.amortized else "actual cost"
+
+    def subscription_budgets(self) -> List[Dict[str, Any]]:
+        """Budgets that cover the whole subscription without a filter - the only ones comparable to its total.
+        Resource-group and filtered budgets are evaluated on their own scope by budget_scanner."""
+        sub_scope = f"/subscriptions/{self.sub.get('id') or ''}".lower()
+        return [b for b in (self.data.cost.get("budgets") or [])
+                if str(b.get("id") or sub_scope).lower().split("/providers/microsoft.consumption/")[0] == sub_scope
+                and not (b.get("properties") or {}).get("filter")]
+
+    def budget_month_cost(self, month: str) -> float:
+        """Budgets track invoiced cost: the actual month when known, else the report's own basis."""
+        return self.months_actual[month] if self.months_actual else self.months.get(month, 0.0)
 
     LUMPY_SHARE = 0.5
     LUMPY_PEAK_RATIO = 3.0
@@ -202,6 +231,8 @@ class Model:
         entry = (self.data.cost.get("last30_by_resource") or {}).get((resource_id or "").lower()) or {}
         if entry.get("cost") is not None:
             return money(entry["cost"], "", 2)
+        if "/providers/microsoft.consumption/" in (resource_id or "").lower():
+            return "-"  # budgets and other Cost Management objects are not billed
         return "0.00" if resource_id and self.has_cost_data else "-"
 
     def impact_label(self, f: Dict[str, Any]) -> str:
@@ -250,7 +281,7 @@ def render_readme(m: Model) -> str:
     waves = m.savings_by_wave()
     top_services = sorted(m.service_30.items(), key=lambda kv: -kv[1])[:3]
     risks = [f for f in m.findings if f["severity"] in ("critical", "high") and f["area"] != AREAS[4]][:8]
-    budgets = [b for b in (m.data.cost.get("budgets") or [])
+    budgets = [b for b in m.subscription_budgets()
                if ((b.get("properties") or {}).get("timeGrain") or "").lower() == "monthly"]
     amounts = sorted((float((b.get("properties") or {}).get("amount") or 0) for b in budgets), reverse=True)
     budget_amount = amounts[0] if amounts else 0.0
@@ -265,22 +296,28 @@ def render_readme(m: Model) -> str:
             ["Analysis date", m.data.generated_at.strftime("%Y-%m-%d")],
             ["Cost windows", f"12 months ({m.data.cost.get('window_12m', {}).get('from')} → "
                              f"{m.data.cost.get('window_12m', {}).get('to')}), last 30 days"],
-            ["Billing currency", f"{cur} (actual cost). Savings estimates are computed in USD and converted at the "
-                                 f"subscription's implied rate" if m.fx and cur != "USD" else cur],
+            ["Billing currency", f"{cur}" + (". Savings estimates are computed in USD and converted at the "
+                                             "subscription's implied rate" if m.fx and cur != "USD" else "")],
+            ["Cost basis", ("Amortized cost: reservation and savings-plan purchases are spread over the resources that "
+                            "use them, so covered VMs and databases show their real share"
+                            + (f"; invoiced (actual) cost over the same 12 months: {money(m.total_12m_actual, cur)}"
+                               if m.total_12m_actual is not None else "")) if m.amortized else "Actual (invoiced) cost"],
             ["Method", "Azure Resource Guardian scanners (Resource Graph, ARM, Azure Monitor metrics, Cost Management, "
                        "Defender for Cloud, Advisor), read-only"],
         ]), "",
         "## Executive Summary", "",
         f"- **Resources:** {len(m.data.resources)} in {len(m.data.resource_groups)} resource groups, "
         f"{len({(r.get('location') or '').lower() for r in m.data.resources})} regions.",
-        f"- **Cost:** {money(m.total_12m, cur)} over 12 months; {money(m.total_30, cur)} in the last 30 days"
+        f"- **Cost ({m.cost_basis_label}):** {money(m.total_12m, cur)} over 12 months; {money(m.total_30, cur)} in the "
+        f"last 30 days"
         + (f"; {m.trend_summary()}." if first else "."),
     ]
     if budget_amount:
-        over = sum(1 for k in m.month_keys if m.months[k] > budget_amount)
+        over = sum(1 for k in m.month_keys if m.budget_month_cost(k) > budget_amount)
         label = " / ".join(money(a) for a in amounts) + f" {cur}/month"
         lines.append(f"- **Budget{'s' if len(amounts) > 1 else ''}:** {label} - "
-                     f"{'the largest ' if len(amounts) > 1 else ''}exceeded in {over} of {len(m.month_keys)} months.")
+                     f"{'the largest ' if len(amounts) > 1 else ''}exceeded in {over} of {len(m.month_keys)} months"
+                     + (" (actual, invoiced cost - what budgets track)." if m.months_actual else "."))
     lines.append(f"- **Findings:** {len(m.findings)} - " + ", ".join(
         f"{sev_counts.get(s, 0)} {s}" for s in SEVERITIES if sev_counts.get(s)) + ".")
     lines += ["", "**Why it costs this much (last 30 days, by service):**", "",
@@ -367,7 +404,55 @@ def render_current_findings(m: Model) -> Tuple[str, str]:
     ], ["---", "---", "---:", "---:"]))
     lines += ["", "## 6. Findings Snapshot per Area", ""]
     lines.append(_area_matrix(m))
+    lines += _resource_providers(m)
     return "\n".join(lines), _inventory(m)
+
+
+def _resource_providers(m: Model) -> List[str]:
+    """Which providers the subscription accepts (registered) and which not, against what it uses and policy."""
+    rp = m.data.resource_providers or {}
+    rows = rp.get("providers") or []
+    if not rows:
+        return []
+    counts = rp.get("counts") or {}
+    lines = ["", "## 7. Resource Providers", "",
+             "A resource provider must be **registered** before the subscription accepts its resources; a **not "
+             "registered** provider cannot be used until an Owner / Contributor registers it (the portal and many "
+             "tools register providers on first use). Registered but unused providers are normal and not a finding. "
+             "Raw data: [resource-providers.json](../05-deep-dive/raw/inventory/resource-providers.json).", "",
+             md_table(["Status", "Providers"], [[s, counts[s]] for s in STATUS_ORDER if counts.get(s)],
+                      ["---", "---:"]), ""]
+    shown = [r for r in rows if r["status"] != "Not registered"]
+    lines += [f"### Registered and in-use providers ({len(shown)})", "",
+              md_table(["Provider", "Status", "Registration", "Resources", "Resource types in use"], [
+                  [r["namespace"], r["status"], "on request" if r["registration_policy"] == "RegistrationRequired"
+                   else ("automatic" if r["registration_policy"] == "RegistrationFree" else "-"),
+                   r["resources"] or "0",
+                   ", ".join(f"{t.split('/', 1)[1] if '/' in t else t} ({n})" for t, n in list(r["types"].items())[:6])
+                   + (f" (+{len(r['types']) - 6} more)" if len(r["types"]) > 6 else "")]
+                  for r in shown], ["---", "---", "---", "---:", "---"], drop_empty=True), ""]
+    not_registered = [r["namespace"] for r in rows if r["status"] == "Not registered"]
+    if not_registered:
+        lines += [f"**Not registered ({len(not_registered)}):** the subscription does not accept these providers' "
+                  f"resources yet - " + ", ".join(sorted(not_registered, key=str.lower)[:40])
+                  + (f" and {len(not_registered) - 40} more (see the raw data)." if len(not_registered) > 40 else "."),
+                  ""]
+    policies = rp.get("policies") or []
+    lines += ["### Resource-type policies", ""]
+    if policies:
+        lines += [md_table(["Assignment", "Scope", "Effect", "Enforced", "Resource types"], [
+            [p["name"], p["scope"], p["effect"], "yes" if p["enforced"] else "no (audit only)",
+             ", ".join(p["types"][:8]) + (f" (+{len(p['types']) - 8} more)" if len(p["types"]) > 8 else "")]
+            for p in policies]), ""]
+        denied = rp.get("denied_in_use") or []
+        lines += [("Resource types in use that these policies deny: " + ", ".join(
+            f"{d['type']} ({d['resources']})" for d in denied) + " - see the finding in the gap analysis.")
+                  if denied else "No resource type in use is denied by these policies.", ""]
+    else:
+        lines += ['No "Allowed resource types" or "Not allowed resource types" policy applies to this subscription '
+                  "(directly or through its management groups): every registered provider's resource types may be "
+                  "deployed.", ""]
+    return lines
 
 
 def _span(months: List[str]) -> str:
@@ -482,12 +567,15 @@ def render_gap_analysis(m: Model) -> str:
 
 def render_cost_drivers(m: Model) -> Tuple[str, str]:
     cur = m.currency
-    amounts = sorted((float((b.get("properties") or {}).get("amount") or 0) for b in (m.data.cost.get("budgets") or [])
+    amounts = sorted((float((b.get("properties") or {}).get("amount") or 0) for b in m.subscription_budgets()
                       if ((b.get("properties") or {}).get("timeGrain") or "").lower() == "monthly"), reverse=True)
     amount = amounts[0] if amounts else 0.0
     lines = ["# 03 - Cost Drivers", "", "[← Back to summary](../README.md) · Itemised actions: "
              "[savings-register.md](./savings-register.md)", "",
-             f"Source: Cost Management Query API (ActualCost, {cur}). Raw data: "
+             f"Source: Cost Management Query API ({'AmortizedCost' if m.amortized else 'ActualCost'}, {cur})"
+             + ("; reservation and savings-plan purchases are spread over the resources that use them, and the "
+                "invoiced (actual) month is shown next to it - budgets are compared with the invoiced amount"
+                if m.amortized else "") + ". Raw data: "
              "[05-deep-dive/raw/cost](../05-deep-dive/raw/cost).", ""]
     if m.month_keys:
         lines += ["## 1. 12-Month Trend", ""]
@@ -501,12 +589,16 @@ def render_cost_drivers(m: Model) -> Tuple[str, str]:
                                 key=lambda x: -abs(x[1]))
                 if deltas and abs(deltas[0][1]) >= 0.1 * (m.months[prev] or 1):
                     top_move = f"{deltas[0][0]} {deltas[0][1]:+,.0f}"
-            rows.append([k, money(v, "", 0), pct(v, amount) if amount else "-", top_move])
+            rows.append([k, money(v, "", 0), money(m.months_actual.get(k), "", 0) if m.months_actual else "",
+                         pct(m.budget_month_cost(k), amount) if amount else "-", top_move])
             prev = k
-        rows.append(["**12-month total**", f"**{money(m.total_12m)}**", "", ""])
-        lines.append(md_table(["Month", cur, "vs budget" + (f" ({amount:,.0f})" if amount else ""), "Largest change"],
-                              rows, ["---", "---:", "---:", "---"]))
-        lines += ["", "```mermaid", "xychart-beta", f'  title "Monthly actual cost ({cur})"',
+        rows.append(["**12-month total**", f"**{money(m.total_12m)}**",
+                     f"**{money(m.total_12m_actual)}**" if m.total_12m_actual is not None else "", "", ""])
+        lines.append(md_table(["Month", f"{cur} ({'amortized' if m.amortized else 'actual'})", f"{cur} (invoiced)",
+                               "Invoiced vs budget" + (f" ({amount:,.0f})" if amount else ""), "Largest change"],
+                              rows, ["---", "---:", "---:", "---:", "---"], drop_empty=True))
+        lines += ["", "```mermaid", "xychart-beta",
+                  f'  title "Monthly {m.cost_basis_label} ({cur})"',
                   "  x-axis [" + ", ".join(k[2:] for k in m.month_keys) + "]",
                   f'  y-axis "{cur}" {min(0, int(min(m.months.values()) * 1.15) - 1)} --> {int(max(m.months.values()) * 1.15) + 1}',
                   "  bar [" + ", ".join(str(int(m.months[k])) for k in m.month_keys) + "]", "```", ""]
@@ -864,6 +956,8 @@ def write_report(data: AnalysisData, output: Path) -> Model:
     dump("scanner-runs.json", data.scanner_runs)
     if data.ai_deployments:
         dump("inventory/ai-deployments.json", data.ai_deployments)
+    if data.resource_providers:
+        dump("inventory/resource-providers.json", data.resource_providers)
     for key, value in data.cost.items():
         dump(f"cost/{key}.json", value)
     dump("metadata.json", {"subscription": data.subscription, "generated_at": data.generated_at,

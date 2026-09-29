@@ -22,15 +22,18 @@ from azure.mgmt.costmanagement.models import (
     QueryDataset,
     QueryAggregation,
     QueryGrouping,
-    QueryFilter,
     GranularityType,
     TimeframeType,
-    ExternalCloudProviderType,
 )
 from azure.identity import ClientSecretCredential
 
 logger = logging.getLogger(__name__)
 
+
+
+# Amortized: reservation and savings-plan purchases spread over the resources that use them (same basis as the
+# scanners and the subscription reports).
+COST_TYPE = "AmortizedCost"
 
 class AzureCostService:
     """
@@ -71,7 +74,7 @@ class AzureCostService:
 
         scope = f"/subscriptions/{subscription_id}"
         query = QueryDefinition(
-            type="ActualCost",
+            type=COST_TYPE,
             timeframe=TimeframeType.CUSTOM,
             time_period=QueryTimePeriod(
                 from_property=start_date.isoformat() + "T00:00:00Z",
@@ -124,7 +127,7 @@ class AzureCostService:
         scope = f"/subscriptions/{subscription_id}"
 
         query = QueryDefinition(
-            type="ActualCost",
+            type=COST_TYPE,
             timeframe=TimeframeType.CUSTOM,
             time_period=QueryTimePeriod(
                 from_property=start_date.isoformat() + "T00:00:00Z",
@@ -173,7 +176,7 @@ class AzureCostService:
 
         scope = f"/subscriptions/{subscription_id}"
         query = QueryDefinition(
-            type="ActualCost",
+            type=COST_TYPE,
             timeframe=TimeframeType.CUSTOM,
             time_period=QueryTimePeriod(
                 from_property=start_date.isoformat() + "T00:00:00Z",
@@ -229,7 +232,7 @@ class AzureCostService:
 
         scope = f"/subscriptions/{subscription_id}"
         query = QueryDefinition(
-            type="ActualCost",
+            type=COST_TYPE,
             timeframe=TimeframeType.CUSTOM,
             time_period=QueryTimePeriod(
                 from_property=start_date.isoformat() + "T00:00:00Z",

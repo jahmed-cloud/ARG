@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from scanners.base.azure_api import point_profile
-from scanners.base.naming import env_from_name, env_from_tags
+from scanners.base.naming import env_from_name, env_from_tags, is_nva_image
 
 ESTATE_DIR = "_estate"
 ESTATE_FILE = "estate.json"
@@ -937,7 +937,59 @@ def collect_inventory(credential: Any, subscriptions: List[Dict[str, Any]]) -> D
         usage = asyncio.run(collect_usage(credential, rows))
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "source": "resource-graph",
             "subscriptions": [{"id": s["id"].lower(), "name": s.get("name")} for s in subscriptions],
-            "usage": usage, "resources": rows}
+            "usage": usage, "resources": rows, "providers": asyncio.run(collect_providers(credential, ids))}
+
+
+async def collect_providers(credential: Any, subscription_ids: List[str], concurrency: int = 16
+                            ) -> Dict[str, List[Dict[str, str]]]:
+    """{subscription id: [{namespace, state, policy}]} - which resource providers each subscription accepts."""
+    from scanners.base.azure_api import ArmClient, gather_limited
+
+    arm = ArmClient(credential)
+    out: Dict[str, List[Dict[str, str]]] = {}
+
+    async def one(sub_id: str) -> None:
+        try:
+            items = await arm.get_all(f"/subscriptions/{sub_id}/providers", "2021-04-01")
+        except Exception:
+            return
+        out[sub_id.lower()] = [{"namespace": p.get("namespace") or "", "state": p.get("registrationState") or "",
+                                "policy": p.get("registrationPolicy") or ""} for p in items]
+
+    try:
+        await gather_limited(subscription_ids, one, concurrency)
+    finally:
+        arm.close()
+    return out
+
+
+def provider_overview(resources: List[Dict[str, Any]], providers: Dict[str, List[Dict[str, str]]]
+                      ) -> List[Dict[str, Any]]:
+    """Per provider across the estate: subscriptions where it is registered, in use, registered but unused."""
+    used: Dict[str, set] = defaultdict(set)
+    counts: Counter = Counter()
+    for r in resources:
+        ns = (r.get("type") or "").split("/")[0]
+        if ns:
+            used[ns].add(r.get("subscriptionId"))
+            counts[ns] += 1
+    rows: Dict[str, Dict[str, Any]] = {}
+    for sub_id, items in (providers or {}).items():
+        for p in items:
+            ns = p["namespace"].lower()
+            row = rows.setdefault(ns, {"namespace": p["namespace"], "registered": 0, "not_registered": 0,
+                                       "automatic": p.get("policy") == "RegistrationFree"})
+            if (p.get("state") or "").lower() == "registered":
+                row["registered"] += 1
+            else:
+                row["not_registered"] += 1
+    for ns, subs in used.items():
+        rows.setdefault(ns, {"namespace": ns, "registered": 0, "not_registered": 0, "automatic": False})
+    for ns, row in rows.items():
+        row["in_use"] = len(used.get(ns, set()))
+        row["resources"] = counts.get(ns, 0)
+        row["registered_unused"] = max(0, row["registered"] - row["in_use"])
+    return sorted(rows.values(), key=lambda r: (-r["in_use"], -r["registered"], r["namespace"].lower()))
 
 
 async def enrich_compute(credential: Any, rows: List[Dict[str, Any]]) -> None:
@@ -1363,17 +1415,9 @@ def is_dormant(row: Dict[str, Any]) -> bool:
             and (row.get("usedGB") or 0) > DORMANT_MIN_GB)
 
 
-# Marketplace images of network virtual appliances: vendor-sized and licensed per vCPU, and they report ~100 %
-# memory used, so average CPU says nothing about whether they can be downsized.
-NVA_IMAGE_HINTS = ("fortinet", "fortigate", "paloalto", "vmseries", "checkpoint", "check-point", "cisco", "csr1000v",
-                   "asav", "barracuda", "f5-big-ip", "sophos", "vsrx", "juniper", "netscaler", "citrix-adc", "versa",
-                   "silver-peak", "silverpeak", "aviatrix", "vyos", "pfsense", "opnsense", "zscaler", "watchguard",
-                   "arista", "meraki", "cloudguard", "vseries")
-
-
 def is_nva(row: Dict[str, Any]) -> bool:
-    image = f"{row.get('imageOffer') or ''} {row.get('imageSku') or ''}".lower()
-    return any(hint in image for hint in NVA_IMAGE_HINTS)
+    """Network virtual appliance (firewall, router) - never a right-sizing candidate."""
+    return is_nva_image(row.get("imageOffer"), row.get("imageSku"))
 
 
 def human(n: Optional[float]) -> str:
@@ -1529,6 +1573,7 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "inventory_at": inventory.get("generated_at"),
         "usage": inventory.get("usage") or {},
+        "providers": provider_overview(resources, inventory.get("providers") or {}) if inventory.get("providers") else [],
         "source": inventory.get("source") or "reports",
         "subscriptions": subscriptions,
         "resources": sorted(resources, key=lambda r: (r["category"], r["typeLabel"], r["subscription"].lower(), r["name"].lower())),
@@ -1678,8 +1723,27 @@ def _rightsizing_note(r: Dict[str, Any]) -> str:
     return "; ".join(notes) or "one size down"
 
 
-def _utilisation(resources: List[Dict[str, Any]]) -> List[str]:
-    """Running VMs by 30-day average CPU, and the largest ones that barely use their CPU (right-sizing candidates)."""
+def _validated_rightsizing(resources: List[Dict[str, Any]], suggestions: List[Dict[str, Any]]) -> List[str]:
+    """VM resizes that passed every check of vm_rightsizing_scanner (30 days of CPU, memory, disk, network)."""
+    by_id = {r["id"].lower(): r for r in resources}
+    rows = sorted((s for s in suggestions if s.get("type") == "vm_rightsizing_opportunity"),
+                  key=lambda s: -(s.get("savingsUsd") or 0))
+    if not rows:
+        return []
+    lines = [f"### Validated right-sizing suggestions ({len(rows)})", "",
+             "Each resize passed every check of the VM right-sizing scanner: on the new size, CPU P95 at most 40 % "
+             "and memory P99 at most 60 % over 30 days (Azure Advisor's limits for user-facing workloads), disk and "
+             "network headroom, and the same Premium Storage / Accelerated Networking / temp-disk capabilities. "
+             "Details and the evidence are in each subscription's report.", "",
+             _table(["VM", "Suggestion", "Est. saving / month (USD)", "Subscription"], [
+                 [s["resourceName"], s["title"].split(": ", 1)[-1], f"{s['savingsUsd']:,.0f}" if s.get("savingsUsd") else "0",
+                  (by_id.get((s.get("resourceId") or "").lower()) or {}).get("subscription") or s.get("subscriptionId")]
+                 for s in rows], ["---", "---", "---:", "---"]), ""]
+    return lines
+
+
+def _utilisation(resources: List[Dict[str, Any]], suggestions: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """Running VMs by 30-day average CPU, validated right-sizing suggestions, then a low-CPU screening list."""
     vms = [r for r in resources if r["type"] == "microsoft.compute/virtualmachines" and r["state"] == "running"]
     if not vms:
         return []
@@ -1688,9 +1752,12 @@ def _utilisation(resources: List[Dict[str, Any]]) -> List[str]:
     candidates, excluded = rightsizing(vms)
     lines = ["### Running VMs by average CPU (last 30 days)", "",
              _table(["Average CPU", "VMs"], [[b, bands[b]] for b in order if bands.get(b)], ["---", "---:"]), ""]
+    lines += _validated_rightsizing(resources, suggestions or [])
     if candidates or excluded:
-        lines += [f"### Right-sizing candidates: {len(candidates)} running VM(s) with {RIGHTSIZE_MIN_VCPU}+ vCPU, under "
-                  f"{RIGHTSIZE_MAX_CPU:.0f} % average CPU and under {RIGHTSIZE_MAX_MEM:.0f} % memory used", ""]
+        lines += [f"### Right-sizing screening: {len(candidates)} running VM(s) with {RIGHTSIZE_MIN_VCPU}+ vCPU, under "
+                  f"{RIGHTSIZE_MAX_CPU:.0f} % average CPU and under {RIGHTSIZE_MAX_MEM:.0f} % memory used", "",
+                  "_A screening list from averages, not a recommendation: only the validated suggestions above passed "
+                  "the full checks._", ""]
     if candidates:
         lines += [_table(["VM", "Size", "vCPU / RAM", "Avg CPU", "Busiest hour", "1-min peak", "Avg memory",
                           "Last 30 days", "Note", "Subscription"], [
@@ -1748,6 +1815,31 @@ def _usage_overview(resources: List[Dict[str, Any]], stats: Optional[Dict[str, A
                       for r in idle[:30]], ["---", "---", "---", "---:", "---", "---"]),
                   "", "_Idle by metrics is a strong hint, not proof: confirm with the owner (monthly / DR jobs) before "
                       "deleting._", ""]
+    return lines
+
+
+def _providers_overview(rows: List[Dict[str, Any]], subscriptions: int) -> List[str]:
+    """Resource providers across the estate: where each is accepted (registered), used, or registered but idle."""
+    if not rows:
+        return []
+    in_use = [r for r in rows if r["in_use"]]
+    idle = sorted((r for r in rows if r["registered_unused"] and not r["automatic"]),
+                  key=lambda r: (-r["registered_unused"], r["namespace"].lower()))
+    lines = ["## Resource providers", "",
+             f"A subscription accepts a provider's resources only once the provider is **registered**. Across "
+             f"{subscriptions} subscriptions, {len(in_use)} providers are in use. Registered but unused providers "
+             f"are normal (the portal and tools register them on first use) and are not findings; per-subscription "
+             f"detail and any allow / deny resource-type policies are in each report (01 - Current findings, "
+             f"section 7).", "",
+             f"### Providers in use ({len(in_use)})", "",
+             _table(["Provider", "Subscriptions using it", "Resources", "Registered in", "Not registered in"], [
+                 [r["namespace"], r["in_use"], r["resources"], r["registered"], r["not_registered"]]
+                 for r in in_use], ["---", "---:", "---:", "---:", "---:"]), ""]
+    if idle:
+        lines += [f"### Registered but unused (on-request providers, {len(idle)})", "",
+                  _table(["Provider", "Subscriptions where registered but unused", "Registered in"], [
+                      [r["namespace"], r["registered_unused"], r["registered"]] for r in idle[:40]],
+                         ["---", "---:", "---:"]), ""]
     return lines
 
 
@@ -1841,8 +1933,9 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
     lines += _sizes(resources, "microsoft.azurearcdata/sqlserverinstances",
                     "Arc SQL Server instances by version · edition · vCores")
     lines += _sizes(resources, "microsoft.sqlvirtualmachine/sqlvirtualmachines", "SQL Server on VMs by edition · license")
-    lines += _utilisation(resources)
+    lines += _utilisation(resources, suggestions)
     lines += _usage_overview(resources, estate.get("usage"))
+    lines += _providers_overview(estate.get("providers") or [], len(estate["subscriptions"]))
 
     regions = Counter(r["location"] or "(none)" for r in resources)
     envs = Counter(r["env"] for r in resources)

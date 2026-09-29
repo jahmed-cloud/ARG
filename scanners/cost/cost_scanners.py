@@ -16,7 +16,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, cached_metrics, cost_for, get_resource_costs
+from scanners.base.azure_api import (
+    ACTUAL_COST,
+    DEFAULT_ARM_CONCURRENCY,
+    cached_metrics,
+    cost_for,
+    gather_limited,
+    get_resource_costs,
+    price_at_actual_cost,
+)
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -69,7 +77,7 @@ class IdleIoTHubScanner(PostureScanner):
                 continue
             sku, units = hub.get("sku_name") or "S1", hub.get("units") or 1
             saving = IOT_HUB_UNIT_USD.get(sku, 0.0) * units
-            findings.append(self.resource_finding(
+            findings.append(await price_at_actual_cost(context, self.resource_finding(
                 hub,
                 finding_type="idle_iot_hub",
                 title=f"Idle IoT Hub ({sku}): {hub['name']}",
@@ -83,7 +91,7 @@ class IdleIoTHubScanner(PostureScanner):
                 evidence={"max_connected_devices_30d": 0, "max_daily_messages_30d": 0, "sku": sku, "units": units},
                 estimated_monthly_savings_usd=saving,
                 caf_control="Cost Optimization",
-            ))
+            )))
         return ScanOutput(findings=findings, resources_scanned=len(hubs), warnings=warnings)
 
     def _mock_data(self) -> List[Dict[str, Any]]:
@@ -324,7 +332,7 @@ class MarketplaceSaaSScanner(PostureScanner):
 
         warnings = []
         if self.is_live(context):
-            costs = await get_resource_costs(context, days=self.COST_DAYS)
+            costs = await get_resource_costs(context, days=self.COST_DAYS, cost_type=ACTUAL_COST)
             if costs is None:
                 warnings.append("12-month SaaS cost unavailable (Cost Management query failed); commitments not assessed.")
             for r in rows:

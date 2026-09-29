@@ -60,6 +60,9 @@ class AzureCliSession:
     """Thread-safe holder for the AzureCliCredential used by every analysis job."""
 
     STATUS_TTL_SECONDS = 300
+    # With an expired session `az account get-access-token` can hang on Windows (waiting
+    # for an interactive prompt); never let that block portal start-up or page loads.
+    TOKEN_TIMEOUT_SECONDS = 20
 
     def __init__(self, tenant_id: Optional[str] = None, credential_factory=None):
         self._tenant_id = tenant_id
@@ -90,7 +93,9 @@ class AzureCliSession:
             if refresh:
                 self._credential = None  # pick up a new `az login` (other account / tenant)
         try:
-            token = self.credential.get_token(ARM_SCOPE)
+            from scanners.base.azure_api import call_with_timeout
+
+            token = call_with_timeout(self.credential.get_token, self.TOKEN_TIMEOUT_SECONDS, ARM_SCOPE)
             claims = token_claims(token.token)
             status = {
                 "signed_in": True,
@@ -113,6 +118,9 @@ class AzureCliSession:
 def friendly_error(exc: Exception) -> str:
     text = str(exc)
     lowered = text.lower()
+    if isinstance(exc, TimeoutError):
+        return ("The Azure CLI did not respond - the az login session has probably expired (Conditional Access). "
+                "Run `az login` in a terminal, then click Refresh.")
     if "az login" in lowered or "please run" in lowered or "not logged in" in lowered:
         return "The Azure CLI is not signed in. Run `az login` in a terminal, then click Refresh."
     if "azure cli not found" in lowered or "not found on path" in lowered:

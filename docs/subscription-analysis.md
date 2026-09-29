@@ -276,7 +276,7 @@ burstable size).
 | Compatibility | Same Premium Storage, Accelerated Networking when a NIC uses it, CPU architecture, Hyper-V generation, disk / NIC counts, not restricted in the region / zone, a temp disk when the current size has one | Advisor rules; Azure resize limitations |
 | Data | At least 90 % of the 30 days measured; VM at least 30 days old | Added |
 | Never suggested | Network virtual appliances, Spot, scale-set / AKS / Databricks VMs, ephemeral OS disks, `arg-ignore` / `arg-reserved` tags | Advisor's own list of cases where resizing does not apply |
-| Value | Retail pay-as-you-go difference; capped at what the VM actually costs, and a VM covered by a reservation or savings plan says so (the resize frees commitment rather than cutting its invoice line); end-of-life series are named | Advisor's limitation note |
+| Value | Retail pay-as-you-go difference; capped at what the VM actually costs (the title, severity and savings register show the capped value, and under USD 10/month is not suggested), and a VM covered by a reservation or savings plan says so (the resize frees commitment rather than cutting its invoice line); end-of-life series are named | Advisor's limitation note |
 
 The finding states the utilisation now and projected on the new size, the monthly and yearly value, whether Azure
 Advisor agrees, and the steps (owner confirmation, maintenance-window resize with a restart, one week of

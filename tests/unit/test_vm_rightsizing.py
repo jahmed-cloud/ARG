@@ -141,6 +141,19 @@ def test_uncovered_vm_saving_never_exceeds_its_amortized_cost():
     choice = asyncio.run(scanner._choose(ScanContext(subscription_id="s", tenant_id="t", scan_job_id="j"), case))
     f = scanner._finding(case, choice)
     assert f.evidence["covered_by_commitment"] is False and f.estimated_monthly_savings_usd == 20.0
+    assert f.title == "Right-size vm-app-01: Standard_D4s_v5 to Standard_D2s_v5 (~USD 20/month)"
+    assert "Value: about USD 20/month (USD 240/year), scaled to this VM's 30-day amortized cost of USD 40" in f.description
+    assert "the list-price difference is USD 84/month" in f.description and f.severity.value == "low"
+
+
+def test_capped_saving_below_the_floor_is_not_suggested(monkeypatch):
+    scanner = ScannerRegistry.get("vm_rightsizing_scanner")(config={})
+    cases = scanner._mock_data()
+    for case in cases:
+        case["cost_usd"], case["actual_cost_usd"] = 10.0, 10.0   # ran a few days: resizing saves ~USD 5/month
+    monkeypatch.setattr(scanner, "_mock_data", lambda: cases)
+    ctx = ScanContext(subscription_id="s", tenant_id="t", scan_job_id="j")
+    assert asyncio.run(scanner.execute(ctx)).findings == []
 
 
 def test_value_mentions_end_of_life_series():

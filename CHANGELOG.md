@@ -34,6 +34,10 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 - `MEMORY.md` is no longer part of the repository; maintainers keep their AI-assistant notes locally.
 
 ### Fixed
+- VM right-sizing titles and severity used the list-price difference while the saving was capped at what the VM
+  actually costs (e.g. "~USD 142/month" on a finding worth USD 66). Title, severity and savings now use the capped
+  value, the description names both figures and why they differ, and a capped saving under USD 10/month is not
+  suggested.
 - The backend container stopped at once when its image was built from a Windows checkout
   (`exec /entrypoint.sh: No such file or directory`, CRLF line endings). `.gitattributes` keeps shell and docker
   files LF, and the image strips carriage returns from the entrypoint. `.dockerignore` keeps `reports/` and

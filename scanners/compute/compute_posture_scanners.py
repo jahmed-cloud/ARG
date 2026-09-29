@@ -1153,7 +1153,10 @@ class VmRightsizingScanner(PostureScanner):
         for case in cases:
             choice = await self._choose(context, case)
             if choice is not None:
-                findings.append(self._finding(case, choice))
+                finding = self._finding(case, choice)
+                # the floor applies to the capped saving too: a VM that barely ran saves little by resizing
+                if finding.estimated_monthly_savings_usd >= RIGHTSIZE_LIMITS["min_saving_usd"]:
+                    findings.append(finding)
         return ScanOutput(findings=findings, resources_scanned=len(cases), warnings=warnings)
 
     async def _live_cases(self, context: ScanContext, warnings: List[str]) -> List[Dict[str, Any]]:
@@ -1266,7 +1269,15 @@ class VmRightsizingScanner(PostureScanner):
                          f"plan the move to a current series before then")
         else:
             lifecycle = ""
-        value = (f"Value: about USD {retail:,.0f}/month (USD {retail * 12:,.0f}/year) at pay-as-you-go prices"
+        # The title, severity and savings register all use `saving`: the list-price difference, capped at what
+        # the VM actually costs.
+        if round(saving) < round(retail):
+            reason = "the commitment discount" if covered else "discounts or part-time running"
+            basis = (f", scaled to this VM's 30-day amortized cost of USD {amortized:,.0f}, which is below list price "
+                     f"({reason}); the list-price difference is USD {retail:,.0f}/month")
+        else:
+            basis = " at pay-as-you-go prices"
+        value = (f"Value: about USD {saving:,.0f}/month (USD {saving * 12:,.0f}/year){basis}"
                  + (f"; this VM's compute is mostly covered by a reservation or savings plan (30-day amortized cost "
                     f"USD {amortized:,.0f}, of which USD {invoiced:,.0f} is invoiced as pay-as-you-go), so the resize "
                     f"frees that commitment for other VMs rather than cutting this invoice line" if covered else "")
@@ -1290,10 +1301,10 @@ class VmRightsizingScanner(PostureScanner):
         return self.resource_finding(
             vm,
             finding_type="vm_rightsizing_opportunity",
-            title=f"Right-size {vm['name']}: {cur_name} to {tgt_name} (~USD {retail:,.0f}/month)",
+            title=f"Right-size {vm['name']}: {cur_name} to {tgt_name} (~USD {saving:,.0f}/month)",
             description=description,
             resource_type="microsoft.compute/virtualmachines",
-            severity=SeverityLevel.MEDIUM if retail >= 100 else SeverityLevel.LOW,
+            severity=SeverityLevel.MEDIUM if saving >= 100 else SeverityLevel.LOW,
             remediation_steps=remediation,
             azure_cli_script=f"az vm resize --ids {vm['id']} --size {tgt_name}",
             evidence={

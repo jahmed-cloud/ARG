@@ -10,7 +10,10 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 - `python -m scripts.connect_azure` connects the Docker stack the way the local scanner works: after `az login` it
   creates or reuses the read-only service principal `arg-scanner`, assigns Reader, Cost Management Reader and
   Security Reader on each subscription (existing roles skipped), and registers the tenant and subscriptions in ARG.
-  `--subscription` limits it, `--scan` starts a scan, `--new-secret` replaces an expiring secret. The secret goes
+  By default it takes every subscription the `az login` can read (Enabled, Warned, PastDue) in all signed-in
+  tenants, one principal per tenant; a subscription without rights to assign Reader is skipped with the reason and
+  a summary lists connected and skipped ones. `--current-tenant-only` and `--subscription` limit it, `--scan`
+  starts a scan, `--new-secret` replaces an expiring secret. The secret goes
   from Azure straight to ARG's API and is never printed. The manual Settings / Subscriptions steps remain.
 - `PATCH /api/v1/tenants/{id}` also accepts `client_id` / `client_secret`, so an expired secret no longer means
   deleting the tenant (which requires deleting its subscriptions and their scan history). Omitted fields are kept.

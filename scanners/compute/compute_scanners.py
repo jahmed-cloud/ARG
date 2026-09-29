@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
+from scanners.base.azure_api import price_at_actual_cost
 from scanners.base.base_scanner import (
     BaseScanner,
     ScanContext,
@@ -118,7 +119,7 @@ class UnattachedDiskScanner(BaseScanner):
                 f"}}"
             )
 
-            findings.append(self.make_finding(
+            findings.append(await price_at_actual_cost(context, self.make_finding(
                 finding_type="unattached_managed_disk",
                 title=f"Unattached managed disk: {disk['name']}",
                 description=(
@@ -152,7 +153,7 @@ class UnattachedDiskScanner(BaseScanner):
                 estimated_monthly_savings_usd=estimated_cost,
                 caf_control="Cost Optimization",
                 cis_control="6.3",
-            ))
+            )))
 
         return ScanOutput(
             findings=findings,
@@ -257,7 +258,7 @@ class OldSnapshotScanner(BaseScanner):
             age_days = self._calculate_age_days(snap.get("time_created", ""))
             source_disk_id = snap.get("source_disk", "N/A")
 
-            findings.append(self.make_finding(
+            findings.append(await price_at_actual_cost(context, self.make_finding(
                 finding_type="old_disk_snapshot",
                 title=f"Old snapshot: {snap['name']} ({age_days} days old)",
                 description=(
@@ -286,7 +287,7 @@ class OldSnapshotScanner(BaseScanner):
                     "is_incremental": snap.get("snapshot_type", False),
                 },
                 estimated_monthly_savings_usd=estimated_cost,
-            ))
+            )))
 
         return ScanOutput(
             findings=findings,

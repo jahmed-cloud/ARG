@@ -5,6 +5,84 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **Savings at your own price.** Savings that were list-price estimates are now valued at the resource's own
+  30-day amortized cost, so negotiated discounts, reservations and savings plans count. Removals (idle IoT Hub,
+  unattached disk, old snapshot, unused or orphaned public IP, public IP next to Bastion, empty load balancer and
+  Application Gateway, unused Private Link DNS zone) save what the resource actually costs; price changes (App
+  Service plan generation) are scaled to it, never above the list-price difference. Without cost data the list
+  estimate stays, labelled as such (`saving_basis`, `list_price_saving_usd`, `amortized_cost_usd_30d` in the
+  evidence). See the guide, section 5a-2.
+- **Cost basis is amortized cost.** Actual cost put reservation and savings-plan purchases on the subscription that
+  bought them, so a VM covered by a savings plan bought elsewhere showed ~2 CHF a month instead of ~147 CHF, and
+  the buying subscription looked expensive. Per-resource cost, subscription totals, trends, savings and the estate
+  now use AmortizedCost (Cost Management spreads the commitment over the resources that use it); the report states
+  the basis and shows the invoiced (actual) cost next to it. Budgets are still compared with actual cost (that is
+  what Azure evaluates), and Marketplace SaaS stays on actual cost (purchases are not amortized). VM right-sizing
+  detects commitment coverage from invoiced vs amortized cost. The Docker cost dashboard uses the same basis.
+- The Copilot skill (`.github/skills/arg-subscription-analysis`) stays in the repository and is up to date: PDF
+  export, `-Parallel` / `-Estate` runs, the idle and utilisation logic, amortized cost, budgets on their own scope,
+  resource providers and validated VM right-sizing.
+
+### Added
+- **Podman on Windows.** `scripts/Start-PodmanStack.ps1` builds and starts the Docker stack with Podman Desktop:
+  it builds with `podman build` (podman-compose on Windows drops the `dockerfile:` path) from a clean
+  `git archive` of HEAD (the Windows client ignores `.dockerignore`) and runs the stack rootless, so its ports
+  reach Windows `localhost`. See local-run.md, section 8.
+- **Resource providers.** Each report (01 - Current findings, section 7) shows which providers the subscription
+  accepts (registered) and which not, against what it uses: in use, registered but not in use, platform (always
+  registered), not registered, registering, and in use but not registered. It lists the "Allowed resource types" /
+  "Not allowed resource types" policy assignments that apply (on the subscription, a resource group or an ancestor
+  management group, enforced or audit only). The estate overview adds the same view across all subscriptions. New
+  finding `resource_type_denied_by_policy` (`resource_provider_policy_scanner`) for resource types in use that such a
+  policy denies. Registered but unused providers are not findings - Azure registers many on its own.
+
+### Removed
+- `MEMORY.md` is no longer part of the repository; maintainers keep their AI-assistant notes locally.
+
+### Fixed
+- VM right-sizing titles and severity used the list-price difference while the saving was capped at what the VM
+  actually costs (e.g. "~USD 142/month" on a finding worth USD 66). Title, severity and savings now use the capped
+  value, the description names both figures and why they differ, and a capped saving under USD 10/month is not
+  suggested.
+- The backend container stopped at once when its image was built from a Windows checkout
+  (`exec /entrypoint.sh: No such file or directory`, CRLF line endings). `.gitattributes` keeps shell and docker
+  files LF, and the image strips carriage returns from the entrypoint. `.dockerignore` keeps `reports/` and
+  `.venv-local/` out of the build context.
+- **Budgets were compared with the whole subscription.** Resource-group budgets and budgets filtered to a meter (for
+  example one per AI model) were judged against the entire subscription's monthly cost, producing "exceeded by
+  80,391 %" on a 20 CHF budget. Each budget is now evaluated like Azure does: actual cost at its own scope and with
+  its own filter, with Azure's current spend in the evidence. "Overlapping budgets" is reported only for budgets
+  with the same scope and filter. The report overview compares only subscription-wide, unfiltered budgets with the
+  subscription total, and budgets show "-" instead of a 0.00 cost.
+
+### Added
+- **Validated VM right-sizing** (`vm_rightsizing_scanner`, finding `vm_rightsizing_opportunity`). Based on Azure
+  Advisor's documented resize criteria with the stricter user-facing limits for every VM: over 30 days of 30-minute
+  windows, the target size must keep CPU P95 at or below 40 % (P99 at or below 80 %), memory P99 at or below 60 %,
+  disk use at or below 40 % of its limits and network under 100 Mbps; keep Premium Storage, Accelerated Networking,
+  CPU architecture, Hyper-V generation, the temp disk and the disk / NIC counts; be offered in the region and be
+  cheaper. Burstable targets must also stay under their documented base CPU performance. Candidates are Azure
+  Advisor's own target and one size down in the same family; the cheapest that passes wins, and Advisor targets
+  that fail are named with the failed check. Network appliances, Spot, scale-set / AKS / Databricks VMs, ephemeral
+  OS disks and VMs younger than 30 days are never suggested. The value is the retail price difference, capped at
+  the VM's actual cost; commitment-covered VMs and end-of-life series are called out. The estate overview lists
+  the validated suggestions first; its average-CPU list is now labelled a screening list.
+
+### Fixed
+- VM retail prices match both price-list name formats (`Standard_D8s_v5` and `D8als v6`).
+- A portal analysis that fails with an `ImportError` (code updated while the portal was running) now says to restart
+  the portal instead of only showing the import error.
+- **An expired `az login` no longer produces a partial report.** Conditional Access can expire the CLI token in the
+  middle of a run; every scanner then logged warnings and the report was written with holes. The credential now
+  fails fast after the first token error (`FailFastCredential`) and the run stops with "run az login again"; token
+  calls time out after 60 s instead of hanging when `az` waits for an interactive prompt.
+- The local portal no longer hangs on start-up or page loads when the Azure CLI session has expired (20 s token
+  timeout, clear message to run `az login`).
+- `docs/run-locally.md` (portal start, sign-in, reports, stop, troubleshooting) - `local-run.md` linked to it.
+- `python -m scripts.generate_scanner_catalog` regenerates `docs/scanner-catalog.md` from the scanner registry.
+- `.env` is no longer tracked (it only held the `.env.example` placeholders; `.gitignore` already excluded it).
+
 ### Docker workspace redesign and review - 2026-09-28
 
 - Pulled upstream v0.2 through `da69387`, preserving local changes and Docker configuration.

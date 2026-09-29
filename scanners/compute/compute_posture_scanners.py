@@ -20,16 +20,22 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from scanners.base.azure_api import (
+    ACTUAL_COST,
     DEFAULT_ARM_CONCURRENCY,
+    HOURS_BILLED_PER_MONTH,
     HOURS_PER_MONTH,
+    compute_skus,
     cost_for,
     gather_limited,
     get_resource_costs,
     get_retail_price,
+    percentile,
+    price_at_actual_cost,
+    vm_hourly_usd,
 )
 from scanners.base.base_scanner import (
     ScanContext,
@@ -38,7 +44,7 @@ from scanners.base.base_scanner import (
     SeverityLevel,
     register_scanner,
 )
-from scanners.base.naming import env_from_name, env_from_tags
+from scanners.base.naming import env_from_name, env_from_tags, is_nva_image
 from scanners.base.posture_scanner import PostureScanner
 
 
@@ -287,7 +293,7 @@ class AppServicePlanGenerationScanner(PostureScanner):
                 old = await app_service_hourly_usd(context, sku, linux, region)
                 new = await app_service_hourly_usd(context, target, linux, region)
                 saving = round((old - new) * HOURS_PER_MONTH * capacity, 2) if old and new else None
-                findings.append(self.resource_finding(
+                finding = self.resource_finding(
                     plan,
                     finding_type="app_service_plan_previous_generation",
                     title=f"Previous-generation plan {sku}: {plan['name']}",
@@ -313,7 +319,10 @@ class AppServicePlanGenerationScanner(PostureScanner):
                               "hourly_usd_current": old, "hourly_usd_target": new, "linux": linux},
                     estimated_monthly_savings_usd=saving,
                     caf_control="Cost Optimization",
-                ))
+                )
+                if saving:
+                    finding = await price_at_actual_cost(context, finding, list_cost=old * HOURS_PER_MONTH * capacity)
+                findings.append(finding)
 
             premium = (plan.get("sku_tier") or "").lower().startswith("premium")
             if premium and capacity == 1 and (plan.get("sites") or 0) > 0 and not plan.get("zone_redundant"):
@@ -880,3 +889,476 @@ class WebAppConfigurationScanner(PostureScanner):
                        "healthCheckPath": None, "use32BitWorkerProcess": True},
         }]
 
+
+# ---------------------------------------------------------------------------
+# 8. VM right-sizing - validated, no guesswork
+# ---------------------------------------------------------------------------
+#
+# Rules follow Azure Advisor's documented resize criteria (Microsoft Learn, "Optimize virtual machine (VM) or
+# virtual machine scale set (VMSS) spend by resizing or shutting down underutilized instances"), using the stricter
+# *user-facing* limits for every VM and a 30-day look-back instead of 7 days: on the target size, P95 of 30-minute
+# CPU peaks <= 40 % and P99 of memory used <= 60 %; the target keeps Premium Storage / Accelerated Networking, is
+# offered in the region and is cheaper at retail rates. Added here: P99 CPU <= 80 %, disk headroom (VM cached /
+# uncached IOPS and bandwidth consumed %, projected on the target's limits), a network ceiling, burstable baselines
+# (Microsoft Learn Bv1 / Bsv2 / Basv2 size pages), temp-disk / CPU architecture / Hyper-V generation / disk / NIC
+# compatibility, 90 % data coverage and a 30-day minimum age.
+
+RIGHTSIZE_LOOKBACK_DAYS = 30
+RIGHTSIZE_WINDOWS = RIGHTSIZE_LOOKBACK_DAYS * 48          # 30-minute windows
+RIGHTSIZE_LIMITS = {"cpu_p95": 40.0, "cpu_p99": 80.0, "mem_p99": 60.0, "disk_p95": 40.0, "net_p95_mbps": 100.0,
+                    "coverage": 0.9, "burst_avg_share": 0.8, "min_saving_usd": 10.0}
+UNCACHED_METRICS = ("VM Uncached IOPS Consumed Percentage", "VM Uncached Bandwidth Consumed Percentage")
+CACHED_METRICS = ("VM Cached IOPS Consumed Percentage", "VM Cached Bandwidth Consumed Percentage")
+RIGHTSIZE_METRICS = ("Percentage CPU", "Available Memory Bytes", "Network Out Total") + UNCACHED_METRICS + CACHED_METRICS
+# General-purpose, memory- and compute-optimised families only; confidential (DC/EC), GPU, HPC, M and L series have
+# hardware a size step does not preserve.
+RIGHTSIZE_FAMILY = re.compile(r"^standard(a|b|d|e|f)", re.IGNORECASE)
+CONFIDENTIAL_FAMILY = re.compile(r"^standard(dc|ec)", re.IGNORECASE)
+# Base CPU performance of burstable sizes, % of the whole VM on the 0-100 % scale (Microsoft Learn: Bv1, Bsv2, Basv2).
+B_V1_BASELINE = {"standard_b1ls": 5.0, "standard_b1s": 10.0, "standard_b1ms": 20.0, "standard_b2s": 20.0,
+                 "standard_b2ms": 30.0, "standard_b4ms": 22.5, "standard_b8ms": 17.0, "standard_b12ms": 17.0,
+                 "standard_b16ms": 17.0, "standard_b20ms": 17.0}
+B_V2_SIZE = re.compile(r"^standard_b\d+a?(t|l)?s_v2$")  # Bsv2 (Intel) / Basv2 (AMD); Arm Bpsv2 is not covered
+
+
+def burst_baseline(size: Optional[str]) -> Optional[float]:
+    """Base CPU performance (%) of a burstable size, None for a non-burstable or undocumented one."""
+    name = (size or "").lower()
+    if name in B_V1_BASELINE:
+        return B_V1_BASELINE[name]
+    m = B_V2_SIZE.match(name)
+    return {"t": 20.0, "l": 30.0}.get(m.group(1) or "", 40.0) if m else None
+
+
+def _cap(spec: Dict[str, Any], name: str) -> float:
+    try:
+        return float((spec.get("caps") or {}).get(name) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _window_max(series: Dict[str, List[Dict[str, Any]]], names: Tuple[str, ...]) -> List[float]:
+    """Per 30-minute window, the highest of several percentage metrics."""
+    by_ts: Dict[str, float] = {}
+    for name in names:
+        for p in series.get(name) or []:
+            if p.get("maximum") is not None:
+                by_ts[p["timeStamp"]] = max(by_ts.get(p["timeStamp"], 0.0), p["maximum"])
+    return list(by_ts.values())
+
+
+def vm_profile(payload: Dict[str, Any], ram_gb: float) -> Dict[str, Any]:
+    """30-minute windows over the look-back: CPU peaks, memory used (from minimum available), disk and network."""
+    series = {(m.get("name") or {}).get("value"): [p for s in m.get("timeseries") or [] for p in s.get("data") or []]
+              for m in payload.get("value") or []}
+    cpu = series.get("Percentage CPU") or []
+    cpu_max = [p["maximum"] for p in cpu if p.get("maximum") is not None]
+    cpu_avg = [p["average"] for p in cpu if p.get("average") is not None]
+    mem_min = [p["minimum"] for p in series.get("Available Memory Bytes") or [] if p.get("minimum") is not None]
+    used_gb = [max(0.0, ram_gb - m / 1024 ** 3) for m in mem_min]
+    net = [p["total"] * 8 / 1800 / 1e6 for p in series.get("Network Out Total") or [] if p.get("total") is not None]
+    uncached, cached = _window_max(series, UNCACHED_METRICS), _window_max(series, CACHED_METRICS)
+    return {
+        "cpu_windows": len(cpu_max), "mem_windows": len(mem_min),
+        "cpu_avg": sum(cpu_avg) / len(cpu_avg) if cpu_avg else None,
+        "cpu_p95": percentile(cpu_max, 95), "cpu_p99": percentile(cpu_max, 99),
+        "mem_used_p99_gb": percentile(used_gb, 99),
+        "disk_uncached_p95": percentile(uncached, 95), "disk_cached_p95": percentile(cached, 95),
+        "net_p95_mbps": percentile(net, 95),
+    }
+
+
+def rightsizing_exclusion(vm: Dict[str, Any], now: Optional[datetime] = None) -> Optional[str]:
+    """Why a VM is never a right-sizing candidate, or None."""
+    tags = {str(k).lower(): v for k, v in (vm.get("tags") or {}).items()}
+    rg = (vm.get("resourceGroup") or "").lower()
+    if tags.get("arg-ignore") or tags.get("arg-reserved"):
+        return "tagged arg-ignore / arg-reserved"
+    if (vm.get("power") or "").split("/")[-1] != "running":
+        return "not running"
+    if (vm.get("priority") or "").lower() == "spot":
+        return "Spot VM"
+    if vm.get("vmss") or vm.get("managedBy") or rg.startswith("mc_") or rg.startswith("databricks-rg"):
+        return "managed by a scale set, AKS or Databricks"
+    if is_nva_image(vm.get("offer"), vm.get("imageSku")):
+        return "network virtual appliance"
+    if vm.get("ephemeral"):
+        return "ephemeral OS disk (tied to the size's cache / temp disk)"
+    created = str(vm.get("created") or "")[:10]
+    if created:
+        age = ((now or datetime.now(timezone.utc)).date() - date.fromisoformat(created)).days
+        if age < RIGHTSIZE_LOOKBACK_DAYS:
+            return f"created {age} days ago (needs {RIGHTSIZE_LOOKBACK_DAYS} days of history)"
+    return None
+
+
+def rightsizing_candidates(current: Dict[str, Any], catalogue: Dict[str, Dict[str, Any]],
+                           advisor_target: Optional[str]) -> List[Dict[str, Any]]:
+    """Azure Advisor's target (any family) and one size down in the same family (half the vCPUs and memory)."""
+    out: List[Dict[str, Any]] = []
+    if advisor_target and advisor_target.lower() in catalogue and advisor_target.lower() != current["name"].lower():
+        out.append(dict(catalogue[advisor_target.lower()], source="Azure Advisor"))
+    vcpu, mem = _cap(current, "vCPUs"), _cap(current, "MemoryGB")
+    for spec in catalogue.values():
+        if (spec.get("family") == current.get("family") and _cap(spec, "vCPUs") == vcpu / 2 >= 2
+                and _cap(spec, "MemoryGB") == mem / 2 and spec["name"].lower() not in {c["name"].lower() for c in out}):
+            out.append(dict(spec, source="one size down"))
+    return out
+
+
+def _retirement_date(spec: Dict[str, Any]) -> Optional[str]:
+    """Catalogue 'RetirementDateUtc' ('11/15/2028') as '2028-11-15'; None when the size is not retiring."""
+    raw = str((spec.get("caps") or {}).get("RetirementDateUtc") or "").strip()
+    try:
+        return datetime.strptime(raw.split(" ")[0], "%m/%d/%Y").date().isoformat() if raw else None
+    except ValueError:
+        return raw or None
+
+
+def _ratio(current: Dict[str, Any], target: Dict[str, Any], cap: str) -> Optional[float]:
+    return _cap(current, cap) / _cap(target, cap) if _cap(target, cap) and _cap(current, cap) else None
+
+
+def evaluate_rightsizing(vm: Dict[str, Any], current: Dict[str, Any], target: Dict[str, Any],
+                         profile: Dict[str, Any], limits: Dict[str, float] = RIGHTSIZE_LIMITS
+                         ) -> Tuple[List[str], Dict[str, Optional[float]]]:
+    """(failed checks, projected utilisation on the target). No failures = safe to recommend."""
+    fails: List[str] = []
+    cc, tc = current.get("caps") or {}, target.get("caps") or {}
+    if target.get("restricted") or set(vm.get("zones") or []) & set(target.get("restricted_zones") or ()):
+        fails.append("not offered to this subscription in the VM's region / zone")
+    if (tc.get("CpuArchitectureType") or "x64") != (cc.get("CpuArchitectureType") or "x64"):
+        fails.append("different CPU architecture")
+    if (vm.get("gen") or "V1") not in (tc.get("HyperVGenerations") or "V1").split(","):
+        fails.append(f"no Hyper-V {vm.get('gen') or 'V1'} support")
+    if _cap(current, "MaxResourceVolumeMB") > 0 and _cap(target, "MaxResourceVolumeMB") == 0:
+        fails.append("the current size has a local temp disk and Azure cannot resize to a size without one")
+    if cc.get("PremiumIO") == "True" and tc.get("PremiumIO") != "True":
+        fails.append("no Premium Storage")
+    if vm.get("accelerated") and tc.get("AcceleratedNetworkingEnabled") != "True":
+        fails.append("no Accelerated Networking (enabled on the VM's NIC)")
+    if (vm.get("dataDisks") or 0) > _cap(target, "MaxDataDiskCount"):
+        fails.append(f"{vm.get('dataDisks')} data disks exceed the size's limit")
+    if (vm.get("nics") or 1) > _cap(target, "MaxNetworkInterfaces"):
+        fails.append(f"{vm.get('nics')} NICs exceed the size's limit")
+    if tc.get("vCPUsAvailable") and _cap(target, "vCPUsAvailable") != _cap(target, "vCPUs"):
+        fails.append("constrained-core size")
+
+    need = limits["coverage"] * RIGHTSIZE_WINDOWS
+    if profile.get("cpu_windows", 0) < need or profile.get("mem_windows", 0) < need:
+        fails.append("less than 90 % of the 30 days measured (CPU or memory)")
+        return fails, {}
+    ratio = _cap(current, "vCPUs") / (_cap(target, "vCPUs") or 1)
+    cpu_p95, cpu_p99 = (profile.get("cpu_p95") or 0) * ratio, (profile.get("cpu_p99") or 0) * ratio
+    cpu_avg = (profile.get("cpu_avg") or 0) * ratio
+    mem_pct = (profile.get("mem_used_p99_gb") or 0) / (_cap(target, "MemoryGB") or 1) * 100
+    uncached_ratio = max(filter(None, [_ratio(current, target, "UncachedDiskIOPS"),
+                                       _ratio(current, target, "UncachedDiskBytesPerSecond")]), default=None)
+    cached_ratio = max(filter(None, [_ratio(current, target, "CombinedTempDiskAndCachedIOPS"),
+                                     _ratio(current, target, "CombinedTempDiskAndCachedReadBytesPerSecond")]),
+                       default=None)
+    disk_uncached = (profile["disk_uncached_p95"] * uncached_ratio
+                     if profile.get("disk_uncached_p95") is not None and uncached_ratio else None)
+    cached_use = profile.get("disk_cached_p95") or 0.0
+    disk_cached = cached_use * cached_ratio if cached_ratio else (0.0 if cached_use < 1 else None)
+    projected = {"cpu_p95": cpu_p95, "cpu_p99": cpu_p99, "cpu_avg": cpu_avg, "mem_p99_pct": mem_pct,
+                 "disk_uncached_p95": disk_uncached, "disk_cached_p95": disk_cached,
+                 "net_p95_mbps": profile.get("net_p95_mbps")}
+    if cpu_p95 > limits["cpu_p95"]:
+        fails.append(f"CPU P95 would be {cpu_p95:.0f}% (limit {limits['cpu_p95']:.0f}%)")
+    if cpu_p99 > limits["cpu_p99"]:
+        fails.append(f"CPU P99 would be {cpu_p99:.0f}% (limit {limits['cpu_p99']:.0f}%)")
+    if (target.get("family") or "").lower().startswith("standardb"):
+        baseline = burst_baseline(target["name"])
+        if baseline is None:
+            fails.append("burstable size without a documented baseline")
+        else:
+            if cpu_avg > limits["burst_avg_share"] * baseline:
+                fails.append(f"average CPU {cpu_avg:.0f}% would spend CPU credits (baseline {baseline:.0f}%)")
+            if cpu_p95 > 2 * baseline:
+                fails.append(f"CPU P95 {cpu_p95:.0f}% above twice the burstable baseline ({baseline:.0f}%)")
+    if mem_pct > limits["mem_p99"]:
+        fails.append(f"memory P99 would be {mem_pct:.0f}% (limit {limits['mem_p99']:.0f}%)")
+    if disk_uncached is None:
+        fails.append("disk limits or disk metrics unavailable")
+    elif disk_uncached > limits["disk_p95"]:
+        fails.append(f"disk P95 would be {disk_uncached:.0f}% of the size's limits (limit {limits['disk_p95']:.0f}%)")
+    if disk_cached is None:
+        fails.append("the VM uses its host cache and the size has no cache")
+    elif disk_cached > limits["disk_p95"]:
+        fails.append(f"cached disk P95 would be {disk_cached:.0f}% of the size's limits")
+    if (profile.get("net_p95_mbps") or 0) > limits["net_p95_mbps"]:
+        fails.append(f"network P95 {profile['net_p95_mbps']:.0f} Mbps above the {limits['net_p95_mbps']:.0f} Mbps check")
+    return fails, projected
+
+
+@register_scanner
+class VmRightsizingScanner(PostureScanner):
+    """
+    Validated VM right-sizing: a resize is suggested only when the smaller (or cheaper) size passes every check in
+    evaluate_rightsizing(), so the suggestion is safe to act on. Candidates are Azure Advisor's own target and one
+    size down in the same family; the cheapest that passes wins, and Advisor targets that fail are named in the
+    evidence.
+
+    Emits finding_type="vm_rightsizing_opportunity".
+    """
+
+    scanner_name = "vm_rightsizing_scanner"
+    display_name = "VM Right-Sizing (validated)"
+    description = "Suggests smaller or cheaper VM sizes only when 30 days of CPU, memory, disk and network fit"
+    category = ScannerCategory.COMPUTE
+    severity = SeverityLevel.MEDIUM
+
+    VM_QUERY = """
+        Resources
+        | where type =~ 'microsoft.compute/virtualmachines'
+        | project id, name, type, resourceGroup, subscriptionId, location, tags, zones, managedBy,
+                  size = tostring(properties.hardwareProfile.vmSize), os = tostring(properties.storageProfile.osDisk.osType),
+                  license = tostring(properties.licenseType), priority = tostring(properties.priority),
+                  vmss = tostring(properties.virtualMachineScaleSet.id),
+                  ephemeral = tostring(properties.storageProfile.osDisk.diffDiskSettings.option),
+                  created = tostring(properties.timeCreated),
+                  offer = tostring(properties.storageProfile.imageReference.offer),
+                  imageSku = tostring(properties.storageProfile.imageReference.sku),
+                  power = tostring(properties.extended.instanceView.powerState.code),
+                  gen = tostring(properties.extended.instanceView.hyperVGeneration),
+                  avset = tostring(properties.availabilitySet.id),
+                  dataDisks = array_length(properties.storageProfile.dataDisks),
+                  nics = array_length(properties.networkProfile.networkInterfaces)
+        """
+    NIC_QUERY = """
+        Resources
+        | where type =~ 'microsoft.network/networkinterfaces' and isnotempty(properties.virtualMachine.id)
+        | project vm = tolower(tostring(properties.virtualMachine.id)), an = tobool(properties.enableAcceleratedNetworking)
+        """
+
+    @staticmethod
+    def advisor_query(subscription_id: str) -> str:
+        return f"""
+        advisorresources
+        | where type =~ 'microsoft.advisor/recommendations' and subscriptionId == '{subscription_id}'
+        | where tostring(properties.category) =~ 'Cost'
+            and tostring(properties.impactedField) =~ 'microsoft.compute/virtualmachines'
+        | project vm = tolower(tostring(properties.resourceMetadata.resourceId)),
+                  target = tostring(properties.extendedProperties.targetSku),
+                  rtype = tostring(properties.extendedProperties.recommendationType)
+        """
+
+    async def scan(self, context: ScanContext) -> ScanOutput:
+        warnings: List[str] = []
+        if not self.is_live(context) or context.resource_graph_client is None:
+            cases = self._mock_data()
+        else:
+            try:
+                cases = await self._live_cases(context, warnings)
+            except Exception as e:
+                return ScanOutput(warnings=[f"VM right-sizing unavailable: {e}"])
+        findings = []
+        for case in cases:
+            choice = await self._choose(context, case)
+            if choice is not None:
+                finding = self._finding(case, choice)
+                # the floor applies to the capped saving too: a VM that barely ran saves little by resizing
+                if finding.estimated_monthly_savings_usd >= RIGHTSIZE_LIMITS["min_saving_usd"]:
+                    findings.append(finding)
+        return ScanOutput(findings=findings, resources_scanned=len(cases), warnings=warnings)
+
+    async def _live_cases(self, context: ScanContext, warnings: List[str]) -> List[Dict[str, Any]]:
+        vms = await self.arg(context, self.VM_QUERY)
+        accelerated = {r["vm"] for r in await self.arg(context, self.NIC_QUERY) if r.get("an")}
+        try:
+            advisor = {r["vm"]: r for r in await self.arg(context, self.advisor_query(context.subscription_id))}
+        except Exception as exc:
+            advisor = {}
+            warnings.append(f"Azure Advisor recommendations unavailable (cross-check skipped): {exc}")
+        costs = await get_resource_costs(context)
+        actual = await get_resource_costs(context, cost_type=ACTUAL_COST)
+        cases: List[Dict[str, Any]] = []
+
+        async def build(vm: Dict[str, Any]) -> None:
+            if rightsizing_exclusion(vm):
+                return
+            try:
+                catalogue = await compute_skus(context, vm["subscriptionId"], vm["location"])
+            except Exception as exc:
+                warnings.append(f"SKU catalogue unavailable for {vm['location']}: {exc}")
+                return
+            current = catalogue.get((vm.get("size") or "").lower())
+            if not current or not RIGHTSIZE_FAMILY.match(current["family"]) or CONFIDENTIAL_FAMILY.match(current["family"]):
+                return
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=RIGHTSIZE_LOOKBACK_DAYS)
+            try:
+                payload = await context.arm_client.get(f"{vm['id']}/providers/Microsoft.Insights/metrics", "2023-10-01", {
+                    "metricnames": ",".join(RIGHTSIZE_METRICS), "aggregation": "Average,Maximum,Minimum,Total",
+                    "interval": "PT30M", "timespan": f"{start:%Y-%m-%dT%H:%M:%SZ}/{end:%Y-%m-%dT%H:%M:%SZ}"})
+            except Exception as exc:
+                warnings.append(f"Metrics unavailable for {vm['name']}: {exc}")
+                return
+            cases.append({
+                "vm": dict(vm, accelerated=vm["id"].lower() in accelerated),
+                "current": current, "catalogue": catalogue,
+                "profile": vm_profile(payload, _cap(current, "MemoryGB")),
+                "advisor": advisor.get(vm["id"].lower()) or {},
+                "cost_usd": (cost_for(costs, vm["id"]) or {}).get("cost_usd"),
+                "actual_cost_usd": (cost_for(actual, vm["id"]) or {}).get("cost_usd"),
+                "prices": {},
+            })
+
+        await gather_limited(vms, build, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
+        return cases
+
+    @staticmethod
+    async def _price(context: ScanContext, case: Dict[str, Any], size: str) -> Optional[float]:
+        prices = case.setdefault("prices", {})
+        if size not in prices:
+            vm = case["vm"]
+            windows = (vm.get("os") or "").lower() == "windows" and (vm.get("license") or "") not in (
+                "Windows_Server", "Windows_Client")
+            prices[size] = await vm_hourly_usd(context, size, vm["location"], windows)
+        return prices[size]
+
+    async def _choose(self, context: ScanContext, case: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The cheapest candidate that passes every check, or None."""
+        vm, current, profile = case["vm"], case["current"], case["profile"]
+        adv = case.get("advisor") or {}
+        advisor_target = adv.get("target") if (adv.get("rtype") or "").lower() == "skuchange" else None
+        cur_price = await self._price(context, case, current["name"])
+        if not cur_price:
+            return None
+        best: Optional[Dict[str, Any]] = None
+        rejected: Dict[str, List[str]] = {}
+        for target in rightsizing_candidates(current, case["catalogue"], advisor_target):
+            fails, projected = evaluate_rightsizing(vm, current, target, profile)
+            if not fails:
+                price = await self._price(context, case, target["name"])
+                if not price or price >= cur_price:
+                    fails = ["not cheaper at pay-as-you-go prices"]
+                elif (cur_price - price) * HOURS_BILLED_PER_MONTH < RIGHTSIZE_LIMITS["min_saving_usd"]:
+                    fails = [f"saves under USD {RIGHTSIZE_LIMITS['min_saving_usd']:.0f}/month"]
+            if fails:
+                rejected[target["name"]] = fails
+                continue
+            if best is None or price < best["price"]:
+                best = {"target": target, "price": price, "projected": projected}
+        if best is None:
+            return None
+        best.update(cur_price=cur_price, rejected=rejected, advisor_target=advisor_target)
+        return best
+
+    def _finding(self, case: Dict[str, Any], choice: Dict[str, Any]):
+        vm, current, profile = case["vm"], case["current"], case["profile"]
+        target, projected = choice["target"], choice["projected"]
+        cur_name, tgt_name = current["name"], target["name"]
+        retail = (choice["cur_price"] - choice["price"]) * HOURS_BILLED_PER_MONTH
+        amortized, invoiced = case.get("cost_usd"), case.get("actual_cost_usd")
+        # Covered: most of the amortized cost is a reservation / savings plan, not invoiced as pay-as-you-go here.
+        covered = amortized is not None and invoiced is not None and amortized > 0 and invoiced < 0.5 * amortized
+        saving = retail if amortized is None else min(retail, max(0.0, amortized) * (1 - choice["price"] / choice["cur_price"]))
+        spec = lambda s: f"{_cap(s, 'vCPUs'):.0f} vCPU / {_cap(s, 'MemoryGB'):g} GB"  # noqa: E731
+        adv_target = choice.get("advisor_target")
+        if adv_target and adv_target.lower() == tgt_name.lower():
+            advisor_note = " Azure Advisor recommends the same resize."
+        elif adv_target:
+            reasons = choice["rejected"].get(adv_target) or ["not in this region's catalogue"]
+            advisor_note = f" Azure Advisor suggests {adv_target}, which fails a check here ({reasons[0]})."
+        else:
+            advisor_note = ""
+        retirement = _retirement_date(current)
+        target_retirement = _retirement_date(target)
+        if retirement and not target_retirement:
+            lifecycle = f"; it also moves off {cur_name}, which Azure retires on {retirement}"
+        elif target_retirement:
+            lifecycle = (f"; note that {tgt_name} is in an end-of-life series retiring on {target_retirement} - "
+                         f"plan the move to a current series before then")
+        else:
+            lifecycle = ""
+        # The title, severity and savings register all use `saving`: the list-price difference, capped at what
+        # the VM actually costs.
+        if round(saving) < round(retail):
+            reason = "the commitment discount" if covered else "discounts or part-time running"
+            basis = (f", scaled to this VM's 30-day amortized cost of USD {amortized:,.0f}, which is below list price "
+                     f"({reason}); the list-price difference is USD {retail:,.0f}/month")
+        else:
+            basis = " at pay-as-you-go prices"
+        value = (f"Value: about USD {saving:,.0f}/month (USD {saving * 12:,.0f}/year){basis}"
+                 + (f"; this VM's compute is mostly covered by a reservation or savings plan (30-day amortized cost "
+                    f"USD {amortized:,.0f}, of which USD {invoiced:,.0f} is invoiced as pay-as-you-go), so the resize "
+                    f"frees that commitment for other VMs rather than cutting this invoice line" if covered else "")
+                 + lifecycle + ".")
+        description = (
+            f"VM '{vm['name']}' ({cur_name}, {spec(current)}) over the last {RIGHTSIZE_LOOKBACK_DAYS} days: CPU at "
+            f"most {profile['cpu_p95']:.0f}% in 95% of 30-minute windows ({profile['cpu_p99']:.0f}% at P99, "
+            f"{profile['cpu_avg']:.1f}% average), memory at most {profile['mem_used_p99_gb']:.1f} GB used (P99), "
+            f"network {profile['net_p95_mbps'] or 0:.1f} Mbps (P95). On {tgt_name} ({spec(target)}) that projects to "
+            f"{projected['cpu_p95']:.0f}% CPU at P95 and {projected['mem_p99_pct']:.0f}% memory at P99 - inside "
+            f"Microsoft's limits for user-facing workloads (40% / 60%) - and "
+            f"{projected['disk_uncached_p95']:.0f}% of the disk limits.{advisor_note} {value}"
+        )
+        remediation = (
+            "1. Confirm with the owner that no growth, DR or release peak is planned for this VM.\n"
+            f"2. Resize to {tgt_name} in a maintenance window - the VM restarts (a few minutes).\n"
+            "3. Watch CPU and memory for a week; size back up if CPU P95 passes 60% or memory 80%."
+            + ("\n4. The VM is in an availability set: if the size is not available on its current cluster, all "
+               "VMs of the set must be deallocated to resize." if vm.get("avset") else "")
+        )
+        return self.resource_finding(
+            vm,
+            finding_type="vm_rightsizing_opportunity",
+            title=f"Right-size {vm['name']}: {cur_name} to {tgt_name} (~USD {saving:,.0f}/month)",
+            description=description,
+            resource_type="microsoft.compute/virtualmachines",
+            severity=SeverityLevel.MEDIUM if saving >= 100 else SeverityLevel.LOW,
+            remediation_steps=remediation,
+            azure_cli_script=f"az vm resize --ids {vm['id']} --size {tgt_name}",
+            evidence={
+                "current_size": cur_name, "target_size": tgt_name, "target_source": target.get("source"),
+                "lookback_days": RIGHTSIZE_LOOKBACK_DAYS, "measured_windows": profile.get("cpu_windows"),
+                "cpu_p95": profile.get("cpu_p95"), "cpu_p99": profile.get("cpu_p99"), "cpu_avg": profile.get("cpu_avg"),
+                "memory_used_p99_gb": profile.get("mem_used_p99_gb"), "net_p95_mbps": profile.get("net_p95_mbps"),
+                "disk_uncached_p95": profile.get("disk_uncached_p95"), "disk_cached_p95": profile.get("disk_cached_p95"),
+                "projected": {k: round(v, 1) if isinstance(v, float) else v for k, v in projected.items()},
+                "limits": RIGHTSIZE_LIMITS, "usd_per_hour": {cur_name: choice["cur_price"], tgt_name: choice["price"]},
+                "retail_saving_usd_month": round(retail, 2), "amortized_cost_usd_30d": amortized,
+                "actual_cost_usd_30d": invoiced,
+                "covered_by_commitment": covered, "advisor_target": adv_target,
+                "rejected_targets": choice["rejected"],
+            },
+            estimated_monthly_savings_usd=round(saving, 2),
+        )
+
+    def _mock_data(self) -> List[Dict[str, Any]]:
+        def sku(name, family, vcpu, mem, **caps):
+            base = {"vCPUs": str(vcpu), "MemoryGB": str(mem), "PremiumIO": "True", "HyperVGenerations": "V1,V2",
+                    "MaxDataDiskCount": "8", "MaxNetworkInterfaces": "2", "AcceleratedNetworkingEnabled": "True",
+                    "UncachedDiskIOPS": str(3200 * vcpu), "UncachedDiskBytesPerSecond": str(48000000 * vcpu),
+                    "CpuArchitectureType": "x64", "MaxResourceVolumeMB": "0"}
+            base.update({k: str(v) for k, v in caps.items()})
+            return {"name": name, "family": family, "caps": base, "restricted": False, "restricted_zones": set()}
+
+        catalogue = {s["name"].lower(): s for s in (
+            sku("Standard_D8s_v5", "standardDSv5Family", 8, 32), sku("Standard_D4s_v5", "standardDSv5Family", 4, 16),
+            sku("Standard_D2s_v5", "standardDSv5Family", 2, 8),
+            sku("Standard_B8as_v2", "standardBasv2Family", 8, 32, UncachedDiskIOPS=12800,
+                UncachedDiskBytesPerSecond=290000000))}
+        quiet = {"cpu_windows": 1440, "mem_windows": 1440, "cpu_avg": 1.9, "cpu_p95": 6.0, "cpu_p99": 14.0,
+                 "mem_used_p99_gb": 4.1, "disk_uncached_p95": 3.0, "disk_cached_p95": 0.0, "net_p95_mbps": 2.5}
+        base = "/subscriptions/sub-1/resourceGroups/rg-app/providers/Microsoft.Compute/virtualMachines"
+        common = {"type": "microsoft.compute/virtualmachines", "resourceGroup": "rg-app", "subscriptionId": "sub-1",
+                  "location": "westeurope", "os": "Linux", "power": "PowerState/running", "gen": "V2", "nics": 1,
+                  "dataDisks": 1}
+        prices = {"Standard_D8s_v5": 0.46, "Standard_D4s_v5": 0.23, "Standard_D2s_v5": 0.115,
+                  "Standard_B8as_v2": 0.3448}
+        return [
+            {"vm": dict(common, id=f"{base}/vm-app-01", name="vm-app-01", size="Standard_D4s_v5"),
+             "current": catalogue["standard_d4s_v5"], "catalogue": catalogue, "profile": quiet,
+             "advisor": {}, "cost_usd": 168.0, "actual_cost_usd": 168.0, "prices": dict(prices)},
+            {"vm": dict(common, id=f"{base}/vm-search-01", name="vm-search-01", size="Standard_D8s_v5"),
+             "current": catalogue["standard_d8s_v5"], "catalogue": catalogue,
+             "profile": dict(quiet, mem_used_p99_gb=24.6), "cost_usd": 0.7, "prices": dict(prices),
+             "advisor": {"target": "Standard_B8as_v2", "rtype": "SkuChange"}},
+            {"vm": dict(common, id=f"{base}/vm-batch-01", name="vm-batch-01", size="Standard_D8s_v5"),
+             "current": catalogue["standard_d8s_v5"], "catalogue": catalogue,
+             "profile": dict(quiet, cpu_p95=31.0, cpu_p99=64.0, cpu_avg=9.0), "advisor": {}, "cost_usd": 336.0,
+             "prices": dict(prices)},
+        ]

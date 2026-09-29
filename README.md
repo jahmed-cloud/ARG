@@ -185,7 +185,8 @@ python -m scripts.local_portal                                                  
   transactions, requests, connections, messages, runs, calls, tokens, used capacity) with an **idle** flag, for 31
   resource types. CPU and other percentages come with the **busiest hour**, P95 and one-minute bursts, so a 1.5 %
   average and a 100 % portal peak are shown together; idle storage that still holds data is flagged **dormant**, and
-  right-sizing skips network appliances, memory-bound and busy-hour VMs. Filter by any of these, click breakdowns
+  VM right-sizing suggestions are validated against 30 days of CPU, memory, disk and network on the new size
+  (Azure Advisor's user-facing limits, applied to every VM) and cross-checked with Advisor. Filter by any of these, click breakdowns
   to drill down, switch to the Suggestions view, export CSV and share filtered links. [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#5c-estate-inventory-all-subscriptions).
 
 - **Portal login** is a simple local username/password that only protects the portal:
@@ -215,7 +216,8 @@ reports/
 ```
 
 Your account needs **Reader**, **Cost Management Reader** and **Security Reader** on each subscription.
-Savings estimates are calculated in USD (list prices or actual `CostUSD`) and shown in the billing
+Savings estimates are calculated in USD at each resource's own amortized cost, so negotiated discounts,
+reservations and savings plans count (list prices only when a resource has no cost data), and shown in the billing
 currency at the subscription's implied exchange rate. Re-running a subscription replaces its folder; subscriptions
 that share a display name get `<name>_<first 8 of ID>/` so they never overwrite each other.
 Reports contain resource IDs and principal IDs - `reports/` is git-ignored. Entra ID (Graph) scanners
@@ -229,7 +231,8 @@ from the Microsoft FinOps toolkit. It reads cost data **live** at scan time, str
 - **Cost Management Query API** (`Microsoft.CostManagement/query`) - 12-month cost by service, and 30-day
   cost by resource group, meter and resource
 - **Consumption Budgets API** (`Microsoft.Consumption/budgets`) - budgets and overspend
-- **Azure Retail Prices API** (`prices.azure.com`, public, USD) - list prices for savings estimates
+- **Azure Retail Prices API** (`prices.azure.com`, public, USD) - list prices, the starting point for savings
+  estimates (scaled to each resource's actual cost)
 - **Resource Graph** and **Azure Monitor metrics** - inventory and 30-day usage for idle detection
 
 The two tools answer different questions and work well together:
@@ -364,6 +367,8 @@ docker compose up -d --build
 ```
 
 This builds the backend, worker, beat, and frontend images, then starts Postgres, Redis, and all four application services. The backend container automatically runs `alembic upgrade head` on startup, so the database schema is created the first time it boots - no manual migration step needed.
+
+Windows with Podman Desktop instead of Docker: `.\scripts\Start-PodmanStack.ps1` builds and starts the same stack (see [local-run.md](local-run.md), section 8).
 
 Check that everything came up healthy:
 

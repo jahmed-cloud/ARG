@@ -113,8 +113,19 @@ metric:
 | P95 | 95 % of hours are at or below this |
 | 1-minute peak and burst hours | The highest single minute, and in how many hours a minute reached 90 % |
 
-"Saturated" findings need a busy **hour** (80 %+); one-minute spikes are reported as bursts. Right-sizing needs a
-low average **and** a quiet busiest hour **and** memory that fits one size down.
+"Saturated" findings need a busy **hour** (80 %+); one-minute spikes are reported as bursts.
+
+**Costs are amortized** (reservations and savings plans spread over the resources that use them); the invoiced
+amount is shown next to it and budgets are compared with the invoice, each on its own scope and filter. Savings are valued at each
+resource's own amortized cost, so your discounts count (list prices only when a resource has no cost data). Section 7
+of *01 - Current findings* shows the subscription's **resource providers** (registered = accepted, not registered)
+against what it uses, and any allow / deny resource-type policy.
+
+**VM right-sizing suggestions** (`vm_rightsizing_opportunity`) are validated, not estimated: the new size must keep
+CPU P95 at most 40 %, memory P99 at most 60 %, disk and network headroom and every hardware capability the VM uses,
+over 30 days - Azure Advisor's rules for user-facing workloads, applied to every VM. Advisor's own suggestion is
+checked the same way and named when it fails. The estate's average-CPU list is only a screening list. Details:
+[docs/subscription-analysis.md](docs/subscription-analysis.md).
 
 ## 6. After changing code
 
@@ -130,13 +141,38 @@ Python changes need a portal restart (3.1 + 3.2); JavaScript / CSS and report da
 ## 7. Contributing changes
 
 Run the tests and lint (section 6), keep generated text free of emoji and em / en dashes, and follow
-[CONTRIBUTING.md](CONTRIBUTING.md). Project conventions and decisions are in [MEMORY.md](MEMORY.md).
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 8. Docker vs local
 
 The Docker stack (backend, Celery worker, frontend) runs **the same scanner modules** with a service principal, so
 its findings match the local reports once its images are rebuilt from the same code (`./build-push.sh`, or
 `docker compose up -d --build`). The markdown / HTML reports and the Estate page are local-tool features.
+
+### Podman on Windows
+
+With Podman Desktop the Docker stack runs without Docker. Once: `python -m pip install podman-compose`, and copy
+`.env.example` to `.env` (set `POSTGRES_PASSWORD`, `SECRET_KEY`, `ENCRYPTION_KEY` and `ADMIN_PASSWORD`). Then:
+
+```powershell
+.\scripts\Start-PodmanStack.ps1          # builds the images on the first run, starts http://localhost:3000
+.\scripts\Start-PodmanStack.ps1 -Build   # after committing code changes (the build uses HEAD)
+.\scripts\Start-PodmanStack.ps1 -Down    # stop; the database volume is kept
+```
+
+The script works around three Windows issues: podman-compose drops the `dockerfile:` path (the script builds with
+`podman build`), the Windows client ignores `.dockerignore` (it builds from a clean `git archive` of HEAD), and the
+ports of rootful containers are not forwarded to Windows `localhost` (it runs the stack rootless). Sign in with
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`; scanning needs a service principal per tenant (Settings).
+
+If image pulls fail with `Temporary failure in name resolution` (the WSL DNS relay fails on some VPN and Wi-Fi
+networks), give the Podman machine fixed DNS servers - yours are listed by `Get-DnsClientServerAddress`:
+
+1. `podman machine ssh`, then inside the machine:
+   `sudo sh -c 'printf "\n[network]\ngenerateResolvConf = false\n" >> /etc/wsl.conf'` and `exit`.
+2. `podman machine stop; podman machine start` (WSL reads `wsl.conf` at start).
+3. `podman machine ssh`, then:
+   `sudo sh -c 'rm -f /etc/resolv.conf; printf "nameserver 1.1.1.1\nnameserver 1.0.0.1\n" > /etc/resolv.conf'`.
 
 ## 9. Troubleshooting
 
@@ -149,3 +185,6 @@ its findings match the local reports once its images are rebuilt from the same c
 | Portal shows old behaviour after a code change | Restart the portal (3.1 + 3.2), then reload the page |
 | Portal login fails after setting variables | Open a new terminal (user variables only reach new processes); names are case-sensitive |
 | Estate cost "-" | That subscription has no report yet - run 3.4 or 3.5 |
+| `podman`: `...\.ssh\known_hosts: The system cannot find the path specified` | Create it once: `New-Item -ItemType Directory -Force $HOME\.ssh; if (-not (Test-Path $HOME\.ssh\known_hosts)) { New-Item -ItemType File $HOME\.ssh\known_hosts }` |
+| Podman containers run but `localhost:3000` refuses | They run rootful (ports not forwarded to Windows): start them with `.\scripts\Start-PodmanStack.ps1` (rootless) |
+| `podman version` shows different client and server versions | An older Podman is first on `PATH`; the script prefers Podman Desktop's (`%LOCALAPPDATA%\Programs\Podman`) |

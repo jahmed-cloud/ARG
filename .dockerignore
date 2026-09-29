@@ -57,7 +57,10 @@ test_*.py
 *.log
 logs/
 
+# Local analysis output (resource IDs, IPs, principal IDs) and local tooling - never part of an image
+reports/
+.venv-local/
+.claude/
+*.bundle
 .merge/
 .validation/
-.venv-local/
-reports/

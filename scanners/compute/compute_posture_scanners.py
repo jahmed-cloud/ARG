@@ -34,6 +34,7 @@ from scanners.base.azure_api import (
     get_resource_costs,
     get_retail_price,
     percentile,
+    price_at_actual_cost,
     vm_hourly_usd,
 )
 from scanners.base.base_scanner import (
@@ -292,7 +293,7 @@ class AppServicePlanGenerationScanner(PostureScanner):
                 old = await app_service_hourly_usd(context, sku, linux, region)
                 new = await app_service_hourly_usd(context, target, linux, region)
                 saving = round((old - new) * HOURS_PER_MONTH * capacity, 2) if old and new else None
-                findings.append(self.resource_finding(
+                finding = self.resource_finding(
                     plan,
                     finding_type="app_service_plan_previous_generation",
                     title=f"Previous-generation plan {sku}: {plan['name']}",
@@ -318,7 +319,10 @@ class AppServicePlanGenerationScanner(PostureScanner):
                               "hourly_usd_current": old, "hourly_usd_target": new, "linux": linux},
                     estimated_monthly_savings_usd=saving,
                     caf_control="Cost Optimization",
-                ))
+                )
+                if saving:
+                    finding = await price_at_actual_cost(context, finding, list_cost=old * HOURS_PER_MONTH * capacity)
+                findings.append(finding)
 
             premium = (plan.get("sku_tier") or "").lower().startswith("premium")
             if premium and capacity == 1 and (plan.get("sites") or 0) > 0 and not plan.get("zone_redundant"):

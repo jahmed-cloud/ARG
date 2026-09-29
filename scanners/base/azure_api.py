@@ -19,6 +19,9 @@ ScanContext still holds.
   Management call (the API is throttled to a few calls per minute).
 - get_retail_price(): public Azure Retail Prices API lookup (USD), used
   only in live mode to replace static fallback prices.
+- price_at_actual_cost(): re-values a list-price saving at the resource's
+  own amortized cost, so negotiated discounts, reservations and savings
+  plans count.
 """
 
 import asyncio
@@ -415,6 +418,75 @@ def cost_for(costs: Optional[Dict[str, Dict[str, Any]]], resource_id: str) -> Op
     if not costs or not resource_id:
         return None
     return costs.get(resource_id.lower())
+
+
+LIST_PRICE_BASIS = "list price"
+ACTUAL_PRICE_BASIS = "amortized cost, last 30 days"
+
+
+def saving_at_actual_price(list_saving: Optional[float], actual_cost: Optional[float],
+                           list_cost: Optional[float] = None) -> Optional[float]:
+    """
+    Monthly saving at the subscription's own price, from the resource's 30-day amortized cost (which already
+    includes negotiated discounts, reservations and savings plans):
+    - removing the resource (no list_cost): what it actually cost;
+    - changing its price (list_cost = its current monthly list price): the list-price saving scaled by
+      actual / list cost, never more than the list-price saving.
+    Unchanged when the actual cost is unknown.
+    """
+    if actual_cost is None:
+        return list_saving
+    actual = max(0.0, actual_cost)
+    if list_cost is None:
+        return round(actual, 2)
+    if not list_saving or list_cost <= 0:
+        return list_saving
+    return round(min(list_saving, actual * list_saving / list_cost), 2)
+
+
+async def resource_cost_usd(context: Any, resource_id: Optional[str]) -> Optional[float]:
+    """The resource's 30-day amortized cost in USD; None offline, without cost access or without a cost row."""
+    if not resource_id or getattr(context, "arm_client", None) is None:
+        return None
+    row = cost_for(await get_resource_costs(context), resource_id)
+    return None if row is None or row.get("cost_usd") is None else float(row["cost_usd"])
+
+
+def _usd(value: float) -> str:
+    return f"USD {value:,.2f}" if value < 10 else f"USD {value:,.0f}"
+
+
+async def price_at_actual_cost(context: Any, finding: Any, list_cost: Optional[float] = None,
+                               cost_resource_id: Optional[str] = None) -> Any:
+    """
+    Re-values a finding whose estimated_monthly_savings_usd is a list-price estimate at the resource's own
+    30-day amortized cost (see saving_at_actual_price), records both figures in the evidence and, when they
+    differ, says so in the description. cost_resource_id: the resource whose cost is saved when it is not the
+    finding's own (e.g. the public IP of a VM finding). Returns the finding.
+    """
+    list_saving = finding.estimated_monthly_savings_usd
+    resource_id = cost_resource_id or finding.resource_id
+    name = (resource_id or "").rstrip("/").split("/")[-1] or "the resource"
+    actual = await resource_cost_usd(context, resource_id)
+    saving = saving_at_actual_price(list_saving, actual, list_cost)
+    finding.evidence.update({
+        "saving_basis": LIST_PRICE_BASIS if actual is None else ACTUAL_PRICE_BASIS,
+        "list_price_saving_usd": list_saving,
+        "amortized_cost_usd_30d": None if actual is None else round(actual, 2),
+    })
+    if actual is not None and list_saving is not None and abs((saving or 0.0) - list_saving) >= 0.01:
+        if list_cost is None:
+            finding.description += (
+                f" Valued at what {name} actually costs: {_usd(saving)}/month (amortized over the last 30 days, so "
+                f"discounts, reservations and savings plans count); the list-price estimate is "
+                f"{_usd(list_saving)}/month.")
+        else:
+            finding.description += (
+                f" Valued at {name}'s own price: about {_usd(saving)}/month, scaled to its 30-day amortized cost of "
+                f"{_usd(actual)} (discounts, reservations and savings plans count); the list-price difference is "
+                f"{_usd(list_saving)}/month.")
+    finding.estimated_monthly_savings_usd = saving
+    return finding
 
 
 async def cached_metrics(context: Any, resource_id: str, metric_names: List[str], *, days: int = 30,

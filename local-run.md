@@ -116,7 +116,8 @@ metric:
 "Saturated" findings need a busy **hour** (80 %+); one-minute spikes are reported as bursts.
 
 **Costs are amortized** (reservations and savings plans spread over the resources that use them); the invoiced
-amount is shown next to it and budgets are compared with the invoice, each on its own scope and filter. Section 7
+amount is shown next to it and budgets are compared with the invoice, each on its own scope and filter. Savings are valued at each
+resource's own amortized cost, so your discounts count (list prices only when a resource has no cost data). Section 7
 of *01 - Current findings* shows the subscription's **resource providers** (registered = accepted, not registered)
 against what it uses, and any allow / deny resource-type policy.
 

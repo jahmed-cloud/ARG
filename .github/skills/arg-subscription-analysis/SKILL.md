@@ -53,7 +53,8 @@ Reports land in `<ARG repo>\reports\<subscription>\` (the PDF is `report-summary
    term ending within 90 days, material commitments. Lumpy (up-front) spend switches the forecast to the 12-month average.
    Recommend confirming with the owner before deleting anything.
 4. Costs are **amortized** (reservations and savings plans spread over the resources that use them); the invoiced
-   (actual) amount is shown next to it. Budgets are compared with the invoice on their own scope and filter
+   (actual) amount is shown next to it. Savings use each resource's own amortized cost (`saving_basis` in the
+   evidence); list prices only when a resource has no cost data. Budgets are compared with the invoice on their own scope and filter
    (resource group, meter), never with the whole subscription. VM right-sizing (`vm_rightsizing_opportunity`) is
    validated, not estimated: the new size keeps CPU P95 ≤ 40 %, memory P99 ≤ 60 %, disk / network headroom and every
    hardware feature over 30 days. Section 7 of `01-current-findings` lists **resource providers** (registered =

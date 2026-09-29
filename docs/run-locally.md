@@ -41,6 +41,16 @@ Your Azure account needs these roles on every subscription you want to analyse:
 A missing role doesn't stop a run. That part of the report is empty and the reason is listed under *Collection
 Warnings* in `05-deep-dive/README.md`.
 
+To add the missing roles on every subscription someone with Owner or User Access Administrator can manage
+(preview first with `-WhatIf`; roles already there, also inherited ones, are skipped):
+
+```powershell
+.\scripts\Grant-ArgRoles.ps1 -Assignee you@contoso.com -IncludeReader -WhatIf
+.\scripts\Grant-ArgRoles.ps1 -Assignee you@contoso.com -IncludeReader
+```
+
+`-Assignee me` (the default) is the signed-in account; `-SubscriptionId` and `-CurrentTenantOnly` limit it.
+
 ---
 
 ## 3. Sign in to Azure

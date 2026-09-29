@@ -16,7 +16,7 @@ Step-by-step portal details (login variables, VS Code, stopping, resetting the v
 | Python 3.12 on `PATH` | The launchers create `.venv-local` from it on first run |
 | Azure CLI (`az`) | Your sign-in; ARG reuses its token |
 | Microsoft Edge or Google Chrome | Only for PDF export |
-| **Reader**, **Cost Management Reader** and **Security Reader** on every subscription | Inventory, metrics, cost, Defender |
+| **Reader**, **Cost Management Reader** and **Security Reader** on every subscription | Inventory, metrics, cost, Defender - `.\scripts\Grant-ArgRoles.ps1 -IncludeReader` adds missing ones (`-WhatIf` to preview) |
 
 Portal login (a local username / password that only protects the portal, not Azure) - set it once as user
 environment variables, then open a **new** terminal:

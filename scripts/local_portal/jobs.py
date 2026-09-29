@@ -108,8 +108,12 @@ class JobManager:
                          finished_at=datetime.now(timezone.utc).isoformat())
         except Exception as exc:
             logger.error("Analysis of %s failed: %s\n%s", job.subscription_id, exc, traceback.format_exc())
-            self._update(job, status="failed", message="Failed", error=str(exc).splitlines()[0][:500] if str(exc) else
-                         exc.__class__.__name__, finished_at=datetime.now(timezone.utc).isoformat())
+            error = str(exc).splitlines()[0][:500] if str(exc) else exc.__class__.__name__
+            if isinstance(exc, ImportError):
+                # The code was updated after the portal started: old modules in memory, new ones on disk.
+                error = f"{error} - the code changed since the portal started; restart the portal and try again."
+            self._update(job, status="failed", message="Failed", error=error,
+                         finished_at=datetime.now(timezone.utc).isoformat())
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

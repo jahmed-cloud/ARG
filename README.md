@@ -25,6 +25,10 @@
 | ![ARG scans page with scan history](docs/images/scans.png) | ![ARG reports page with report depth and format options](docs/images/reports.png) |
 | **Findings** | **Settings** |
 | ![ARG findings page with severity and status filters](docs/images/findings.png) | ![ARG settings page with profile, password and integrations](docs/images/settings.png) |
+| **Top savings opportunities** | **Identity & Entra ID** |
+| ![ARG cost savings page listing the top savings opportunities by resource with monthly and annual savings](docs/images/arg-3-savings-opportunities.png) | ![ARG identity page with the identity score, Entra ID counters and identity findings](docs/images/arg-4-identity-entra-id.png) |
+
+Screenshots use ARG's built-in demo data - no real tenant, subscription or user.
 
 ---
 
@@ -36,6 +40,7 @@
 | Gate pipelines on findings (CLI, API keys, SARIF / JUnit, GitHub Actions, Azure DevOps) | [CI/CD](docs/ci-cd.md) |
 | Connect Azure subscriptions to the Docker stack | [Connect Azure](docs/connect-azure.md) |
 | Decide who sees which subscription (Entra groups, owners, readers) | [Access control](docs/access-control.md) |
+| Check that Azure Policy works: exemptions, remediation, blind spots, "what governs this resource?" | [Azure Policy governance](docs/azure-policy.md) |
 | Build, deploy, back up or upgrade containers | [Docker deployment](docs/docker-deployment.md) |
 | Understand components and data flow | [Architecture](docs/architecture.md) |
 | Review merge decisions and verified behavior | [Merge and validation record](docs/merge-validation.md) |
@@ -48,8 +53,9 @@ The local portal uses your `az login` session and needs no database or Docker. T
 | Question | ARG's Answer |
 |---|---|
 | What resources are costing money unnecessarily? | Cost Optimization Engine with Azure Cost Management integration |
-| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (63 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
+| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (72 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
 | Which resources violate governance standards? | Governance Module with CAF + Zero Trust scoring |
+| Is Azure Policy actually enforcing anything? | Policy scanners: exemptions without expiry, remediation never run, policies that cannot take effect, uncovered resource types |
 | Which Entra ID objects are security risks? | Full Microsoft Graph hygiene analysis |
 | What resources are unmanaged by Terraform? | Terraform drift detection engine |
 | How much money can we save? | Monthly/annual savings projection per resource |
@@ -137,6 +143,11 @@ The local portal uses your `az login` session and needs no database or Docker. T
 - Production and non-production sharing one App Service plan; app and data tiers split across regions
 - Log Analytics daily caps that silently drop data, App Insights linked to deleted workspaces, missing Service Health alerts
 - Many unrelated workloads sharing one subscription (landing-zone gap)
+- Azure Policy that does nothing: assignments in DoNotEnforce, Indexed-mode policies aimed at resource groups, "Allowed locations" without its resource-group counterpart, resource types no policy evaluates
+- Exemption hygiene: no expiry, expired, orphaned, or waiving a whole initiative
+- DeployIfNotExists / Modify policies whose non-compliant resources no remediation task ever fixed
+- "What governs this resource?" - assignments scope by scope, exemptions and compliance for one resource id (Governance page, API, `python -m scripts.what_governs`)
+- Required agent extensions on every VM / Arc server (opt-in list, e.g. monitoring and EDR agents)
 
 ### Security
 - Public storage accounts, SQL servers, Key Vaults
@@ -469,7 +480,7 @@ docker compose down -v       # stop containers AND delete all data (database, Re
 | Resource Discovery | Reader |
 | Cost Analysis | Cost Management Reader |
 | Entra ID Hygiene | Global Reader (Graph API) |
-| Policy Compliance | Reader |
+| Policy Compliance | Reader (on the subscription and the management groups above it, to see inherited assignments) |
 | Security | Security Reader |
 | Metrics, diagnostic settings, SQL firewall rules, site config (posture scanners) | Reader |
 

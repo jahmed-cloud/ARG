@@ -1,0 +1,9 @@
+# Findings accepted for the secret scan (gitleaks reads this file; one fingerprint per line).
+# The initial commit shipped generated SECRET_KEY / ENCRYPTION_KEY values in .env and .env.example.
+# Those values are revoked: any installation still using them must rotate both keys
+# (docs/docker-deployment.md, "Rotating SECRET_KEY and ENCRYPTION_KEY").
+# Never add a fingerprint for a live secret - rotate it instead.
+86422192ed16522c7e3ad54df9b904138ce0ecd7:.env:generic-api-key:24
+86422192ed16522c7e3ad54df9b904138ce0ecd7:.env:generic-api-key:29
+86422192ed16522c7e3ad54df9b904138ce0ecd7:.env.example:generic-api-key:24
+86422192ed16522c7e3ad54df9b904138ce0ecd7:.env.example:generic-api-key:29

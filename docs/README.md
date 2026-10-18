@@ -5,6 +5,8 @@
 | [subscription-analysis.md](./subscription-analysis.md) | **User guide:** where to run, setup with `az login`, CLI, local portal, output layout, thresholds, troubleshooting |
 | [PRD-subscription-analysis.md](./PRD-subscription-analysis.md) | Product requirements: problem, user stories, implementation and testing decisions |
 | [scanner-catalog.md](./scanner-catalog.md) | Every scanner, its finding types and data sources, and where each finding lands in the report (generated from the registry) |
+| [azure-policy.md](./azure-policy.md) | Azure Policy scanners, "what governs this resource?", the managed-by finder and required VM extensions |
+| [azure-policy-limits.md](./azure-policy-limits.md) | Azure Policy hard limits (definitions, assignments, exemptions, rule size) |
 | [../README.md](../README.md) | Project overview and the Docker stack |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Development setup, adding scanners, tests |
 | [../CHANGELOG.md](../CHANGELOG.md) | Changes |

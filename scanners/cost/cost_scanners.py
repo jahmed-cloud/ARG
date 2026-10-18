@@ -7,6 +7,8 @@ Scanners in this module:
 3. CommitmentDiscountScanner      - Advisor reservation / savings-plan opportunities
 4. MarketplaceSaaSScanner         - Marketplace SaaS: unsubscribed leftovers, suspended/unactivated plans,
                                     terms ending or auto-renewing, material SaaS commitments
+5. CheaperRegionScanner           - VMs and App Service plans that list for less in another region of the same
+                                    geography (and allowed by Azure Policy)
 """
 
 import sys
@@ -19,11 +21,14 @@ from typing import Any, Dict, List, Optional
 from scanners.base.azure_api import (
     ACTUAL_COST,
     DEFAULT_ARM_CONCURRENCY,
+    HOURS_BILLED_PER_MONTH,
     cached_metrics,
     cost_for,
     gather_limited,
     get_resource_costs,
+    get_retail_price,
     price_at_actual_cost,
+    vm_prices_by_region,
 )
 from scanners.base.base_scanner import (
     ScanContext,
@@ -33,6 +38,8 @@ from scanners.base.base_scanner import (
     register_scanner,
 )
 from scanners.base.posture_scanner import PostureScanner
+from scanners.base.providers import get_allowed_locations
+from scanners.compute.compute_posture_scanners import APP_SERVICE_HOURLY_USD, _meter_name
 
 # USD per unit per month (list price).
 IOT_HUB_UNIT_USD = {"F1": 0.0, "B1": 10.0, "B2": 50.0, "B3": 500.0, "S1": 25.0, "S2": 250.0, "S3": 2500.0}
@@ -440,5 +447,226 @@ class MarketplaceSaaSScanner(PostureScanner):
              "cost_12m": 24000.0, "cost_usd_12m": 24000.0},
             {**common, "id": f"{base}/analytics-saas", "name": "analytics-saas", "status": "Suspended", "autoRenew": True,
              "planName": "Monthly", "termUnit": "P1M", "termEnd": (today + timedelta(days=10)).isoformat()},
+        ]
+
+
+# ---------------------------------------------------------------------------
+# 5. Cheaper region in the same geography
+# ---------------------------------------------------------------------------
+
+# Regions compared with each other: one geography keeps data residency, latency and compliance comparable.
+# Settings: `region_groups` ({name: [regions]}) replaces these, `region_excluded` drops regions.
+REGION_GROUPS: Dict[str, List[str]] = {
+    "Europe": ["westeurope", "northeurope", "swedencentral", "germanywestcentral", "francecentral",
+               "switzerlandnorth", "uksouth", "norwayeast", "italynorth", "polandcentral", "spaincentral"],
+    "North America": ["eastus", "eastus2", "centralus", "southcentralus", "westus2", "westus3", "northcentralus",
+                      "canadacentral"],
+    "Asia Pacific": ["southeastasia", "eastasia", "centralindia", "southindia", "japaneast", "koreacentral",
+                     "australiaeast"],
+}
+
+
+def region_group(region: str, groups: Dict[str, List[str]]) -> Optional[tuple]:
+    """(group name, its regions) for a region; None when the region is in no group."""
+    region = (region or "").lower().replace(" ", "")
+    for name, regions in groups.items():
+        if region in regions:
+            return name, list(regions)
+    return None
+
+
+def cheaper_regions(current: str, prices: Dict[str, float], candidates, min_pct: float) -> List[Dict[str, Any]]:
+    """Candidate regions at least `min_pct` % cheaper than the current one, cheapest first."""
+    base = prices.get(current)
+    if not base:
+        return []
+    found = [{"region": r, "usd_per_hour": round(p, 4), "cheaper_pct": round((1 - p / base) * 100, 1)}
+             for r, p in prices.items() if r in candidates and r != current and p <= base * (1 - min_pct / 100)]
+    return sorted(found, key=lambda a: (a["usd_per_hour"], a["region"]))
+
+
+@register_scanner
+class CheaperRegionScanner(PostureScanner):
+    """
+    VMs and Premium App Service plans whose size lists for less in another region of the same geography. A region
+    move is a migration (data residency, latency, dependencies, egress, quota, region-bound reservations), so this is
+    a structural suggestion - for new deployments, rebuilds and DR placement - valued at the resource's own price.
+    Regions an 'Allowed locations' policy forbids are never suggested; tag a resource `arg-region-fixed` to skip it.
+    """
+
+    scanner_name = "region_price_scanner"
+    display_name = "Cheaper Region Available"
+    description = "Suggests regions in the same geography where a VM size or App Service plan lists for less"
+    category = ScannerCategory.COST
+    severity = SeverityLevel.LOW
+
+    MIN_SAVING_PCT = 10.0
+    MIN_SAVING_USD = 20.0
+
+    VM_QUERY = """
+    Resources
+    | where type =~ 'microsoft.compute/virtualmachines'
+    | project id, name, type, resourceGroup, subscriptionId, location, tags,
+              size = tostring(properties.hardwareProfile.vmSize),
+              os = tostring(properties.storageProfile.osDisk.osType),
+              license = tostring(properties.licenseType),
+              priority = tostring(properties.priority),
+              power = tostring(properties.extended.instanceView.powerState.code)
+    """
+    PLAN_QUERY = """
+    Resources
+    | where type =~ 'microsoft.web/serverfarms'
+    | project id, name, type, resourceGroup, subscriptionId, location, tags, kind,
+              sku_name = tostring(sku.name), capacity = toint(sku.capacity), reserved = tobool(properties.reserved)
+    """
+
+    async def scan(self, context: ScanContext) -> ScanOutput:
+        live = self.is_live(context) and getattr(context, "resource_graph_client", None) is not None
+        try:
+            cases = await self._live_cases(context) if live else self._mock_data()
+        except Exception as e:
+            return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
+        allowed = await get_allowed_locations(context) if live else None
+        groups = self.setting("region_groups", REGION_GROUPS)
+        excluded = {str(r).lower() for r in self.setting("region_excluded", [])}
+        findings = []
+        for case in cases:
+            finding = await self._evaluate(context, case, groups, excluded, allowed)
+            if finding is not None:
+                findings.append(finding)
+        return ScanOutput(findings=findings, resources_scanned=len(cases))
+
+    @staticmethod
+    def _windows(vm: Dict[str, Any]) -> bool:
+        # Windows meter only without Azure Hybrid Benefit (licenseType Windows_Server / Windows_Client).
+        return (vm.get("os") or "").lower() == "windows" and (vm.get("license") or "") not in (
+            "Windows_Server", "Windows_Client")
+
+    @staticmethod
+    def _vm_eligible(vm: Dict[str, Any]) -> bool:
+        tags = {str(k).lower() for k in (vm.get("tags") or {})}
+        return (bool(vm.get("size")) and (vm.get("power") or "").lower() == "powerstate/running"
+                and (vm.get("priority") or "").lower() != "spot"
+                and not (vm.get("resourceGroup") or "").lower().startswith("mc_")  # AKS node pools
+                and "arg-region-fixed" not in tags)
+
+    @staticmethod
+    async def _plan_hourly(context: ScanContext, sku: str, linux: bool, region: str) -> Optional[float]:
+        family = "Premium v3" if sku.endswith("v3") else "Premium v2"
+        product = f"Azure App Service {family} Plan" + (" - Linux" if linux else "")
+        # No fallback price: a region without a price is left out instead of assumed equal.
+        return await get_retail_price(context, f"serviceName eq 'Azure App Service' and armRegionName eq '{region}' "
+                                               f"and productName eq '{product}' and meterName eq '{_meter_name(sku)}'")
+
+    async def _live_cases(self, context: ScanContext) -> List[Dict[str, Any]]:
+        vms = [v for v in await self.arg(context, self.VM_QUERY) if self._vm_eligible(v)]
+        prices: Dict[tuple, Dict[str, float]] = {}
+
+        async def _fetch(key: tuple) -> None:
+            prices[key] = await vm_prices_by_region(context, key[0], key[1])
+
+        await gather_limited(sorted({(v["size"], self._windows(v)) for v in vms}), _fetch,
+                             self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
+        cases = [{"row": v, "kind": "VM", "sku": v["size"], "units": 1,
+                  "prices": prices.get((v["size"], self._windows(v)), {})} for v in vms]
+
+        groups = self.setting("region_groups", REGION_GROUPS)
+        premium = {sku for sku, _ in APP_SERVICE_HOURLY_USD}
+        for plan in await self.arg(context, self.PLAN_QUERY):
+            group = region_group(plan.get("location"), groups)
+            if plan.get("sku_name") not in premium or not group:
+                continue
+            if "arg-region-fixed" in {str(k).lower() for k in (plan.get("tags") or {})}:
+                continue
+            linux = bool(plan.get("reserved")) or "linux" in (plan.get("kind") or "").lower()
+            regional = {}
+            for region in group[1]:
+                price = await self._plan_hourly(context, plan["sku_name"], linux, region)
+                if price:
+                    regional[region] = price
+            cases.append({"row": plan, "kind": "App Service plan", "sku": plan["sku_name"],
+                          "units": plan.get("capacity") or 1, "prices": regional})
+        return cases
+
+    async def _evaluate(self, context: ScanContext, case: Dict[str, Any], groups: Dict[str, List[str]],
+                        excluded: set, allowed: Optional[set]):
+        row, prices = case["row"], case["prices"]
+        region = (row.get("location") or "").lower().replace(" ", "")
+        group = region_group(region, groups)
+        if not group or region not in prices:
+            return None
+        candidates = set(group[1]) - excluded
+        if allowed is not None:
+            candidates &= allowed
+        alts = cheaper_regions(region, prices, candidates,
+                               float(self.setting("region_min_saving_pct", self.MIN_SAVING_PCT)))
+        if not alts:
+            return None
+        best, current, units = alts[0], prices[region], case["units"]
+        list_monthly = current * HOURS_BILLED_PER_MONTH * units
+        list_saving = round((current - best["usd_per_hour"]) * HOURS_BILLED_PER_MONTH * units, 2)
+        min_usd = float(self.setting("region_min_saving_usd", self.MIN_SAVING_USD))
+        if list_saving < min_usd:
+            return None
+        kind, sku, name = case["kind"], case["sku"], row["name"]
+        listed = ", ".join(f"{a['region']} USD {a['usd_per_hour']:.3f}/hour (-{a['cheaper_pct']:.0f}%)" for a in alts[:3])
+        policy = (f" Only regions the 'Allowed locations' policy permits were compared ({', '.join(sorted(allowed))})."
+                  if allowed is not None else "")
+        finding = self.resource_finding(
+            row,
+            finding_type="cheaper_region_available",
+            title=f"Cheaper region for {name}: {sku} lists {best['cheaper_pct']:.0f}% less in {best['region']}",
+            description=(
+                f"{kind} '{name}' runs {sku}{f' x{units}' if units > 1 else ''} in {region} at USD {current:.3f}/hour "
+                f"(pay-as-you-go list price). In the same geography ({group[0]}) it lists for less in: {listed}; "
+                f"about USD {list_saving:,.0f}/month at list prices.{policy} A region move is a migration, not a "
+                f"setting: check data residency and compliance, latency to users and to the services it talks to "
+                f"(they may have to move too), egress between regions, availability zones and quota for the size, "
+                f"and that reservations are bought per region (savings plans are not). Best used for new "
+                f"deployments, rebuilds and disaster-recovery placement."
+            ),
+            resource_type=(row.get("type") or "").lower(),
+            remediation_steps=(
+                "1. Confirm data residency, compliance and latency requirements allow the cheaper region.\n"
+                "2. Check that the size and every dependent service exist there, and the subscription's quota.\n"
+                "3. Plan the move with Azure Resource Mover or a redeployment from infrastructure as code; move or "
+                "re-point dependent resources and exchange region-bound reservations.\n"
+                "4. For new or rebuilt workloads, deploy to the cheaper region from the start."
+            ),
+            azure_cli_script=(
+                f"az vm list-skus --location {best['region']} --size {sku} --all --output table\n"
+                f"az vm list-usage --location {best['region']} --output table" if kind == "VM" else
+                f"az appservice list-locations --sku {sku} --output table"
+            ),
+            evidence={"current_region": region, "region_group": group[0], "sku": sku, "units": units,
+                      "usd_per_hour_current": round(current, 4), "alternatives": alts[:5],
+                      "allowed_locations": sorted(allowed) if allowed is not None else None,
+                      "list_price_monthly_usd": round(list_monthly, 2)},
+            estimated_monthly_savings_usd=list_saving,
+            caf_control="Cost Optimization",
+        )
+        # Scaled to what the resource actually costs (discounts, reservations, savings plans).
+        finding = await price_at_actual_cost(context, finding, list_cost=list_monthly)
+        if (finding.estimated_monthly_savings_usd or 0) < min_usd:
+            return None
+        return finding
+
+    def _mock_data(self) -> List[Dict[str, Any]]:
+        base = "/subscriptions/sub-1/resourceGroups/rg-app/providers"
+
+        def row(kind: str, name: str, region: str) -> Dict[str, Any]:
+            return {"id": f"{base}/{kind}/{name}", "name": name, "type": kind.lower(), "resourceGroup": "rg-app",
+                    "subscriptionId": "sub-1", "location": region, "tags": {}}
+
+        d8 = {"westeurope": 0.384, "northeurope": 0.352, "swedencentral": 0.336, "switzerlandnorth": 0.460}
+        return [
+            # swedencentral is 12.5 % cheaper; northeurope (8.3 %) stays under the 10 % floor
+            {"row": row("Microsoft.Compute/virtualMachines", "vm-web-01", "westeurope"), "kind": "VM",
+             "sku": "Standard_D8s_v5", "units": 1, "prices": d8},
+            # already in the cheapest region of its geography: no finding
+            {"row": row("Microsoft.Compute/virtualMachines", "vm-web-02", "swedencentral"), "kind": "VM",
+             "sku": "Standard_D8s_v5", "units": 1, "prices": d8},
+            {"row": row("Microsoft.Web/serverfarms", "asp-portal", "switzerlandnorth"), "kind": "App Service plan",
+             "sku": "P1v3", "units": 2, "prices": {"switzerlandnorth": 0.404, "westeurope": 0.338, "northeurope": 0.320}},
         ]
 

@@ -59,6 +59,8 @@ Reports land in `<ARG repo>\reports\<subscription>\` (the PDF is `report-summary
    validated, not estimated: the new size keeps CPU P95 ≤ 40 %, memory P99 ≤ 60 %, disk / network headroom and every
    hardware feature over 30 days. Section 7 of `01-current-findings` lists **resource providers** (registered =
    accepted, not registered) against usage and allow / deny resource-type policies (`resource_type_denied_by_policy`).
+   Cheaper regions (`cheaper_region_available`, wave 3): same geography, at least 10 % and USD 20/month cheaper,
+   limited to "Allowed locations"; a migration to plan, not a quick win.
 5. State estimates as estimates (savings are USD converted to the billing currency; the critique's "why" is inferred).
 
 ## Guardrails

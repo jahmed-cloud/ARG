@@ -43,6 +43,7 @@ import { useApi, ApiError } from '../hooks/useApi';
 import { useAppSelector } from '../store/store';
 import { useSnackbar } from 'notistack';
 import { ChangePasswordCard } from '../components/settings/ChangePasswordCard';
+import { ApiKeysCard } from '../components/settings/ApiKeysCard';
 import { IntegrationsStatusCard } from '../components/settings/IntegrationsStatusCard';
 import { UserManagementSection } from '../components/settings/UserManagementSection';
 import { AboutSection } from '../components/settings/AboutSection';
@@ -218,6 +219,8 @@ export const SettingsPage: React.FC = () => {
       </Card>
 
       <ChangePasswordCard />
+
+      <ApiKeysCard />
 
       <IntegrationsStatusCard />
 

@@ -19,10 +19,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.dependencies.auth import require_admin
 from backend.api.dependencies.database import get_db
 from backend.api.routes.auth import hash_password
+from backend.core.config import settings
 from backend.models.models import User, UserRole
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["users"])
+
+LOCAL_ADMIN_LOCKED = ("The local admin ({email}) always stays enabled, super admin and signed in with ADMIN_USERNAME / "
+                      "ADMIN_PASSWORD from .env - change it there and restart the backend.")
+
+
+def is_local_admin(user: User) -> bool:
+    """The bootstrap account from ADMIN_EMAIL in .env (restored by scripts/seed_admin.py on every start)."""
+    return (user.email or "").lower() == (settings.ADMIN_EMAIL or "").lower()
 
 
 class UserCreate(BaseModel):
@@ -163,6 +172,10 @@ async def update_user(
     if user.id == current_user.id and body.is_active is False:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
 
+    if is_local_admin(user) and (body.is_active is False
+                                 or (body.role is not None and body.role != UserRole.SUPER_ADMIN)):
+        raise HTTPException(status_code=409, detail=LOCAL_ADMIN_LOCKED.format(email=user.email))
+
     if body.role is not None and body.role != user.role and user.entra_managed:
         raise HTTPException(status_code=400, detail=(
             "This account's role follows Entra group membership (admin / contributor groups) and is set again "
@@ -197,6 +210,8 @@ async def admin_reset_password(
         raise HTTPException(status_code=404, detail="User not found")
     if not user.hashed_password and user.sso_provider:
         raise HTTPException(status_code=400, detail="This is an SSO-only account and has no local password to reset")
+    if is_local_admin(user):
+        raise HTTPException(status_code=409, detail=LOCAL_ADMIN_LOCKED.format(email=user.email))
 
     new_password = secrets.token_urlsafe(16)
     user.hashed_password = hash_password(new_password)
@@ -226,6 +241,8 @@ async def deactivate_user(
     user = await db.get(User, str(user_id))
     if not user or user.deleted_at is not None:
         raise HTTPException(status_code=404, detail="User not found")
+    if is_local_admin(user):
+        raise HTTPException(status_code=409, detail=LOCAL_ADMIN_LOCKED.format(email=user.email))
 
     user.deleted_at = datetime.now(timezone.utc)
     user.is_active = False

@@ -57,6 +57,7 @@ import {
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useAppDispatch, useAppSelector, logout, setUser } from "../../store/store";
 import { useApi } from "../../hooks/useApi";
+import { useCanOperate } from "../../hooks/useRoles";
 import { RouteBoundary } from "./RouteBoundary";
 
 const SIDEBAR_EXPANDED = 224;
@@ -68,7 +69,7 @@ interface NavItem {
   icon: React.ReactNode;
   badge?: number;
   group: "WORKSPACE" | "ASSESSMENT" | "OPERATIONS";
-  // Tenant-wide or write-only pages: hidden for viewers, who only see their own subscriptions.
+  // Tenant-wide or write-only pages: admins and contributors only (hidden for owners, readers and auditors).
   operatorsOnly?: boolean;
 }
 
@@ -86,9 +87,6 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Subscriptions", path: "/subscriptions", icon: <CloudQueue />, group: "OPERATIONS" },
 ];
 
-// Roles that run scans and see tenant-wide pages (admin, and the contributor group = analyst).
-const OPERATOR_ROLES = ["super_admin", "admin", "analyst"];
-
 export function AppLayout() {
   const theme = useTheme();
   const navigate = useNavigate();
@@ -98,9 +96,8 @@ export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const { user } = useAppSelector((s) => s.auth);
-  const isViewer = user?.role === "viewer";
-  const canOperate = !!user && OPERATOR_ROLES.includes(user.role);
-  const navItems = NAV_ITEMS.filter((item) => !(item.operatorsOnly && isViewer));
+  const canOperate = useCanOperate();
+  const navItems = NAV_ITEMS.filter((item) => !(item.operatorsOnly && !canOperate));
 
   // Below this width, the sidebar switches from a permanent column that
   // always reserves layout space to a temporary overlay drawer that's
@@ -388,16 +385,17 @@ export function AppLayout() {
               {NAV_ITEMS.find((n) => location.pathname.startsWith(n.path))?.label ?? "Settings"}
             </Typography>
 
-            {/* Takes the user to the Scans page to start a scan there,
-                where they can choose which subscription(s) to target —
+            {/* Takes the user to the Scans page and opens its scan dialog there,
+                where they choose which subscription(s) to target —
                 deliberately does NOT start a scan directly from here,
-                since that would skip subscription selection entirely. */}
-            {canOperate && <Button
+                since that would skip subscription selection entirely.
+                Hidden on the Scans page itself, which has its own button. */}
+            {canOperate && !location.pathname.startsWith("/scans") && <Button
               variant="contained"
               size="small"
               disableElevation
               aria-label="Start a scan"
-              onClick={() => navigate("/scans")}
+              onClick={() => navigate("/scans", { state: { startScan: true } })}
               startIcon={isMobile ? undefined : <PlayArrow sx={{ fontSize: "16px !important" }} />}
               sx={{
                 background: "#365b47",

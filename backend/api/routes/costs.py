@@ -32,12 +32,17 @@ from backend.services.access import AccessScope, get_access_scope
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["costs"])
 
+# Structural suggestions (a region move is a migration): listed with their saving, but kept out of the potential
+# savings total - the same rule as the local reports' wave 3.
+STRUCTURAL_FINDING_TYPES = {"cheaper_region_available"}
+
 
 class CostSummary(BaseModel):
     total_monthly_cost: float
     total_annual_cost: float
     potential_monthly_savings: float
     potential_annual_savings: float
+    structural_monthly_savings: float = 0.0  # e.g. cheaper regions; not in potential_monthly_savings
     currency: str = "USD"
     top_savings: list[dict]
 
@@ -70,7 +75,7 @@ async def get_cost_summary(
                 Finding.status == FindingStatus.OPEN,
                 Finding.estimated_monthly_savings_usd.isnot(None),
                 Finding.estimated_monthly_savings_usd > 0,
-                scope.where(Finding.subscription_id),
+                scope.findings(),
             )
         )
     )
@@ -80,7 +85,10 @@ async def get_cost_summary(
     savings_result = await db.execute(savings_query)
     saving_findings = savings_result.scalars().all()
 
-    total_savings = sum(f.estimated_monthly_savings_usd or 0 for f in saving_findings)
+    total_savings = sum(f.estimated_monthly_savings_usd or 0 for f in saving_findings
+                        if f.finding_type not in STRUCTURAL_FINDING_TYPES)
+    structural_savings = sum(f.estimated_monthly_savings_usd or 0 for f in saving_findings
+                             if f.finding_type in STRUCTURAL_FINDING_TYPES)
 
     top = sorted(
         saving_findings,
@@ -93,10 +101,13 @@ async def get_cost_summary(
         total_annual_cost=round(total_monthly * 12, 2),
         potential_monthly_savings=round(total_savings, 2),
         potential_annual_savings=round(total_savings * 12, 2),
+        structural_monthly_savings=round(structural_savings, 2),
         top_savings=[
             {
                 "id": str(f.id),
                 "title": f.title,
+                "finding_type": f.finding_type,
+                "structural": f.finding_type in STRUCTURAL_FINDING_TYPES,
                 "resource_name": f.resource.resource_name if f.resource else None,
                 "resource_type": f.resource.resource_type if f.resource else None,
                 "monthly_saving": round(f.estimated_monthly_savings_usd or 0, 2),

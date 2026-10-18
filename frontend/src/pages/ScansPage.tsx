@@ -34,7 +34,9 @@ import {
   alpha,
 } from '@mui/material';
 import { PlayArrow, Cancel, Refresh, WarningAmber } from '@mui/icons-material';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useApi, ApiError } from '../hooks/useApi';
+import { useCanOperate } from '../hooks/useRoles';
 import { useSnackbar } from 'notistack';
 
 interface SubscriptionOption {
@@ -67,6 +69,9 @@ const STATUS_COLORS: Record<string, string> = {
 
 export const ScansPage: React.FC = () => {
   const api = useApi();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const canOperate = useCanOperate(); // on-demand scans: admins and contributors (the API enforces the same)
   const { enqueueSnackbar } = useSnackbar();
   const [scans, setScans] = useState<ScanJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,6 +137,16 @@ export const ScansPage: React.FC = () => {
       setSubscriptionsLoading(false);
     }
   };
+
+  // "Start a Scan" in the top bar navigates here with { startScan: true }: open the dialog once,
+  // then drop the flag so a reload or Back does not open it again.
+  useEffect(() => {
+    if ((location.state as { startScan?: boolean } | null)?.startScan) {
+      navigate(location.pathname, { replace: true, state: null });
+      if (canOperate) openScanDialog();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   const toggleSub = (azureSubId: string) => {
     setSelectedSubIds((prev) => {
@@ -215,16 +230,23 @@ export const ScansPage: React.FC = () => {
           <Button startIcon={<Refresh />} onClick={load} size="small">
             Refresh
           </Button>
-          <Button
-            variant="contained"
-            startIcon={<PlayArrow />}
-            onClick={openScanDialog}
-            sx={{  fontWeight: 700 }}
-          >
-            Start a Scan
-          </Button>
+          {canOperate && (
+            <Button
+              variant="contained"
+              startIcon={<PlayArrow />}
+              onClick={openScanDialog}
+              sx={{  fontWeight: 700 }}
+            >
+              Start a Scan
+            </Button>
+          )}
         </Box>
       </Box>
+
+      <Typography variant="body2" sx={{ color: alpha('#fff', 0.55), mb: 2 }}>
+        Every subscription is scanned automatically once a day (09:00 IST by default).
+        {canOperate ? ' Start a scan here for an on-demand refresh.' : ' Admins and contributors can also start scans on demand.'}
+      </Typography>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -286,7 +308,7 @@ export const ScansPage: React.FC = () => {
                       {s.scanners_requested.join(', ')}
                     </TableCell>
                     <TableCell align="right">
-                      {(s.status === 'pending' || s.status === 'running') && (
+                      {canOperate && (s.status === 'pending' || s.status === 'running') && (
                         <Button
                           size="small"
                           color="error"

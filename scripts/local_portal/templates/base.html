@@ -10,10 +10,11 @@
   <a class="skip-link" href="#main-content">Skip to content</a>
   <header class="topbar">
     <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">A</span> ARG <span>Resource Guardian</span></a>
+    {% set path = request.url.path if request is defined else '' %}
     <nav aria-label="Main navigation">
-      <a href="/">Subscriptions</a>
-      <a href="/estate">Estate</a>
-      <a href="/reports/README.md">Reports</a>
+      <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>Subscriptions</a>
+      <a href="/estate" {% if path.startswith('/estate') %}aria-current="page"{% endif %}>Estate</a>
+      <a href="/reports/README.md" {% if path.startswith('/reports') %}aria-current="page"{% endif %}>Reports</a>
     </nav>
     {% block user %}{% endblock %}
   </header>

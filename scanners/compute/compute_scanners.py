@@ -15,7 +15,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from scanners.base.azure_api import price_at_actual_cost
 from scanners.base.base_scanner import (
@@ -335,11 +335,7 @@ class DeallocatedVMScanner(BaseScanner):
     category     = ScannerCategory.COMPUTE
     severity     = SeverityLevel.MEDIUM
 
-    DEFAULT_THRESHOLD_DAYS = 30
-
     async def scan(self, context: ScanContext) -> ScanOutput:
-        threshold_days = self.config.get("threshold_days", self.DEFAULT_THRESHOLD_DAYS)
-
         query = """
         Resources
         | where type == 'microsoft.compute/virtualmachines'

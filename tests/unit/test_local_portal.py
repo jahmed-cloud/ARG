@@ -252,6 +252,41 @@ def test_cli_tokens_are_cached_until_near_expiry():
     assert Counting.calls == 2
 
 
+def test_parallel_analyses_share_one_az_call_with_a_longer_timeout(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    import azure.identity
+
+    from scanners.base import azure_api
+    from scripts.subscription_analysis.cli import make_credential
+
+    created = {}
+
+    class SlowCli:
+        calls = 0
+
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+        def get_token(self, *scopes, **kwargs):
+            SlowCli.calls += 1
+            time.sleep(0.2)
+            return SimpleNamespace(token="t", expires_on=time.time() + 3600)
+
+    monkeypatch.setattr(azure.identity, "AzureCliCredential", SlowCli)
+    cred = make_credential("cli", "tenant-1")
+    threads = [threading.Thread(target=cred.get_token, args=("https://management.azure.com/.default",))
+               for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert SlowCli.calls == 1
+    assert created == {"tenant_id": "tenant-1", "process_timeout": azure_api.AZ_CLI_TIMEOUT_SECONDS}
+    assert azure_api.AZ_CLI_TIMEOUT_SECONDS > 10  # azure-identity's default of 10 s fails under parallel load
+
+
 def test_cli_rejects_output_with_multiple_subscriptions():
     from scripts.subscription_analysis.cli import main
 
@@ -300,3 +335,106 @@ def test_stale_code_import_error_says_restart_the_portal(tmp_path):
     jobs.shutdown()
     assert jobs.get(job.id).status == "failed"
     assert jobs.get(job.id).error.endswith("restart the portal and try again.")
+
+
+# ---- versioned API for scripts / CI and the AI prompt ------------------------------------
+
+API_TOKEN = "t" * 32
+
+
+def _api_report(root: Path) -> None:
+    folder = root / "sub-demo"
+    (folder / "05-deep-dive" / "raw").mkdir(parents=True)
+    (folder / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (folder / SUMMARY_FILE).write_text(json.dumps({
+        "subscription": SUB, "generated_at": "2026-09-24T10:00:00+00:00", "resources": 3, "findings": 2,
+        "findings_by_severity": {"critical": 1, "high": 0, "medium": 1, "low": 0, "info": 0},
+        "currency": "CHF", "cost_30d": 100.0, "savings_billing": {"wave_1": 10.0, "wave_2": 5.0},
+    }), encoding="utf-8")
+    (folder / "05-deep-dive" / "raw" / "findings.json").write_text(json.dumps([
+        {"ref": "F-001", "severity": "critical", "finding_type": "public_storage", "title": "Public storage st1",
+         "resource_name": "st1", "resource_id": f"/subscriptions/{SUB['id']}/x/st1", "subscription_id": SUB["id"]},
+        {"ref": "F-002", "severity": "medium", "finding_type": "missing_tags", "title": "Tags on vm1",
+         "resource_name": "vm1", "resource_id": f"/subscriptions/{SUB['id']}/x/vm1", "subscription_id": SUB["id"]},
+    ]), encoding="utf-8")
+
+
+@pytest.fixture
+def api_client(tmp_path, monkeypatch):
+    async def fake_list(credential):
+        return [SUB]
+
+    monkeypatch.setattr(collector, "list_subscriptions", fake_list)
+    _api_report(tmp_path)
+    jobs = JobManager(tmp_path, lambda: object(), max_workers=1, runner=fake_runner)
+    app = create_app(reports_dir=tmp_path, username="admin", password="pw", azure=FakeAzure(), jobs=jobs,
+                     allowed_hosts=["testserver"], api_token=API_TOKEN)
+    with TestClient(app) as c:
+        yield c
+
+
+BEARER = {"authorization": f"Bearer {API_TOKEN}"}
+
+
+def test_api_token_authenticates_api_calls_only(api_client):
+    assert api_client.get("/api/v1/reports").status_code == 401
+    assert api_client.get("/api/v1/reports", headers={"authorization": "Bearer wrong-token"}).status_code == 401
+    r = api_client.get("/api/v1/reports", headers=BEARER)
+    assert r.status_code == 200 and r.json()["reports"][0]["folder"] == "sub-demo"
+    # the token never opens the HTML portal
+    assert api_client.get("/", headers=BEARER, follow_redirects=False).status_code == 303
+    with pytest.raises(ValueError):
+        create_app(reports_dir=Path("."), username="a", password="b", azure=FakeAzure(), api_token="short")
+
+
+def test_api_reports_findings_and_gate_by_folder_id_or_name(api_client):
+    for key in ("sub-demo", SUB["id"], SUB["id"].upper(), "SUB-DEMO"):
+        assert api_client.get(f"/api/v1/reports/{key}", headers=BEARER).json()["folder"] == "sub-demo"
+    assert api_client.get("/api/v1/reports/nope", headers=BEARER).status_code == 404
+    assert api_client.get("/api/v1/reports/..", headers=BEARER).status_code == 404
+    findings = api_client.get("/api/v1/reports/sub-demo/findings?min_severity=high", headers=BEARER).json()
+    assert findings["total"] == 1 and findings["items"][0]["ref"] == "F-001"
+    assert api_client.get("/api/v1/reports/sub-demo/findings?min_severity=bad", headers=BEARER).status_code == 400
+    gate = api_client.get("/api/v1/reports/sub-demo/gate?fail_on=critical", headers=BEARER).json()
+    assert gate["passed"] is False and gate["blocking"] == 1
+    gate = api_client.get("/api/v1/reports/sub-demo/gate?fail_on=critical&ignore=public_storage", headers=BEARER).json()
+    assert gate["passed"] is True
+    sarif = api_client.get("/api/v1/reports/sub-demo/sarif", headers=BEARER)
+    assert sarif.headers["content-type"].startswith("application/sarif+json") and sarif.json()["version"] == "2.1.0"
+    junit = api_client.get("/api/v1/reports/sub-demo/junit?fail_on=medium", headers=BEARER)
+    assert 'failures="2"' in junit.text
+    spec = api_client.get("/api/v1/openapi.json", headers=BEARER).json()
+    assert "/api/v1/reports/{key}/gate" in spec["paths"] and "/" not in spec["paths"]
+
+
+def test_api_starts_analyses_by_name_and_reports_job_status(api_client):
+    subs = api_client.get("/api/v1/subscriptions", headers=BEARER).json()
+    assert subs["subscriptions"][0]["report_folder"] == "sub-demo"
+    assert api_client.post("/api/v1/analyses", json={"subscriptions": ["ghost"]}, headers=BEARER).status_code == 400
+    r = api_client.post("/api/v1/analyses", json={"subscriptions": ["sub-demo"]}, headers=BEARER)
+    assert r.status_code == 202
+    job_id = r.json()["jobs"][0]["id"]
+    for _ in range(50):
+        job = api_client.get(f"/api/v1/analyses/{job_id}", headers=BEARER).json()
+        if job["status"] == "completed":
+            break
+        time.sleep(0.05)
+    assert job["status"] == "completed" and job["folder"] == "sub-demo"
+    assert api_client.get("/api/v1/analyses/nope", headers=BEARER).status_code == 404
+    # a cross-origin browser request is still refused, token or not
+    assert api_client.post("/api/v1/analyses", json={"subscriptions": ["sub-demo"]},
+                           headers={**BEARER, "origin": "https://evil.example"}).status_code == 403
+
+
+def test_ai_prompt_api_is_kept_but_not_shown_in_the_ui(api_client):
+    r = api_client.get("/api/v1/reports/sub-demo/ai-prompt", headers=BEARER)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/markdown")
+    assert "F-001" in r.text and SUB["id"] not in r.text and "<id-1>" in r.text
+    assert "content-disposition" not in r.headers
+    r = api_client.get("/api/v1/reports/sub-demo/ai-prompt?download=1&min_severity=critical&mask_ids=false", headers=BEARER)
+    assert "attachment" in r.headers["content-disposition"] and SUB["id"] in r.text and "F-002" not in r.text
+    _login(api_client)
+    page = api_client.get("/reports/sub-demo/README.md").text
+    assert "Export PDF (summary)" in page and 'aria-current="page"' in page
+    assert "ai-chat" not in page and "ai-prompt" not in page
+    assert "ai-chat" not in api_client.get("/").text

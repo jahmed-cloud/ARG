@@ -587,6 +587,56 @@ async def vm_hourly_usd(context: Any, size: str, region: str, windows: bool) -> 
     return price
 
 
+_VM_REGION_PRICE_CACHE: Dict[str, Dict[str, float]] = {}
+
+
+async def vm_prices_by_region(context: Any, size: str, windows: bool) -> Dict[str, float]:
+    """
+    Pay-as-you-go retail price (USD/hour) of one VM size in every region that sells it: {armRegionName: price}.
+    One paginated Retail Prices query per size, with the same rules as vm_hourly_usd (exact size, no Spot / Low
+    Priority, the Windows meter only for Windows without Azure Hybrid Benefit). {} offline.
+    """
+    if getattr(context, "arm_client", None) is None or not size:
+        return {}
+    key = f"{size.lower()}|{windows}"
+    if key in _VM_REGION_PRICE_CACHE:
+        return _VM_REGION_PRICE_CACHE[key]
+
+    def _fetch() -> Dict[str, float]:
+        import httpx
+
+        prices: Dict[str, float] = {}
+        wanted = _size_key(size)
+        url: Optional[str] = RETAIL_PRICES_URL
+        params: Optional[Dict[str, str]] = {"$filter": (f"serviceName eq 'Virtual Machines' and armSkuName eq '{size}' "
+                                                        f"and priceType eq 'Consumption'")}
+        for _ in range(20):  # 100 items a page; a size has a few hundred rows across all regions
+            response = httpx.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            body = response.json()
+            for item in body.get("Items", []):
+                if _size_key(item.get("skuName") or "") != wanted or item.get("unitOfMeasure") != "1 Hour":
+                    continue
+                # Rows with isPrimaryMeterRegion false are still valid prices (regions sharing a meter): keep them.
+                if (item.get("productName") or "").endswith("Windows") != windows:
+                    continue
+                region, price = (item.get("armRegionName") or "").lower(), float(item.get("retailPrice") or 0)
+                if region and price > 0:
+                    prices[region] = min(prices.get(region, price), price)
+            url, params = body.get("NextPageLink"), None
+            if not url:
+                break
+        return prices
+
+    try:
+        prices = await asyncio.to_thread(_fetch)
+    except Exception as exc:
+        logger.info("VM regional price lookup failed (%s): %s", size, exc)
+        prices = {}
+    _VM_REGION_PRICE_CACHE[key] = prices
+    return prices
+
+
 async def compute_skus(context: Any, subscription_id: str, location: str) -> Dict[str, Dict[str, Any]]:
     """
     Compute SKU catalogue of one region as seen by the subscription: {lower(size): {"name", "family",
@@ -624,6 +674,62 @@ async def compute_skus(context: Any, subscription_id: str, location: str) -> Dic
 
 class AzureAuthExpiredError(RuntimeError):
     """The az login (or other) credential stopped issuing tokens during a run."""
+
+
+# azure-identity gives `az account get-access-token` 10 s by default. A Windows az call takes ~5 s alone and
+# 10-15 s when several run at once (parallel analyses, hourly token refresh); the timeout surfaces as
+# "Failed to invoke the Azure CLI" and used to fail the whole subscription as an expired sign-in.
+AZ_CLI_TIMEOUT_SECONDS = 45
+
+
+def az_cli_credential(tenant_id: Optional[str] = None) -> Any:
+    """AzureCliCredential (the user's `az login`) with a timeout that survives a busy machine."""
+    from azure.identity import AzureCliCredential
+
+    return AzureCliCredential(tenant_id=tenant_id or "", process_timeout=AZ_CLI_TIMEOUT_SECONDS)
+
+
+class CachedTokenCredential:
+    """
+    AzureCliCredential shells out to `az` on every get_token call (seconds each).
+    Cache tokens per scope until shortly before expiry so the portal and every
+    analysis share one token instead of spawning az repeatedly. One refresh runs
+    at a time; threads that waited for it reuse its token.
+    """
+
+    REFRESH_MARGIN_SECONDS = 300
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+        self._tokens: Dict[tuple, Any] = {}
+        self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
+
+    def _cached(self, key: tuple) -> Any:
+        with self._lock:
+            token = self._tokens.get(key)
+        if token and token.expires_on - time.time() > self.REFRESH_MARGIN_SECONDS:
+            return token
+        return None
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> Any:
+        key = (scopes, kwargs.get("tenant_id"))
+        token = self._cached(key)
+        if token:
+            return token
+        with self._refresh_lock:
+            token = self._cached(key)
+            if token:
+                return token
+            token = self._inner.get_token(*scopes, **kwargs)
+            with self._lock:
+                self._tokens[key] = token
+            return token
+
+    def close(self) -> None:
+        close = getattr(self._inner, "close", None)
+        if close:
+            close()
 
 
 class FailFastCredential:

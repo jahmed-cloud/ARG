@@ -135,3 +135,56 @@ async def get_provider_analysis(context: Any) -> Optional[Dict[str, Any]]:
     if cache is not None:
         cache["provider_analysis"] = result
     return result
+
+
+# Built-in "Allowed locations" and "Allowed locations for resource groups".
+ALLOWED_LOCATIONS_POLICIES = ("e56962a6-4747-49cd-b67b-bf8b01975c4c", "e765b5de-1225-4ba3-bd56-1ac6695af988")
+LOCATION_POLICY_QUERY = f"""
+policyresources
+| where type =~ 'microsoft.authorization/policyassignments'
+| extend def = tolower(tostring(properties.policyDefinitionId))
+| where def endswith '{ALLOWED_LOCATIONS_POLICIES[0]}' or def endswith '{ALLOWED_LOCATIONS_POLICIES[1]}'
+| project name = tostring(properties.displayName), scope = tolower(tostring(properties.scope)),
+          enforcement = tostring(properties.enforcementMode),
+          locations = properties.parameters.listOfAllowedLocations.value
+"""
+
+
+def allowed_location_set(subscription_id: str, ancestors: List[str],
+                         assignments: List[Dict[str, Any]]) -> Optional[set]:
+    """Regions every enforced 'Allowed locations' assignment on the subscription or an ancestor management group
+    permits (their intersection); None when no such assignment applies."""
+    sub_scope = f"/subscriptions/{subscription_id.lower()}"
+    mg_scopes = {f"/providers/microsoft.management/managementgroups/{mg.lower()}" for mg in ancestors}
+    allowed: Optional[set] = None
+    for a in assignments:
+        scope = (a.get("scope") or "").lower()
+        if scope != sub_scope and scope not in mg_scopes:
+            continue  # resource-group assignments cover part of the subscription only
+        if (a.get("enforcement") or "Default") == "DoNotEnforce":
+            continue
+        regions = {str(r).lower().replace(" ", "") for r in (a.get("locations") or [])}
+        if regions:
+            allowed = regions if allowed is None else allowed & regions
+    return allowed
+
+
+async def get_allowed_locations(context: Any) -> Optional[set]:
+    """Allowed regions for context.subscription_id from Azure Policy; None offline, unrestricted or unreadable."""
+    cache = getattr(context, "cache", None)
+    if cache is not None and "allowed_locations" in cache:
+        return cache["allowed_locations"]
+    if getattr(context, "resource_graph_client", None) is None:
+        return None
+    try:
+        ancestors: List[str] = []
+        for row in await query_resource_graph(context, ANCESTORS_QUERY) or []:
+            ancestors += [str(m.get("name")) for m in (row.get("chain") or []) if isinstance(m, dict) and m.get("name")]
+        assignments = await query_resource_graph(context, LOCATION_POLICY_QUERY, tenant_scope=True) or []
+        result = allowed_location_set(context.subscription_id, ancestors, assignments)
+    except Exception as exc:  # the price comparison still works; it just cannot rule regions out
+        logger.info("Allowed-locations policy unavailable: %s", exc)
+        result = None
+    if cache is not None:
+        cache["allowed_locations"] = result
+    return result

@@ -34,6 +34,7 @@ interface SavingOpportunity {
   annual_saving: number;
   severity: string;
   remediation_steps: string | null;
+  structural?: boolean; // e.g. a cheaper region: a migration, not in the savings total
 }
 
 interface CostSummary {
@@ -41,6 +42,7 @@ interface CostSummary {
   total_annual_cost: number;
   potential_monthly_savings: number;
   potential_annual_savings: number;
+  structural_monthly_savings?: number;
   currency: string;
   top_savings: SavingOpportunity[];
 }
@@ -167,9 +169,15 @@ export const CostsPage: React.FC = () => {
 
       <Card>
         <CardContent>
-          <Typography variant="subtitle2" sx={{ mb: 2, color: alpha('#fff', 0.7) }}>
+          <Typography variant="subtitle2" sx={{ mb: data.structural_monthly_savings ? 0.5 : 2, color: alpha('#fff', 0.7) }}>
             Top Savings Opportunities
           </Typography>
+          {!!data.structural_monthly_savings && (
+            <Typography variant="caption" component="p" sx={{ mb: 2, color: alpha('#fff', 0.5) }}>
+              Cheaper regions (a migration to plan, not a quick win) could save about $
+              {data.structural_monthly_savings.toLocaleString(undefined, { maximumFractionDigits: 0 })}/month more - not included in the totals above.
+            </Typography>
+          )}
           {data.top_savings.length === 0 ? (
             <Typography variant="body2" sx={{ color: alpha('#fff', 0.4), py: 3, textAlign: 'center' }}>
               No savings opportunities identified yet. Run a scan to discover unused resources.
@@ -203,6 +211,7 @@ export const CostsPage: React.FC = () => {
                     </TableCell>
                     <TableCell>
                       <Typography variant="body2">{s.resource_name ?? s.title}</Typography>
+                      {s.structural && <Chip size="small" label="Region move" sx={{ ml: 0, mt: 0.5, height: 18, fontSize: 10 }} />}
                       <Typography variant="caption" sx={{ color: alpha('#fff', 0.4) }}>
                         {s.resource_type}
                       </Typography>

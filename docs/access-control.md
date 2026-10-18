@@ -7,13 +7,30 @@ changes anything in Azure.
 
 | Role | Who gets it | Sees | Can do |
 |---|---|---|---|
-| **Super admin / admin** | Members of `ENTRA_ADMIN_GROUP_IDS`, or accounts an admin creates | Every subscription | Everything: tenants, subscriptions, users, access, scans, findings |
-| **Analyst** ("contributor") | Members of `ENTRA_CONTRIBUTOR_GROUP_IDS`, or created by an admin | Every subscription | Run scans, change finding status, reports, remediation scripts, Terraform state - not tenants or users |
-| **Auditor** | Created by an admin | Every subscription, read-only | Read |
-| **Viewer** | Everyone else who signs in with Microsoft, or created by an admin | **Only** subscriptions they own in Azure, or were given reader access to in ARG | Read those subscriptions; owners also manage who else can read them |
+| **Super admin / admin** | Members of `ENTRA_ADMIN_GROUP_IDS`, the local admin from `.env`, or accounts an admin creates | Every subscription **and tenant-wide data** | Everything: tenants, subscriptions, users, access, scans, findings |
+| **Contributor** (role `analyst`) | Members of `ENTRA_CONTRIBUTOR_GROUP_IDS`, or created by an admin | Every subscription **and tenant-wide data** | Start and cancel scans, change finding status, reports, remediation scripts, Terraform state - not tenants or users |
+| **Auditor** | Created by an admin | Every subscription, read-only - **no tenant-wide data** | Read |
+| **Viewer** (subscription owner or reader) | Everyone else who signs in with Microsoft, or created by an admin | **Only** subscriptions they own in Azure, or were given reader access to in ARG - **no tenant-wide data** | Read those subscriptions; owners also manage who else can read them |
 
-A viewer with no owned or shared subscription sees an empty workspace, never everything. Tenant-wide pages
-(Identity / Entra findings, Remediation) and "Start a Scan" are hidden for viewers.
+A viewer with no owned or shared subscription sees an empty workspace, never everything.
+
+### Tenant-wide data: admins and contributors only
+
+Anything that describes the tenant rather than one subscription - **Identity** (Entra ID) findings, the identity
+score and its trend, the dashboard's identity-issue count, tenants and users - is visible to **admins and
+contributors only**. Subscription owners, readers (viewers) and auditors never see it: not on the Identity page
+(hidden, and `/identity` redirects to the overview), not in Findings, exports, the dashboard or reports - even when an
+identity finding is stored under a subscription they can read. Below contributor, Reports history shows only the
+reports a person generated themselves. The API enforces the same rule (`AccessScope.findings()` /
+`require_finding()` in `backend/services/access.py`, `TENANT_CATEGORIES`), so it cannot be bypassed by calling it
+directly.
+
+### Scans: daily automatic, on demand for contributors
+
+Every active subscription is scanned automatically **every day at 09:00 IST** (`FULL_SCAN_SCHEDULE="0 9 * * *"` in
+`SCAN_SCHEDULE_TIMEZONE="Asia/Kolkata"`; switch off with `FEATURE_SCHEDULED_SCANS=false`). **Starting and cancelling
+a scan on demand** is for admins and contributors: the Scans page shows the buttons only to them and the API returns
+403 to everyone else.
 
 ## How a viewer's subscriptions are decided
 
@@ -49,6 +66,15 @@ Group IDs are optional: without them everyone who signs in is a viewer, and the 
 README, "Default sign-in") stays the administrator. Add them later and restart the backend
 (`docker compose up -d backend`); roles change at each person's next sign-in.
 
+### The local admin always stays
+
+The local admin (`ADMIN_EMAIL` / `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`) is never disabled and never changes
+with Microsoft sign-in: password sign-in keeps working even when a Microsoft account with the same email is linked to
+it, and its role is never taken from Entra groups. Settings - Users cannot deactivate, delete, demote or reset it
+(409), Change Password refuses it, and every backend start restores it to exactly what `.env` says (active, super
+admin, username and password). Change it only in `.env` (`python -m scripts.configure_env --rotate-admin`) and
+restart the backend.
+
 ### App registration checklist
 
 1. Entra ID - App registrations - New registration. Redirect URI (Web): `AZURE_OAUTH_REDIRECT_URI`
@@ -68,14 +94,17 @@ README, "Default sign-in") stays the administrator. Add them later and restart t
   set in ARG, even when they sign in with Microsoft.
 - Local viewer accounts (created in Settings - Users with role viewer) are scoped the same way: they see only the
   subscriptions an owner or admin added them to.
-- Scans of all subscriptions at once are not shown to viewers (they would reveal other subscriptions); scans of
-  their own subscriptions are.
-- Viewers' reports contain only their subscriptions and only they see them in Reports history.
+- Scans of all subscriptions at once (including the daily automatic scan) are not shown to viewers (they would
+  reveal other subscriptions); scans of their own subscriptions are.
+- Reports of viewers and auditors contain only their subscriptions and no tenant-wide data, and only they see them in
+  Reports history.
 - Every grant and removal is written to the audit log (`subscription_access.grant` / `.revoke`).
 
 ## Checking it
 
-Implementation: `backend/services/access.py` (the one filter every read route uses), `backend/services/entra_access.py`
-(groups, Owner leases, Graph lookup), `backend/api/routes/subscriptions.py` (access endpoints). Tests:
-`tests/unit/test_access_scope.py`, `tests/unit/test_dashboard.py`, and `tests/integration/test_access_postgres.py`
+Implementation: `backend/services/access.py` (the one filter every read route uses, tenant-wide data included),
+`backend/services/entra_access.py` (groups, Owner leases, Graph lookup), `backend/api/routes/subscriptions.py`
+(access endpoints), `scripts/seed_admin.py` and `backend/api/routes/users.py` (local admin). Tests:
+`tests/unit/test_access_scope.py`, `tests/unit/test_tenant_scope.py`, `tests/unit/test_dashboard.py`, and
+`tests/integration/test_access_postgres.py`
 (isolation on every scoped route, grants, sign-in; run with `ARG_TEST_DATABASE_URL` pointing at a migrated database).

@@ -58,6 +58,28 @@ reused and no new secret is created.
 Graph permissions for the identity scanners are **not** granted by the script (that needs admin consent) - see
 step 3 of Option B.
 
+## Option A2 - principal created by an Entra admin
+
+Where users may not register applications (Azure answers `Directory permission is needed for the current
+user to register the application`), Option A stops before changing anything. Ask an Entra / platform admin for:
+
+- an app registration with a service principal (any name, e.g. `arg-scanner`) and a client secret;
+- **Reader**, **Cost Management Reader** and **Security Reader** for it, best on the tenant root management group so
+  new subscriptions are covered automatically.
+
+Then connect it - no Azure change, no az role rights needed:
+
+```powershell
+$env:ARG_CLIENT_SECRET = '<secret from the admin>'   # or leave unset to be prompted
+python -m scripts.connect_azure --client-id <appId> --tenant-name "Contoso" --scan
+Remove-Item Env:ARG_CLIENT_SECRET
+```
+
+It signs in as the principal, lists every enabled subscription it can read (`--tenant-id` defaults to your az login
+tenant), registers the tenant in ARG - or replaces the credential of an already registered one - and adds every
+subscription ARG does not know yet. Run it again after the admin grants more subscriptions. `--subscription <id>`
+limits it to some subscriptions.
+
 ## Option B - manual
 
 ### 1. Create the service principal
@@ -151,3 +173,4 @@ All access is read-only. Remediation scripts are generated for review and never 
 | `connect_azure`: "Cannot reach ARG" | Stack not running or another address: `docker compose ps`, `--url`. |
 | `connect_azure`: 401 from `/auth/login` | Admin password differs from `.env` (restart the backend so it syncs), or pass `--user`. |
 | `connect_azure`: `Insufficient privileges` / `AuthorizationFailed` from `az` | Your account cannot create app registrations or assign roles; ask an admin, or use Option B with a principal they create. |
+| `connect_azure`: `Directory permission is needed ... to register the application` | App registration is disabled for users in this tenant. Nothing was changed; use [Option A2](#option-a2---principal-created-by-an-entra-admin) with a principal an Entra admin creates. |

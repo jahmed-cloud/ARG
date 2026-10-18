@@ -14,7 +14,6 @@ here — title/description carry the real detail instead.
 """
 import logging
 from datetime import datetime
-from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func, and_, desc

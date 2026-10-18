@@ -4,29 +4,61 @@ Azure Resource Guardian - Authentication Dependencies
 FastAPI dependency injection for JWT authentication and RBAC.
 """
 
-from typing import List, Optional
+import hashlib
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.api.dependencies.database import get_db
-from backend.models.models import User, UserRole
+from backend.models.models import ApiKey, User, UserRole
 
 security = HTTPBearer(auto_error=False)
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+API_KEY_PREFIX = "arg_"
+API_KEY_TOUCH_INTERVAL = timedelta(minutes=5)  # last_used_at is refreshed at most this often
+
+
+def hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+async def _user_from_api_key(key: str, request: Request, db: AsyncSession) -> User:
+    unauthorized = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired API key",
+                                 headers={"WWW-Authenticate": "Bearer"})
+    if not key.startswith(API_KEY_PREFIX):
+        raise unauthorized
+    api_key = (await db.execute(select(ApiKey).where(ApiKey.key_hash == hash_api_key(key)))).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if not api_key or api_key.revoked_at or (api_key.expires_at and api_key.expires_at <= now):
+        raise unauthorized
+    user = (await db.execute(
+        select(User).where(User.id == api_key.user_id, User.deleted_at.is_(None)))).scalar_one_or_none()
+    if not user:
+        raise unauthorized
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+    if not api_key.last_used_at or now - api_key.last_used_at > API_KEY_TOUCH_INTERVAL:
+        api_key.last_used_at = now  # committed by get_db
+    request.state.api_key_id = api_key.id
+    return user
 
 
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Depends(api_key_header),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
-    Validate JWT access token and return the authenticated user.
-    Raises 401 for invalid/missing tokens, 403 for inactive users.
+    Validate a JWT access token or a personal API key (`Bearer arg_...` / `X-API-Key`) and return the user.
+    Raises 401 for invalid/missing credentials, 403 for inactive users.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -34,8 +66,12 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    if x_api_key:
+        return await _user_from_api_key(x_api_key, request, db)
     if not credentials:
         raise credentials_exception
+    if credentials.credentials.startswith(API_KEY_PREFIX):
+        return await _user_from_api_key(credentials.credentials, request, db)
 
     try:
         payload = jwt.decode(
@@ -67,6 +103,14 @@ async def get_current_user(
         )
 
     return user
+
+
+async def get_session_user(request: Request, current_user: User = Depends(get_current_user)) -> User:
+    """Signed-in user only: an API key cannot create or list API keys (a leaked key cannot mint new ones)."""
+    if getattr(request.state, "api_key_id", None):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="API keys cannot manage API keys - sign in to ARG")
+    return current_user
 
 
 def require_roles(*roles: UserRole):

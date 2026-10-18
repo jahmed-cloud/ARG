@@ -3,11 +3,15 @@
 Roles (application level):
   super_admin / admin  - everything, including tenants, users and access grants
   analyst              - "contributor": every subscription, runs scans and manages findings
-  auditor              - every subscription, read-only
+  auditor              - every subscription, read-only (no tenant-wide data)
   viewer               - only subscriptions they own in Azure (lease from sign-in) or were given reader access to
 
 Every read route filters with AccessScope.where(<model>.subscription_id); single objects go through
 AccessScope.require(). A scoped user with no grants sees nothing, never everything.
+
+Tenant-wide data - Entra ID (identity) findings and scores, tenants - is for admins and contributors (analyst)
+only: subscription owners, readers (viewers) and auditors never see it, whatever subscription it is stored under.
+Finding queries use AccessScope.findings(), single findings AccessScope.require_finding().
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,9 +24,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.dependencies.auth import get_current_user
 from backend.api.dependencies.database import get_db
 from backend.core.config import settings
-from backend.models.models import SubscriptionAccess, User, UserRole
+from backend.models.models import Finding, SubscriptionAccess, User, UserRole
 
 MANAGERS = (UserRole.SUPER_ADMIN, UserRole.ADMIN)
+# Roles that see tenant-wide data (Entra ID findings, identity scores) and may start or cancel scans.
+TENANT_ROLES = (UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.ANALYST)
+TENANT_CATEGORIES = ("identity",)
+
+
+def sees_tenant(user: User) -> bool:
+    return user.role in TENANT_ROLES
 
 
 def is_scoped(user: User) -> bool:
@@ -70,6 +81,24 @@ class AccessScope:
 
     def can_manage(self, subscription_id) -> bool:
         return self.user.role in MANAGERS or str(subscription_id) in self.owned
+
+    @property
+    def tenant(self) -> bool:
+        """May see tenant-wide data (admins and contributors)."""
+        return sees_tenant(self.user)
+
+    def findings(self):
+        """SQL condition for Finding rows: the user's subscriptions, without tenant-wide categories unless allowed."""
+        condition = self.where(Finding.subscription_id)
+        if self.tenant:
+            return condition
+        return and_(condition, or_(Finding.category.is_(None), Finding.category.notin_(TENANT_CATEGORIES)))
+
+    def require_finding(self, finding) -> None:
+        """404 for a finding outside the user's subscriptions or a tenant-wide one they may not see."""
+        self.require(finding.subscription_id)
+        if not self.tenant and (finding.category or "") in TENANT_CATEGORIES:
+            raise HTTPException(status_code=404, detail="Not found")
 
 
 async def load_scope(db: AsyncSession, user: User) -> AccessScope:

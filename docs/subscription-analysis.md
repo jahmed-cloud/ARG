@@ -101,7 +101,7 @@ python -m scripts.subscription_analysis --all --tenant <id> --estate         # e
 | `--scanners a,b` | Run only these scanners (names in [scanner-catalog.md](./scanner-catalog.md)) |
 | `--config FILE` | JSON with threshold overrides, see [§7](#7-tuning-thresholds) |
 | `--skip-cost` | Skip the report's cost datasets (trend, breakdowns). Cost-aware scanners still query per-resource cost |
-| `--estate` | Only refresh the estate inventory (`reports/_estate/`) for `--all` / `-s` targets: one Resource Graph query plus VM size specs and 30-day usage metrics (about 4-5 minutes for 10,000+ resources), joined with the existing reports. No scanners, see [§5c](#5c-estate-inventory-all-subscriptions) |
+| `--estate` | Only refresh the estate inventory (`reports/_estate/`) for `--all` / `-s` targets: one Resource Graph query plus VM size specs and 30-day usage metrics (a few minutes for 10,000+ resources), joined with the existing reports. No scanners, see [§5c](#5c-estate-inventory-all-subscriptions) |
 | `--parallel N` | Analyse up to N subscriptions at once (default 1). `--all --parallel 3` is a good balance; beyond that Cost Management throttling (429 retries) eats most of the gain |
 | `--auth default` | Use `DefaultAzureCredential` (env vars / managed identity) instead of az login, for automation |
 | `-v` | Verbose logging |
@@ -344,6 +344,26 @@ Suggestions and cost come from the latest report of each subscription; subscript
 still appear in the inventory, without suggestions.
 
 ---
+
+### Cheaper region (`cheaper_region_available`)
+
+For every running VM (not Spot, not an AKS node) and every Premium v2 / v3 App Service plan, the pay-as-you-go list
+price of the same size is compared across the regions of its **geography** - Europe (West / North Europe, Sweden
+Central, Germany West Central, France Central, Switzerland North, UK South, Norway East, Italy North, Poland Central,
+Spain Central), North America and Asia Pacific - so data residency and latency stay comparable. A region is
+suggested when it is **at least 10 % cheaper** and the difference is **at least USD 20/month**, valued at the
+resource's own amortized price (5a-2). If an **"Allowed locations"** Azure Policy applies to the subscription (directly
+or from a management group, enforced), only its regions are compared.
+
+The finding lists up to three cheaper regions with their hourly price and difference, and says what a move involves:
+data residency and compliance, latency to users and to dependent services (which may have to move too), inter-region
+egress, zones and quota for the size, and region-bound reservations (savings plans are not). It is a **wave 3
+(structural)** suggestion - for new deployments, rebuilds and disaster-recovery placement - so its saving is shown on
+the finding but not added to the headline wave 1 + 2 savings; in the Docker UI it is marked **Region move** and kept
+out of the potential-savings total. Tag a resource `arg-region-fixed` to skip it (e.g. pinned by data residency).
+Settings: `region_min_saving_pct` (10), `region_min_saving_usd` (20), `region_excluded` (list), `region_groups`
+(replace the geographies). It appears in the report (03 cost drivers, 05 deep dive cost-finops), in the Estate
+**Suggestions** view of the local portal and on the Docker UI's Findings and Cost Savings pages.
 
 ## 6. What it analyses
 

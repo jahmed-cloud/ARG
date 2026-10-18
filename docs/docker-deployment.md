@@ -42,6 +42,58 @@ Register Tenant, Subscriptions - Register Subscription) and secret rotation are 
 
 Do not generate new credentials over an existing deployment. Match the existing PostgreSQL password and encryption key. The environment generator deliberately refuses to overwrite `.env`.
 
+## Daily automatic scan
+
+The `beat` container scans every active subscription once a day. Default: **09:00 India Standard Time**.
+
+| Setting (`.env`) | Default | Meaning |
+|---|---|---|
+| `FULL_SCAN_SCHEDULE` | `0 9 * * *` | Cron (minute hour day month weekday), e.g. `30 6 * * 1-5` for 06:30 on weekdays |
+| `SCAN_SCHEDULE_TIMEZONE` | `Asia/Kolkata` | IANA time zone the schedule is read in (`Europe/Zurich`, `UTC`, ...) |
+| `FEATURE_SCHEDULED_SCANS` | `true` | `false` switches the automatic scan off |
+
+Restart `worker` and `beat` after a change (`docker compose up -d worker beat`). On-demand scans (Scans - Start a
+Scan) stay available to admins and contributors; see [access control](access-control.md#scans-daily-automatic-on-demand-for-contributors).
+Before this release the schedule setting was ignored and the scan ran every 24 hours from whenever `beat` started.
+Until a tenant is connected (`python -m scripts.connect_azure`) there is nothing to scan: the daily run is then
+skipped and logged by `worker` ("Scheduled full scan skipped: no active subscriptions are connected") instead of
+adding a failed job to the Scans page every day.
+
+## Email
+
+Password-reset emails go through SMTP when `SMTP_HOST` is set (`SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`,
+`SMTP_FROM_EMAIL`, `SMTP_USE_TLS`). Without SMTP no reset email is sent and the link is **never written to the
+log** (it is a credential: anyone who can read the log could reset that password); an admin resets the password
+under **Settings - Users** instead. On a private development machine `LOG_PASSWORD_RESET_LINKS=true` writes the
+link to the backend log again (warned about at every start). `GET /auth/system-status` returns booleans only.
+
+**Requirement (planned, not built yet): send email through Microsoft Graph.** Exchange Online is retiring SMTP basic
+authentication, and a Graph mail sender needs no SMTP relay or mailbox password:
+
+- `MAIL_PROVIDER=graph` (default `smtp`) and `GRAPH_MAIL_SENDER=<shared mailbox>`, e.g. `arg-noreply@<domain>`.
+- Sending uses `POST https://graph.microsoft.com/v1.0/users/{GRAPH_MAIL_SENDER}/sendMail` with an app-only token
+  (client credentials) from an app registration with Microsoft Graph **Mail.Send** (Application) and admin consent -
+  either the Sign in with Microsoft app or a dedicated one (`GRAPH_MAIL_CLIENT_ID` / `GRAPH_MAIL_CLIENT_SECRET`,
+  tenant from `AZURE_OAUTH_TENANT_ID`); never the read-only scanner principal.
+- Limit the app to the one sender mailbox with Exchange Online RBAC for Applications (or an application access
+  policy), so Mail.Send cannot send as anyone else.
+- Same messages as today (password reset), then scan-completed and scheduled-report notifications; delivery failures
+  are logged and never block a sign-in or a scan; the Settings - Integrations card shows which provider is active.
+- Tests with a mocked Graph endpoint; no secret or token is ever logged.
+
+## Security settings
+
+| Setting | Behaviour |
+|---|---|
+| Webhooks (`WEBHOOK_SLACK_URL`, `WEBHOOK_TEAMS_URL`, `WEBHOOK_CUSTOM_URL`) | Delivered only to `https://` URLs without credentials whose host resolves to **public** addresses; redirects are not followed. Loopback, private, link-local and the cloud metadata address (`169.254.169.254`) are refused, so a webhook cannot reach internal services. `WEBHOOK_ALLOW_PRIVATE_HOSTS=true` allows an internal receiver on purpose (metadata stays blocked). A rejected URL is logged and skipped; the test endpoint answers 400 |
+| `FRONTEND_BASE_URL` | Must be `http(s)://host[:port][/path]` without credentials, query or fragment (the backend does not start otherwise); in production a non-`https` URL other than localhost is warned about at start, because reset links and Microsoft sign-in tokens use it |
+| `APP_ENV=production` | The backend refuses to start with the placeholder `SECRET_KEY` / `ENCRYPTION_KEY` or a default or shorter-than-12-character `ADMIN_PASSWORD` - `python -m scripts.configure_env` generates all three |
+| `LOG_PASSWORD_RESET_LINKS` | `false` (default). Development only, see [Email](#email) |
+
+Refresh tokens, password-reset tokens and API keys are stored as SHA-256 hashes of 256+ bit random values - the usual
+choice for high-entropy tokens (a slow password hash adds nothing at that entropy). Authentication uses bearer tokens,
+not cookies.
+
 ## Production overlay
 
 ```bash

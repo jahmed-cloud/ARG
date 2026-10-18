@@ -34,10 +34,6 @@ def _groups(claims):
     return {str(UUID(g)) for g in claims.get('groups', [])}
 
 
-def group_admin(claims):
-    return bool(_groups(claims) & {str(UUID(g)) for g in settings.ENTRA_ADMIN_GROUP_IDS})
-
-
 def role_from_groups(claims):
     """Application role from Entra group membership: admin group, contributor group, else viewer."""
     groups = _groups(claims)

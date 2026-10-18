@@ -6,6 +6,11 @@ Authentication reuses your Azure CLI session - run `az login` in a terminal
 first (no service principal needed). --auth default switches to
 DefaultAzureCredential (env vars / managed identity) for automation.
 
+CI/CD: --fail-on <severity> exits with 2 when findings at or above that
+severity remain (1 = an analysis failed); --sarif / --junit / --ci-json write
+pipeline artefacts and --gate-only re-evaluates existing reports offline.
+See docs/ci-cd.md.
+
 The identity needs Reader, Cost Management Reader and Security Reader on
 each subscription. Each subscription is written to
 <reports-dir>/<subscription-name>/ (<subscription-name>_<first 8 of ID>/ when
@@ -22,6 +27,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.subscription_analysis.ci import GATE_EXIT_CODE, SEVERITIES  # noqa: E402
 from scripts.subscription_analysis.collector import list_subscriptions, run  # noqa: E402
 from scripts.subscription_analysis.report import (  # noqa: E402
     clean_generated,
@@ -56,15 +62,28 @@ def _parse_args(argv=None) -> argparse.Namespace:
                         "the --all / --subscription targets, joined with the existing reports; no scanners")
     p.add_argument("--parallel", type=int, default=1, metavar="N",
                    help="Analyse up to N subscriptions at the same time (default 1; 3 is a good value for --all)")
+    ci = p.add_argument_group("CI/CD", "Severity gate and pipeline artefacts (see docs/ci-cd.md)")
+    ci.add_argument("--fail-on", choices=SEVERITIES,
+                    help=f"Exit with {GATE_EXIT_CODE} when findings at or above this severity remain")
+    ci.add_argument("--gate-ignore", metavar="TYPES",
+                    help="Comma-separated finding types the gate ignores (they are still reported)")
+    ci.add_argument("--gate-only", action="store_true",
+                    help="Evaluate the gate and write CI artefacts from existing report folders; no Azure calls")
+    ci.add_argument("--sarif", metavar="FILE", help="Write findings as SARIF 2.1.0 (GitHub code scanning, Azure DevOps)")
+    ci.add_argument("--junit", metavar="FILE", help="Write JUnit XML: one test case per finding type, blocking types fail")
+    ci.add_argument("--ci-json", metavar="FILE", help="Write the gate result and per-subscription totals as JSON")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
 
 def make_credential(kind: str = "cli", tenant: str = None):
-    from azure.identity import AzureCliCredential, DefaultAzureCredential
+    from azure.identity import DefaultAzureCredential
+
+    from scanners.base.azure_api import CachedTokenCredential, az_cli_credential
 
     if kind == "cli":
-        return AzureCliCredential(tenant_id=tenant) if tenant else AzureCliCredential()
+        # one cached token for every subscription (and --parallel thread) instead of an az call per client
+        return CachedTokenCredential(az_cli_credential(tenant))
     return DefaultAzureCredential(additionally_allowed_tenants=["*"])
 
 
@@ -94,6 +113,38 @@ def export_report_pdf(target: Path, detail: str) -> None:
         print(f"  PDF not created: {exc}", file=sys.stderr)
 
 
+def existing_folders(reports_dir: Path, subscriptions, everything: bool):
+    """Report folders matching --subscription (folder, ID or display name) or every folder with --all."""
+    from scripts.subscription_analysis.report import read_summaries
+
+    wanted = {s.lower() for s in (subscriptions or [])}
+    return [s["folder"] for s in read_summaries(reports_dir)
+            if everything or s["folder"].lower() in wanted
+            or (s.get("subscription") or {}).get("id", "").lower() in wanted
+            or ((s.get("subscription") or {}).get("name") or "").lower() in wanted]
+
+
+def run_gate(args, folders, failures=()) -> int:
+    """Severity gate + CI artefacts for the given report folders; returns the gate's exit code (0 or 2)."""
+    from scripts.subscription_analysis import ci
+
+    reports = [ci.load_report(f) for f in folders]
+    ignore = ci.parse_types(args.gate_ignore)
+    result = ci.ci_summary(reports, args.fail_on, ignore, failures)
+    for path in ci.write_outputs(result, reports, ci_json=args.ci_json, sarif=args.sarif, junit=args.junit):
+        print(f"CI artefact: {path.resolve()}")
+    ci.emit_pipeline_output(result)
+    if args.fail_on:
+        verdict = "passed" if result["blocking"] == 0 else "FAILED"
+        print(f"Gate {verdict}: {result['blocking']} finding(s) at or above {args.fail_on}"
+              + (f" (ignoring {', '.join(ignore)})" if ignore else ""))
+    return GATE_EXIT_CODE if args.fail_on and result["blocking"] else 0
+
+
+def wants_ci(args) -> bool:
+    return bool(args.fail_on or args.sarif or args.junit or args.ci_json)
+
+
 def main(argv=None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
@@ -104,14 +155,14 @@ def main(argv=None) -> int:
     import asyncio
 
     reports_dir = Path(args.reports_dir)
+    if args.gate_only:
+        folders = [Path(args.output)] if args.output else \
+            [reports_dir / f for f in existing_folders(reports_dir, args.subscription, args.all)]
+        if not folders:
+            raise SystemExit(f"No matching report folders in {reports_dir}.")
+        return run_gate(args, folders)
     if args.pdf_only:
-        from scripts.subscription_analysis.report import read_summaries
-
-        wanted = {s.lower() for s in (args.subscription or [])}
-        folders = [s["folder"] for s in read_summaries(reports_dir)
-                   if args.all or s["folder"].lower() in wanted
-                   or (s.get("subscription") or {}).get("id", "").lower() in wanted
-                   or ((s.get("subscription") or {}).get("name") or "").lower() in wanted]
+        folders = existing_folders(reports_dir, args.subscription, args.all)
         if not folders:
             raise SystemExit(f"No matching report folders in {reports_dir}.")
         for folder in folders:
@@ -148,7 +199,8 @@ def main(argv=None) -> int:
         include_cost=not args.skip_cost,
     )
     lock = threading.Lock()
-    failures = 0
+    failed: list = []
+    done: list = []
 
     def one(subscription: str) -> bool:
         try:
@@ -156,9 +208,12 @@ def main(argv=None) -> int:
                                               Path(args.output) if args.output else None, **kwargs)
         except Exception as exc:  # keep going with the next subscription
             print(f"FAILED {subscription}: {exc}", file=sys.stderr, flush=True)
+            with lock:
+                failed.append(subscription)
             return False
         waves = model.savings_by_wave()
         with lock:
+            done.append(target)
             print(f"{data.subscription['name']}: report written to {target.resolve()}")
             print(f"  resources: {len(data.resources)}  findings: {len(data.findings)}  "
                   f"30-day cost: {model.total_30:,.2f} {model.currency}")
@@ -185,7 +240,8 @@ def main(argv=None) -> int:
 
         refresh_estate(reports_dir)  # offline re-join: new findings/costs show up in the estate view
         print(f"Index: {write_index(reports_dir).resolve()}")
-    return 1 if failures else 0
+    gate = run_gate(args, sorted(done), failed) if wants_ci(args) else 0
+    return 1 if failures else gate
 
 
 if __name__ == "__main__":

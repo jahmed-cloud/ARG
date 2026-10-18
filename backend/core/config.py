@@ -9,9 +9,10 @@ Uses a layered approach: defaults → .env file → environment variables.
 
 from functools import lru_cache
 from typing import List, Optional
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -92,16 +93,17 @@ class Settings(BaseSettings):
     # Password Reset
     # -------------------------------------------------------------------------
     PASSWORD_RESET_TOKEN_TTL_MINUTES: int = 30
-    # Used to build the reset link sent to the user (or logged, if SMTP is
-    # unconfigured). Should be the externally-reachable URL of the frontend,
-    # e.g. https://arg.yourcompany.com
+    # Used to build the reset link sent to the user and the Microsoft sign-in redirect. Should be the
+    # externally-reachable URL of the frontend, e.g. https://arg.yourcompany.com (validated below).
     FRONTEND_BASE_URL: str = "http://localhost:3000"
+    # Development only: without SMTP, write password reset links to the backend log. Off by default - anyone
+    # who can read the logs could otherwise reset any password. Admins can always reset a user's password.
+    LOG_PASSWORD_RESET_LINKS: bool = False
 
     # -------------------------------------------------------------------------
-    # SMTP (optional) — if unset, password reset links are logged server-side
-    # instead of emailed, so the feature works out of the box with zero
-    # extra setup. Configure these in .env / docker-compose to enable real
-    # email delivery.
+    # SMTP (optional) — if unset, password reset emails are not sent (and
+    # never logged); an admin resets passwords under Settings - Users.
+    # Configure these in .env / docker-compose to enable real email delivery.
     # -------------------------------------------------------------------------
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587
@@ -167,7 +169,11 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     SCANNER_TIMEOUT_SECONDS: int = 300
     SCANNER_MAX_CONCURRENT: int = 10
-    FULL_SCAN_SCHEDULE: str = "0 2 * * *"  # Daily at 02:00 UTC (cron)
+    # Automatic full scan of every active subscription (cron: minute hour day month weekday), read in
+    # SCAN_SCHEDULE_TIMEZONE. Default: every day at 09:00 India Standard Time. FEATURE_SCHEDULED_SCANS=false
+    # switches it off; on-demand scans (admins and contributors) are unaffected.
+    FULL_SCAN_SCHEDULE: str = "0 9 * * *"
+    SCAN_SCHEDULE_TIMEZONE: str = "Asia/Kolkata"
     SCAN_RESULT_RETENTION_DAYS: int = 90
 
     # -------------------------------------------------------------------------
@@ -208,6 +214,9 @@ class Settings(BaseSettings):
     WEBHOOK_TEAMS_URL: Optional[str] = None
     WEBHOOK_CUSTOM_URL: Optional[str] = None
     WEBHOOK_SECRET: Optional[SecretStr] = None
+    # Webhooks go to public HTTPS endpoints only. true also allows hosts that resolve to private / loopback /
+    # link-local addresses (an internal receiver on purpose); cloud metadata stays blocked either way.
+    WEBHOOK_ALLOW_PRIVATE_HOSTS: bool = False
 
     # -------------------------------------------------------------------------
     # Validators
@@ -229,6 +238,49 @@ class Settings(BaseSettings):
             # Production safety checks are enforced at startup in main.py
             pass
         return v
+
+    @field_validator("FRONTEND_BASE_URL")
+    @classmethod
+    def validate_frontend_base_url(cls, v: str) -> str:
+        """Reset links and the Microsoft sign-in redirect (which carries tokens) are built from it."""
+        parsed = urlsplit(v.strip())
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password
+                or parsed.query or parsed.fragment):
+            raise ValueError("FRONTEND_BASE_URL must be http(s)://host[:port][/path] without credentials, "
+                             "query or fragment, e.g. https://arg.example.com")
+        return v.strip()
+
+
+DEFAULT_ADMIN_PASSWORDS = {"changeme", "changeme-before-first-login"}
+MIN_ADMIN_PASSWORD_LENGTH = 12
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def production_config_errors(s: Settings) -> List[str]:
+    """Settings that must never reach production: placeholder keys and a default or short admin password."""
+    errors = []
+    if "CHANGE-ME" in s.SECRET_KEY.get_secret_value():
+        errors.append("SECRET_KEY is the placeholder - generate one (python -m scripts.configure_env)")
+    if "CHANGE-ME" in s.ENCRYPTION_KEY.get_secret_value():
+        errors.append("ENCRYPTION_KEY is the placeholder - generate one (python -m scripts.configure_env)")
+    admin_password = s.ADMIN_PASSWORD.get_secret_value()
+    if admin_password in DEFAULT_ADMIN_PASSWORDS or len(admin_password) < MIN_ADMIN_PASSWORD_LENGTH:
+        errors.append(f"ADMIN_PASSWORD is a default or shorter than {MIN_ADMIN_PASSWORD_LENGTH} characters "
+                      "(python -m scripts.configure_env --rotate-admin)")
+    return errors
+
+
+def config_warnings(s: Settings) -> List[str]:
+    """Risky but legal settings, logged at startup."""
+    warnings = []
+    frontend = urlsplit(s.FRONTEND_BASE_URL)
+    if s.APP_ENV == "production" and frontend.scheme != "https" and frontend.hostname not in LOOPBACK_HOSTS:
+        warnings.append("FRONTEND_BASE_URL is not https: reset links and Microsoft sign-in tokens would travel "
+                        "unencrypted - use the https URL of your reverse proxy")
+    if s.LOG_PASSWORD_RESET_LINKS:
+        warnings.append("LOG_PASSWORD_RESET_LINKS is on: password reset links are written to this log - "
+                        "development only, anyone who can read the log can reset passwords")
+    return warnings
 
 
 @lru_cache()

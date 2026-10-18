@@ -452,11 +452,6 @@ class ScannerRegistry:
         ]
 
     @classmethod
-    def get_enabled(cls) -> List[Type[BaseScanner]]:
-        """Returns all scanners. Enabled/disabled state is managed in DB."""
-        return list(cls._registry.values())
-
-    @classmethod
     def count(cls) -> int:
         return len(cls._registry)
 

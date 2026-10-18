@@ -18,7 +18,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import re
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from scanners.base.base_scanner import (
     BaseScanner,

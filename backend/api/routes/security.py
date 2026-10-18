@@ -33,7 +33,7 @@ async def get_security_stats(
     result = await db.execute(
         select(Finding).where(
             and_(Finding.category == "security", Finding.status == FindingStatus.OPEN,
-                 scope.where(Finding.subscription_id))
+                 scope.findings())
         )
     )
     findings = result.scalars().all()

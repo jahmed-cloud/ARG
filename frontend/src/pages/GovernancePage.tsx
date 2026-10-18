@@ -8,6 +8,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Box, Grid, Card, CardContent, Typography, Skeleton, Alert, LinearProgress, alpha } from '@mui/material';
 import { useApi, ApiError } from '../hooks/useApi';
+import { WhatGovernsCard } from '../components/governance/WhatGovernsCard';
 
 interface GovernanceStats {
   governance_score: number;
@@ -22,7 +23,7 @@ interface GovernanceStats {
 const STAT_LABELS: { key: keyof GovernanceStats; label: string }[] = [
   { key: 'missing_tags', label: 'Missing Required Tags' },
   { key: 'naming_violations', label: 'Naming Violations' },
-  { key: 'policy_violations', label: 'Policy Violations' },
+  { key: 'policy_violations', label: 'Azure Policy Gaps' },
   { key: 'region_violations', label: 'Region Restriction Violations' },
   { key: 'unlocked_resources', label: 'Unlocked Production Resources' },
   { key: 'caf_violations', label: 'CAF Alignment Violations' },
@@ -134,6 +135,8 @@ export const GovernancePage: React.FC = () => {
         </a>{' '}
         page and filter by category "governance".
       </Typography>
+
+      <WhatGovernsCard />
     </Box>
   );
 };

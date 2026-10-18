@@ -44,6 +44,7 @@ from scanners.storage import storage_scanners  # noqa: F401
 from scanners.storage import storage_posture_scanners  # noqa: F401
 from scanners.governance import governance_scanners  # noqa: F401
 from scanners.governance import governance_posture_scanners  # noqa: F401
+from scanners.governance import policy_scanners  # noqa: F401
 from scanners.security import security_scanners  # noqa: F401
 from scanners.security import security_posture_scanners  # noqa: F401
 from scanners.database import database_scanners  # noqa: F401

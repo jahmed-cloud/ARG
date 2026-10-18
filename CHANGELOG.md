@@ -5,6 +5,26 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Azure Policy governance - 2026-10-18
+- **Policy scanners** (one shared Resource Graph snapshot per subscription, including assignments and exemptions
+  inherited from management groups): `policy_assignment_scanner` (nothing assigned, DoNotEnforce),
+  `policy_exemption_scanner` (no expiry, expired, orphaned, whole-initiative waivers), `policy_remediation_scanner`
+  (DeployIfNotExists / Modify with non-compliant resources and no remediation task ever), `policy_effectiveness_scanner`
+  (Indexed-mode definitions aimed at resource groups / subscriptions; "Allowed locations" without "Allowed locations
+  for resource groups"), `policy_coverage_scanner` (resource types no assignment evaluates). Each finding lists the
+  affected objects and the `az` commands to fix them.
+- **What governs this resource?** Assignments scope by scope (with `notScopes`), covering exemptions and compliance per
+  policy for one resource id: Governance page card, `GET /api/v1/governance/what-governs`, `python -m scripts.what_governs`.
+- **`python -m scripts.find_managed_policy --managed-by <value>`** lists every policy object a deployment tool stamped
+  with `metadata.managedBy` - the recovery list when its state is lost.
+- **`vm_required_extension_scanner`** (opt-in, `REQUIRED_VM_EXTENSIONS`): VMs and optionally Arc servers missing or
+  failing a required agent extension.
+- The Governance page's policy tile counts the new policy findings. Reference: [docs/azure-policy.md](docs/azure-policy.md),
+  [docs/azure-policy-limits.md](docs/azure-policy-limits.md). Tests: `test_policy_scanners.py`.
+- **Secret scan in CI:** a gitleaks job scans the full history on every push and pull request. Generated
+  `SECRET_KEY` / `ENCRYPTION_KEY` values from the first commit are revoked - installations still using them must
+  rotate ([docs/docker-deployment.md](docs/docker-deployment.md#rotating-secret_key-and-encryption_key)).
+
 ### Security - 2026-10-18
 - **Webhooks cannot reach internal services (SSRF).** Slack / Teams / custom webhooks are delivered only to `https://`
   URLs without credentials whose host resolves to public addresses; loopback, private, link-local and cloud metadata

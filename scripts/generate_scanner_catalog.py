@@ -36,7 +36,10 @@ def build() -> str:
     for name, cls in sorted(ScannerRegistry.all().items(), key=lambda kv: (kv[1].category.value, kv[0])):
         src = inspect.getsource(cls)
         types = sorted(set(re.findall(r'finding_type="([a-z0-9_]+)"', src)))
-        sources = [label for label, markers in SOURCE_MARKERS if any(m in src for m in markers)]
+        # data sources may sit in a shared base class of the same module (e.g. the policy snapshot scanners)
+        base_src = "".join(inspect.getsource(b) for b in cls.__mro__[1:]
+                           if b.__module__ == cls.__module__ and b is not object)
+        sources = [label for label, markers in SOURCE_MARKERS if any(m in src + base_src for m in markers)]
         if cls.requires_graph:
             sources = ["Microsoft Graph"]
         if "terraform_state" in src:

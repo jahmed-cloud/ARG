@@ -39,6 +39,7 @@ SCANNER_MODULES = (
     "scanners.storage.storage_posture_scanners",
     "scanners.governance.governance_scanners",
     "scanners.governance.governance_posture_scanners",
+    "scanners.governance.policy_scanners",
     "scanners.security.security_scanners",
     "scanners.security.security_posture_scanners",
     "scanners.database.database_scanners",

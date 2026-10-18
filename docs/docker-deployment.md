@@ -94,6 +94,20 @@ Refresh tokens, password-reset tokens and API keys are stored as SHA-256 hashes 
 choice for high-entropy tokens (a slow password hash adds nothing at that entropy). Authentication uses bearer tokens,
 not cookies.
 
+### Rotating SECRET_KEY and ENCRYPTION_KEY
+
+Rotate both keys if they were ever shared, committed or copied from another installation. The first commit of this
+repository shipped generated values in `.env` / `.env.example`; an installation still using those must rotate.
+
+1. Generate new values and put them in `.env`:
+   `python -c "import secrets, base64; print('SECRET_KEY=' + secrets.token_hex(32)); print('ENCRYPTION_KEY=' + base64.b64encode(secrets.token_bytes(32)).decode())"`
+2. `docker compose up -d` - a new `SECRET_KEY` signs out every session and invalidates reset links.
+3. Tenant client secrets were encrypted with the old `ENCRYPTION_KEY` and can no longer be read: store them again with
+   `python -m scripts.connect_azure` (it updates the registered tenants in place), then start a scan.
+
+The CI secret scan (gitleaks, `.github/workflows/validate.yml`) fails on any new secret in the history;
+`.gitleaksignore` lists only the revoked values from the first commit.
+
 ## Production overlay
 
 ```bash

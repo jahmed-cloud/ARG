@@ -18,8 +18,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from scanners.base.azure_api import price_at_actual_cost
 from scanners.base.base_scanner import (

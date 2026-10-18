@@ -56,7 +56,7 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
 ```
 
 **3.3 Refresh the estate** - one Resource Graph query across every subscription, plus VM specs and 30-day usage
-metrics (about 5 minutes for 10,000+ resources):
+metrics (a few minutes for 10,000+ resources):
 
 ```powershell
 .\scripts\Invoke-SubscriptionAnalysis.ps1 -All -TenantId <tenant-id> -Estate
@@ -127,6 +127,11 @@ over 30 days - Azure Advisor's rules for user-facing workloads, applied to every
 checked the same way and named when it fails. The estate's average-CPU list is only a screening list. Details:
 [docs/subscription-analysis.md](docs/subscription-analysis.md).
 
+**Cheaper regions** (`cheaper_region_available`) list VMs and Premium App Service plans whose size is at least
+10 % cheaper in another region of the same geography (only regions an "Allowed locations" policy permits). They
+are wave 3 (a migration to plan), so they appear with their saving but outside the headline savings; tag a
+resource `arg-region-fixed` to skip it.
+
 ## 6. After changing code
 
 ```powershell
@@ -182,6 +187,7 @@ networks), give the Podman machine fixed DNS servers - yours are listed by `Get-
 |---|---|
 | "sign-in expired" / `AADSTS70043` mid-run | `az login` again, re-run the step (finished subscriptions keep their reports) |
 | `az account get-access-token` hangs | Your session expired; ARG times out after 60 s. Close stray `az` windows, `az login` |
+| "sign-in is no longer valid (Failed to invoke the Azure CLI)" for a few subscriptions while others succeed | An az call was slow under load, not an expired sign-in; fixed on 2026-10-01 (45 s timeout, one shared token). Re-run those subscriptions with 3.5 |
 | `429 - retrying in 38s` | Normal Cost Management / metrics throttling; the run waits and continues |
 | Port 8765 already in use | An old portal is still running - see 3.1 |
 | Portal shows old behaviour after a code change | Restart the portal (3.1 + 3.2), then reload the page |

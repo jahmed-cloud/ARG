@@ -16,6 +16,16 @@ account), so this script does the service-principal work for you with your az se
 The client secret goes from Azure straight to ARG, where it is stored encrypted; it is never printed or
 written to disk. Run it again at any time to add subscriptions - an already registered tenant is reused.
 `--new-secret` gives the registered tenant a fresh secret when the old one expires.
+
+Tenants where you may not register applications (Azure: "Directory permission is needed ... to register the
+application") need a principal created by an Entra admin, with Reader, Cost Management Reader and Security Reader
+(ideally on the tenant root management group). Then connect it without any Azure change:
+
+    $env:ARG_CLIENT_SECRET = '<secret>'      # or leave it unset to be prompted
+    python -m scripts.connect_azure --client-id <appId> [--tenant-id <id>] [--scan]
+
+This signs in as that principal, lists every subscription it can read and registers the tenant (or updates its
+credential) and those subscriptions in ARG. No az login, service principal or role assignment is created.
 """
 import argparse
 import getpass
@@ -26,6 +36,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -33,6 +44,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SP_NAME = 'arg-scanner'
 ROLES = ('Reader', 'Cost Management Reader', 'Security Reader')
 USABLE_STATES = ('Enabled', 'Warned', 'PastDue')  # readable; Disabled and Deleted are not
+LOGIN_URL = 'https://login.microsoftonline.com'
+ARM_URL = 'https://management.azure.com'
 
 
 class ConnectError(Exception):
@@ -152,6 +165,9 @@ def short_reason(exc):
     text = str(exc)
     if 'AuthorizationFailed' in text or 'does not have authorization' in text:
         return 'you cannot assign roles here (needs Owner or User Access Administrator)'
+    if 'Directory permission is needed' in text:
+        return ('you may not register applications in this tenant - ask an Entra admin for a read-only service '
+                'principal, then run: python -m scripts.connect_azure --client-id <appId>')
     return text.splitlines()[0][:200] if text else type(exc).__name__
 
 
@@ -246,6 +262,91 @@ def connect(args, run=az, api_factory=ArgApi, log=print):
         log('Start a scan from the Scans page (or run again with --scan).')
 
 
+def http_json(method, url, data=None, headers=None, timeout=30):
+    """Small stdlib HTTP helper for Entra ID and ARM; form-encodes dict bodies."""
+    body = urllib.parse.urlencode(data).encode() if isinstance(data, dict) else data
+    request = urllib.request.Request(url, method=method, data=body, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode() or 'null')
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors='replace')
+        try:
+            parsed = json.loads(detail)
+            detail = parsed.get('error_description') or (parsed.get('error') or {}).get('message') or detail
+        except (ValueError, AttributeError):
+            pass
+        raise ConnectError(f'{url.split("?")[0]} returned {exc.code}: {str(detail).splitlines()[0][:300]}') from None
+    except urllib.error.URLError as exc:
+        raise ConnectError(f'Cannot reach {url.split("?")[0]} ({exc.reason})') from None
+
+
+def principal_subscriptions(tenant_id, client_id, secret, http=http_json):
+    """Every subscription the service principal can read (client-credentials token, ARM paging)."""
+    token = http('POST', f'{LOGIN_URL}/{tenant_id}/oauth2/v2.0/token', {
+        'grant_type': 'client_credentials', 'client_id': client_id, 'client_secret': secret,
+        'scope': f'{ARM_URL}/.default'})['access_token']
+    subs, url = [], f'{ARM_URL}/subscriptions?api-version=2022-12-01'
+    while url:
+        page = http('GET', url, headers={'Authorization': f'Bearer {token}'})
+        subs += page.get('value') or []
+        url = page.get('nextLink')
+    return [{'id': s['subscriptionId'], 'name': s.get('displayName') or s['subscriptionId'],
+             'state': s.get('state'), 'tenantId': s.get('tenantId') or tenant_id} for s in subs]
+
+
+def connect_existing(args, run=az, api_factory=None, log=print, http=http_json, secret=None):
+    """Register an admin-provided service principal and every subscription it can read. No Azure changes."""
+    api_factory = api_factory or ArgApi
+    tenant_id = args.tenant_id
+    if not tenant_id:
+        account = run('account', 'show')
+        if not account:
+            raise ConnectError('Pass --tenant-id, or run az login so the tenant can be read from it.')
+        tenant_id = account['tenantId']
+    secret = secret or os.environ.get('ARG_CLIENT_SECRET') or getpass.getpass(f'Client secret for {args.client_id}: ')
+    subs = principal_subscriptions(tenant_id, args.client_id, secret, http)
+    usable = [s for s in subs if s['state'] in USABLE_STATES and s['tenantId'].lower() == tenant_id.lower()]
+    if args.subscription:
+        wanted = {w.lower() for w in args.subscription}
+        missing = wanted - {s['id'].lower() for s in usable}
+        if missing:
+            raise ConnectError(f'The principal cannot read: {", ".join(sorted(missing))}')
+        usable = [s for s in usable if s['id'].lower() in wanted]
+    log(f'Principal {args.client_id} reads {len(usable)} usable subscription(s) in tenant {tenant_id}')
+    if not usable:
+        raise ConnectError('The principal can read no enabled subscription - ask the Entra admin to assign Reader, '
+                           'Cost Management Reader and Security Reader (e.g. on the tenant root management group).')
+
+    env = read_env()
+    username = args.user or env.get('ADMIN_USERNAME') or 'admin'
+    password = env.get('ADMIN_PASSWORD') if not args.user else None
+    password = password or getpass.getpass(f'ARG password for {username}: ')
+    api = api_factory(args.url, username, password)
+    registered = {t['azure_tenant_id'].lower(): t for t in api.call('GET', '/tenants') or []}.get(tenant_id.lower())
+    if registered is None:
+        registered = api.call('POST', '/tenants', {
+            'name': args.tenant_name or f'Tenant {tenant_id[:8]}', 'azure_tenant_id': tenant_id,
+            'client_id': args.client_id, 'client_secret': secret, 'graph_permissions_granted': False})
+        log(f'ARG: registered tenant {registered["name"]}')
+    else:
+        api.call('PATCH', f'/tenants/{registered["id"]}', {'client_id': args.client_id, 'client_secret': secret})
+        log(f'ARG: tenant {registered["name"]} now uses principal {args.client_id}')
+
+    known = {s['azure_subscription_id'].lower() for s in api.call('GET', '/subscriptions') or []}
+    added = [s for s in usable if s['id'].lower() not in known]
+    for sub in added:
+        api.call('POST', '/subscriptions', {'name': sub['name'], 'azure_subscription_id': sub['id'],
+                                            'tenant_id': registered['id']})
+    log(f'ARG: {len(added)} subscription(s) added, {len(usable) - len(added)} already registered')
+    if args.scan:
+        job = api.call('POST', '/scans/start', {'scope': {}, 'description': 'Started by connect_azure'})
+        log(f'Scan started ({job["id"]}); follow it on the Scans page.')
+    else:
+        log('Start a scan from the Scans page (or run again with --scan).')
+    return [s['name'] for s in usable]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--subscription', action='append', default=[], metavar='ID',
@@ -259,9 +360,16 @@ def main(argv=None):
     parser.add_argument('--new-secret', action='store_true',
                         help='Give the registered tenant a new client secret (when the old one expires)')
     parser.add_argument('--scan', action='store_true', help='Start a scan when connected')
+    parser.add_argument('--client-id', metavar='APP_ID',
+                        help='Use this existing service principal (created by an Entra admin) instead of creating '
+                             f'{SP_NAME}; its secret comes from ARG_CLIENT_SECRET or a prompt. No Azure changes')
+    parser.add_argument('--tenant-id', help='Tenant of --client-id (default: the tenant of your az login)')
     args = parser.parse_args(argv)
     try:
-        connect(args)
+        if args.client_id:
+            connect_existing(args)
+        else:
+            connect(args)
     except ConnectError as exc:
         parser.exit(1, f'{exc}\n')
 

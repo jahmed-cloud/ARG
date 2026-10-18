@@ -33,6 +33,7 @@
 | Goal | Guide |
 |---|---|
 | Run the local portal or develop the full stack | [Local setup](docs/local-development.md) |
+| Gate pipelines on findings (CLI, API keys, SARIF / JUnit, GitHub Actions, Azure DevOps) | [CI/CD](docs/ci-cd.md) |
 | Connect Azure subscriptions to the Docker stack | [Connect Azure](docs/connect-azure.md) |
 | Decide who sees which subscription (Entra groups, owners, readers) | [Access control](docs/access-control.md) |
 | Build, deploy, back up or upgrade containers | [Docker deployment](docs/docker-deployment.md) |
@@ -114,6 +115,8 @@ The local portal uses your `az login` session and needs no database or Docker. T
 - Azure OpenAI / Foundry spend without an AI gateway, and AI account sprawl
 - Storage account sprawl and transaction hotspots
 - Budgets exceeded month after month, and Advisor reservation / savings-plan opportunities
+- Cheaper regions: VMs and Premium App Service plans that list at least 10 % less in another region of the same
+  geography (and allowed by Azure Policy) - a structural suggestion, valued at the resource's own price
 - Marketplace SaaS plans: unsubscribed leftovers, suspended or never-activated plans, terms ending or auto-renewing
 
 ### Entra ID Hygiene
@@ -430,9 +433,14 @@ python -m scripts.configure_env --rotate-admin   # writes a new ADMIN_PASSWORD t
 docker compose up -d backend                     # restart the backend to apply it
 ```
 
-`.env` is the source of truth for the admin account: a password changed under **Settings - Change Password** is
-reset to `ADMIN_PASSWORD` the next time the backend starts, so change the admin password in `.env` instead. Keep
-`.env` private.
+`.env` is the source of truth for the local admin: it is **never disabled** and stays the same whatever happens
+in the UI or with Microsoft sign-in - Settings cannot deactivate, delete, demote or reset it, Change Password
+refuses it, and every backend start restores it from `.env`. Keep `.env` private.
+
+**Who sees what:** tenant-wide data (Identity / Entra ID findings and scores) is for admins and contributors
+only - subscription owners, readers and auditors never see it. Every subscription is **scanned automatically
+every day at 09:00 IST** (`FULL_SCAN_SCHEDULE`, `SCAN_SCHEDULE_TIMEZONE`); on-demand scans are for admins and
+contributors. Details: [docs/access-control.md](docs/access-control.md).
 
 The backend API and interactive docs are available directly at `http://localhost:8000/docs` if you want to explore or test endpoints outside the UI.
 

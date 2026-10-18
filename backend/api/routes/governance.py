@@ -34,7 +34,7 @@ async def get_governance_stats(
     result = await db.execute(
         select(Finding).where(
             and_(Finding.category == "governance", Finding.status == FindingStatus.OPEN,
-                 scope.where(Finding.subscription_id))
+                 scope.findings())
         )
     )
     findings = result.scalars().all()

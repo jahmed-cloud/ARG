@@ -81,6 +81,7 @@ EXPECTED = {
     "empty_resource_group_scanner": {"empty_resource_group"},
     "budget_scanner": {"budget_consistently_exceeded"},
     "idle_iot_hub_scanner": {"idle_iot_hub"},
+    "region_price_scanner": {"cheaper_region_available"},
     "ai_spend_governance_scanner": {"ai_spend_without_gateway", "ai_account_sprawl"},
     "commitment_discount_scanner": {"commitment_discount_opportunity"},
     "marketplace_saas_scanner": {"marketplace_saas_unsubscribed", "marketplace_saas_term_ending",

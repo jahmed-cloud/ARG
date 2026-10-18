@@ -6,9 +6,8 @@ PUT  /governance/config          → save config
 GET  /governance/config/defaults → built-in default values, for reset
 """
 import re
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

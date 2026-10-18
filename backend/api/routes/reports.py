@@ -59,7 +59,7 @@ async def generate_report(
     if body.subscription_ids:
         for sub_id in body.subscription_ids:
             scope.require(sub_id)
-    q = select(Finding).options(selectinload(Finding.resource)).where(scope.where(Finding.subscription_id))
+    q = select(Finding).options(selectinload(Finding.resource)).where(scope.findings())
     if not body.include_resolved:
         q = q.where(Finding.status.in_([FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED]))
     if body.subscription_ids:
@@ -175,7 +175,7 @@ async def list_reports(
     expires_at is the closest proxy for recency available on this table.
     """
     q = select(Report)
-    if scope.scoped:  # scoped users only see the reports they generated (limited to their subscriptions)
+    if not scope.tenant:  # below contributor: only reports they generated (their subscriptions, no tenant-wide data)
         q = q.where(Report.generated_by == scope.user.id)
     result = await db.execute(q.order_by(Report.expires_at.desc()).limit(50))
     reports = result.scalars().all()
@@ -204,7 +204,7 @@ async def download_report(
 ):
     """Re-download a previously generated report from history."""
     report = await db.get(Report, str(report_id))
-    if not report or (scope.scoped and str(report.generated_by) != str(scope.user.id)):
+    if not report or (not scope.tenant and str(report.generated_by) != str(scope.user.id)):
         raise HTTPException(status_code=404, detail="Report not found")
     if not report.file_path or not os.path.exists(report.file_path):
         raise HTTPException(
@@ -236,7 +236,7 @@ async def delete_report(
 ):
     """Delete a report's file and its history entry."""
     report = await db.get(Report, str(report_id))
-    if not report or (scope.scoped and str(report.generated_by) != str(scope.user.id)):
+    if not report or (not scope.tenant and str(report.generated_by) != str(scope.user.id)):
         raise HTTPException(status_code=404, detail="Report not found")
 
     if report.file_path and os.path.exists(report.file_path):

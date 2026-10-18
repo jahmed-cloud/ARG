@@ -12,8 +12,6 @@ Architecture decisions:
 - Request ID middleware for tracing
 """
 
-import logging
-import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -27,12 +25,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from backend.core.config import settings
+from backend.core.config import config_warnings, production_config_errors, settings
 from backend.api.routes import (
     auth, subscriptions, tenants, scans, findings,
     costs, identity, governance, drift, security,
     reports, dashboard, remediation, webhooks, health, users,
-    governance_config
+    governance_config, api_keys
 )
 from backend.models.models import Base
 
@@ -89,9 +87,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     # Production safety checks
     if settings.APP_ENV == "production":
-        _check = settings.SECRET_KEY.get_secret_value()
-        if "CHANGE-ME" in _check:
-            raise ValueError("SECRET_KEY must be changed in production!")
+        errors = production_config_errors(settings)
+        if errors:
+            raise ValueError("Insecure production configuration: " + "; ".join(errors))
+    for warning in config_warnings(settings):
+        logger.warning(warning)
 
     # Create tables in development (use Alembic in production)
     if settings.APP_ENV == "development":
@@ -256,6 +256,7 @@ app.include_router(reports.router,      prefix=f"{PREFIX}/reports",      tags=["
 app.include_router(dashboard.router,    prefix=f"{PREFIX}/dashboard",    tags=["Dashboard"])
 app.include_router(remediation.router,  prefix=f"{PREFIX}/remediation",  tags=["Remediation"])
 app.include_router(webhooks.router,     prefix=f"{PREFIX}/webhooks",     tags=["Webhooks"])
+app.include_router(api_keys.router,     prefix=f"{PREFIX}/api-keys",     tags=["API keys (CI/CD)"])
 
 
 # ---------------------------------------------------------------------------

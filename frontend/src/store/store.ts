@@ -3,8 +3,6 @@
  * ======================================
  * RTK (Redux Toolkit) store with:
  * - authSlice: JWT tokens, user profile
- * - dashboardSlice: cached dashboard data
- * - scanSlice: active scan job tracking
  */
 
 import { configureStore, createSlice, PayloadAction } from '@reduxjs/toolkit';
@@ -30,49 +28,6 @@ interface AuthState {
   refreshToken: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-}
-
-interface ScannerBreakdown {
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-  info: number;
-  total: number;
-}
-
-interface ScoreCard {
-  score: number;
-  trend: string;
-  delta: number;
-}
-
-interface DashboardState {
-  totalResources: number;
-  totalSubscriptions: number;
-  totalFindingsOpen: number;
-  totalOrphaned: number;
-  totalMonthlySavings: number;
-  totalAnnualSavings: number;
-  governanceScore: ScoreCard | null;
-  securityScore: ScoreCard | null;
-  identityScore: ScoreCard | null;
-  findingsBySeverity: ScannerBreakdown | null;
-  lastUpdated: string | null;
-  isLoading: boolean;
-}
-
-interface ActiveScan {
-  id: string;
-  status: string;
-  startedAt: string;
-  subscriptions: string[];
-}
-
-interface ScanState {
-  activeScan: ActiveScan | null;
-  isScanning: boolean;
-  lastScanAt: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,88 +92,9 @@ const authSlice = createSlice({
     setLoading: (state, action: PayloadAction<boolean>) => {
       state.isLoading = action.payload;
     },
-    updateTokens: (
-      state,
-      action: PayloadAction<{ accessToken: string; refreshToken: string }>
-    ) => {
-      state.accessToken = action.payload.accessToken;
-      state.refreshToken = action.payload.refreshToken;
-      localStorage.setItem('arg_access_token', action.payload.accessToken);
-      localStorage.setItem('arg_refresh_token', action.payload.refreshToken);
-    },
     setUser: (state, action: PayloadAction<User>) => {
       state.user = action.payload;
       localStorage.setItem('arg_user', JSON.stringify(action.payload));
-    },
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Dashboard Slice
-// ---------------------------------------------------------------------------
-
-const initialDashboardState: DashboardState = {
-  totalResources: 0,
-  totalSubscriptions: 0,
-  totalFindingsOpen: 0,
-  totalOrphaned: 0,
-  totalMonthlySavings: 0,
-  totalAnnualSavings: 0,
-  governanceScore: null,
-  securityScore: null,
-  identityScore: null,
-  findingsBySeverity: null,
-  lastUpdated: null,
-  isLoading: false,
-};
-
-const dashboardSlice = createSlice({
-  name: 'dashboard',
-  initialState: initialDashboardState,
-  reducers: {
-    setDashboardData: (state, action: PayloadAction<Partial<DashboardState>>) => {
-      return { ...state, ...action.payload, isLoading: false };
-    },
-    setDashboardLoading: (state, action: PayloadAction<boolean>) => {
-      state.isLoading = action.payload;
-    },
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Scan Slice
-// ---------------------------------------------------------------------------
-
-const initialScanState: ScanState = {
-  activeScan: null,
-  isScanning: false,
-  lastScanAt: null,
-};
-
-const scanSlice = createSlice({
-  name: 'scan',
-  initialState: initialScanState,
-  reducers: {
-    scanStarted: (state, action: PayloadAction<ActiveScan>) => {
-      state.activeScan = action.payload;
-      state.isScanning = true;
-    },
-    scanCompleted: (state, action: PayloadAction<string>) => {
-      state.activeScan = null;
-      state.isScanning = false;
-      state.lastScanAt = action.payload;
-    },
-    scanFailed: (state) => {
-      state.activeScan = null;
-      state.isScanning = false;
-    },
-    updateScanStatus: (
-      state,
-      action: PayloadAction<{ status: string }>
-    ) => {
-      if (state.activeScan) {
-        state.activeScan.status = action.payload.status;
-      }
     },
   },
 });
@@ -230,16 +106,7 @@ const scanSlice = createSlice({
 export const store = configureStore({
   reducer: {
     auth: authSlice.reducer,
-    dashboard: dashboardSlice.reducer,
-    scan: scanSlice.reducer,
   },
-  middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware({
-      serializableCheck: {
-        // Ignore date fields
-        ignoredPaths: ['dashboard.lastUpdated', 'scan.activeScan.startedAt'],
-      },
-    }),
 });
 
 export type RootState = ReturnType<typeof store.getState>;
@@ -250,8 +117,4 @@ export const useAppDispatch: () => AppDispatch = useDispatch;
 export const useAppSelector: TypedUseSelectorHook<RootState> = useSelector;
 
 // Actions
-export const { loginSuccess, logout, setLoading, updateTokens, setUser } =
-  authSlice.actions;
-export const { setDashboardData, setDashboardLoading } = dashboardSlice.actions;
-export const { scanStarted, scanCompleted, scanFailed, updateScanStatus } =
-  scanSlice.actions;
+export const { loginSuccess, logout, setLoading, setUser } = authSlice.actions;

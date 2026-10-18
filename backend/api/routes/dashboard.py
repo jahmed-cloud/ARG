@@ -212,13 +212,14 @@ async def get_score_history(
     )
     rows = result.scalars().all()
 
+    tenant = scope.tenant  # the identity trend is tenant-wide: admins and contributors only
     if subscription_id:
         return [
             ScoreHistoryPoint(
                 date=r.snapshot_date.isoformat(),
                 governance_score=r.governance_score,
                 security_score=r.security_score,
-                identity_score=r.identity_score,
+                identity_score=r.identity_score if tenant else None,
             )
             for r in rows
         ]
@@ -232,7 +233,7 @@ async def get_score_history(
 
     points = []
     for date_str, day_rows in sorted(by_date.items()):
-        identity_values = [r.identity_score for r in day_rows if r.identity_score is not None]
+        identity_values = [r.identity_score for r in day_rows if r.identity_score is not None] if tenant else []
         points.append(ScoreHistoryPoint(
             date=date_str,
             governance_score=round(sum(r.governance_score for r in day_rows) / len(day_rows), 1),
@@ -254,9 +255,11 @@ def _subscription_ids(sub_id: str):
 
 
 def _scope(model, sub_id, access):
-    # The requested subscription (if any), always inside what this user may see.
+    # The requested subscription (if any), always inside what this user may see; findings also leave out
+    # tenant-wide (identity) categories for roles below contributor.
     requested = model.subscription_id.in_(_subscription_ids(sub_id)) if sub_id else true()
-    return and_(requested, access.where(model.subscription_id))
+    visible = access.findings() if model is Finding else access.where(model.subscription_id)
+    return and_(requested, visible)
 
 
 async def _get_resource_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
@@ -467,17 +470,18 @@ async def _get_score_stats(db: AsyncSession, sub_id: Optional[str], access: Acce
             # whereas 100 would read as "verified clean." last_updated is
             # left null in this case so the UI can distinguish a real
             # last-scan timestamp from one that never happened.
-            score=round(compute_score(deductions["identity"]), 1) if identity_checked else 0.0,
+            # Tenant-wide: roles below contributor get an unmeasured card (no score, no timestamp).
+            score=round(compute_score(deductions["identity"]), 1) if identity_checked and access.tenant else 0.0,
             trend="stable",
             delta=0.0,
-            last_updated=identity_last_updated if identity_checked else None,
+            last_updated=identity_last_updated if identity_checked and access.tenant else None,
         ),
     }
 
 
 async def _get_entra_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
-    if access.scoped:
-        return {"open": 0}  # Entra findings are tenant-wide, not per subscription
+    if not access.tenant:
+        return {"open": 0}  # Entra findings are tenant-wide: admins and contributors only
     open_count = await db.scalar(
         select(func.count()).select_from(EntraFinding).where(
             EntraFinding.status == FindingStatus.OPEN,

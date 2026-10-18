@@ -12,6 +12,8 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
+from scanners.base.azure_api import CachedTokenCredential, az_cli_credential  # noqa: F401 (re-exported)
+
 ARM_SCOPE = "https://management.azure.com/.default"
 
 
@@ -23,37 +25,6 @@ def token_claims(token: str) -> Dict[str, Any]:
         return json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
     except (IndexError, ValueError):
         return {}
-
-
-class CachedTokenCredential:
-    """
-    AzureCliCredential shells out to `az` on every get_token call (seconds each).
-    Cache tokens per scope until shortly before expiry so the portal and every
-    analysis job share one token instead of spawning az repeatedly.
-    """
-
-    REFRESH_MARGIN_SECONDS = 300
-
-    def __init__(self, inner: Any):
-        self._inner = inner
-        self._tokens: Dict[tuple, Any] = {}
-        self._lock = threading.Lock()
-
-    def get_token(self, *scopes: str, **kwargs: Any):
-        key = (scopes, kwargs.get("tenant_id"))
-        with self._lock:
-            token = self._tokens.get(key)
-            if token and token.expires_on - time.time() > self.REFRESH_MARGIN_SECONDS:
-                return token
-        token = self._inner.get_token(*scopes, **kwargs)
-        with self._lock:
-            self._tokens[key] = token
-        return token
-
-    def close(self) -> None:
-        close = getattr(self._inner, "close", None)
-        if close:
-            close()
 
 
 class AzureCliSession:
@@ -73,9 +44,7 @@ class AzureCliSession:
         self._checked_at = 0.0
 
     def _default_factory(self):
-        from azure.identity import AzureCliCredential
-
-        return AzureCliCredential(tenant_id=self._tenant_id) if self._tenant_id else AzureCliCredential()
+        return az_cli_credential(self._tenant_id)
 
     @property
     def credential(self):

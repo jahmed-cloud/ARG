@@ -15,10 +15,10 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
 from celery import Celery
-from celery.signals import worker_ready
+from celery.schedules import crontab
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -66,7 +66,8 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     result_expires=settings.CELERY_RESULT_EXPIRES,
-    timezone="UTC",
+    # Messages stay in UTC; crontab schedules (the daily full scan) are read in this time zone.
+    timezone=settings.SCAN_SCHEDULE_TIMEZONE,
     enable_utc=True,
     task_acks_late=True,        # Acknowledge AFTER completion (prevents lost tasks)
     task_reject_on_worker_lost=True,  # Re-queue if worker dies mid-task
@@ -78,13 +79,18 @@ celery_app.conf.update(
     },
 )
 
+def cron_schedule(expression: str) -> crontab:
+    """'0 9 * * *' (minute hour day-of-month month day-of-week) -> Celery crontab, read in the Celery time zone."""
+    fields = expression.split()
+    if len(fields) != 5:
+        raise ValueError(f"FULL_SCAN_SCHEDULE must have 5 cron fields, got {expression!r}")
+    minute, hour, day_of_month, month_of_year, day_of_week = fields
+    return crontab(minute=minute, hour=hour, day_of_month=day_of_month,
+                   month_of_year=month_of_year, day_of_week=day_of_week)
+
+
 # Periodic tasks (Celery Beat)
 celery_app.conf.beat_schedule = {
-    "full-scan-daily": {
-        "task": "workers.scan_worker.run_scheduled_full_scan",
-        "schedule": 86400,  # Every 24 hours
-        "options": {"queue": "scans"},
-    },
     "cleanup-old-scan-results": {
         "task": "workers.scan_worker.cleanup_old_results",
         "schedule": 3600,  # Every hour
@@ -97,6 +103,13 @@ celery_app.conf.beat_schedule = {
                             # than a scan cycle anyway.
     },
 }
+if settings.FEATURE_SCHEDULED_SCANS:
+    # The daily automatic scan: FULL_SCAN_SCHEDULE in SCAN_SCHEDULE_TIMEZONE (default 09:00 Asia/Kolkata).
+    celery_app.conf.beat_schedule["full-scan-daily"] = {
+        "task": "workers.scan_worker.run_scheduled_full_scan",
+        "schedule": cron_schedule(settings.FULL_SCAN_SCHEDULE),
+        "options": {"queue": "scans"},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -144,9 +157,9 @@ def run_scan_job(
     """
     from backend.models.models import (
         ScanJob, ScanResult, ScanStatus, Subscription,
-        Tenant, Finding, ResourceInventory, CostSaving, TerraformState,
+        Tenant, TerraformState,
     )
-    from scanners.base.base_scanner import ScannerRegistry, ScanContext
+    from scanners.base.base_scanner import ScannerRegistry
 
     db = get_sync_db()
     start_time = time.time()
@@ -586,7 +599,6 @@ def _persist_finding(db: Session, finding_data: any, subscription: any, scan_job
         return
 
     # Create new finding
-    from backend.models.models import SeverityLevel as DbSeverity
 
     finding = Finding(
         subscription_id=subscription.id,
@@ -635,6 +647,10 @@ def run_scheduled_full_scan():
         ).scalars().all()
 
         sub_ids = [s.subscription_id for s in subs]
+        if not sub_ids:
+            # Nothing connected yet (python -m scripts.connect_azure): skip instead of a FAILED job every day
+            logger.info("Scheduled full scan skipped: no active subscriptions are connected")
+            return
 
         # Create and dispatch a full scan job
         job = ScanJob(

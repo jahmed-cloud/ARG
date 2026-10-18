@@ -19,6 +19,11 @@ import { store } from './store/store';
 import { ARGThemeProvider } from './theme/ThemeProvider';
 import { AppLayout } from './components/common/AppLayout';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
+import { useCanOperate } from './hooks/useRoles';
+
+// Tenant-wide and write pages (Identity, Remediation): admins and contributors only; others go to the overview.
+const OperatorsOnly: React.FC<{ children: React.ReactElement }> = ({ children }) =>
+  useCanOperate() ? children : <Navigate to="/dashboard" replace />;
 
 // Pages
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })));
@@ -68,12 +73,12 @@ const App: React.FC = () => {
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/findings" element={<FindingsPage />} />
                   <Route path="/costs" element={<CostsPage />} />
-                  <Route path="/identity" element={<IdentityPage />} />
+                  <Route path="/identity" element={<OperatorsOnly><IdentityPage /></OperatorsOnly>} />
                   <Route path="/governance" element={<GovernancePage />} />
                   <Route path="/drift" element={<DriftPage />} />
                   <Route path="/security" element={<SecurityPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
-                  <Route path="/remediation" element={<RemediationPage />} />
+                  <Route path="/remediation" element={<OperatorsOnly><RemediationPage /></OperatorsOnly>} />
                   <Route path="/subscriptions" element={<SubscriptionsPage />} />
                   <Route path="/scans" element={<ScansPage />} />
                   <Route path="/settings" element={<SettingsPage />} />

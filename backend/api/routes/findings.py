@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,12 +32,18 @@ from sqlalchemy.orm import selectinload
 
 from backend.api.dependencies.auth import require_analyst
 from backend.api.dependencies.database import get_db
-from backend.models.models import Finding, ResourceInventory, FindingStatus, Subscription, User
+from backend.models.models import Finding, ResourceInventory, FindingStatus, SeverityLevel, Subscription, User
 from backend.services.access import AccessScope, get_access_scope
 from scanners.base.base_scanner import ORPHAN_FINDING_TYPES
+from scripts.subscription_analysis.ai_prompt import DEFAULT_MAX_FINDINGS, build_prompt
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["findings"])
+
+GATE_SEVERITIES = [s.value for s in SeverityLevel]  # most severe first
+GATE_FIELDS = {"id", "finding_type", "title", "severity", "status", "resource_name", "resource_group",
+               "azure_resource_id", "subscription_id", "estimated_monthly_savings_usd"}
+PROMPT_ROW_LIMIT = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +135,48 @@ def _serialize(f: Finding) -> dict:
 # Routes
 # ---------------------------------------------------------------------------
 
+async def _scoped_filters(db: AsyncSession, scope: AccessScope, *, status: list[str] | None = None,
+                          subscription_id: UUID | None = None, azure_subscription_id: str | None = None,
+                          category: str | None = None, severity: list[str] | None = None,
+                          finding_type: str | None = None, search: str | None = None,
+                          resource_group: str | None = None, tenant_id: UUID | None = None):
+    """Finding query + filters for the CI gate and the AI prompt; always inside the caller's access scope."""
+    try:
+        statuses = [FindingStatus(s) for s in (status or [])]
+        severities = [SeverityLevel(s) for s in (severity or [])]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    query = select(Finding).options(selectinload(Finding.resource))
+    filters = [scope.findings()]
+    if resource_group:
+        query = query.join(ResourceInventory, Finding.resource_id == ResourceInventory.id)
+        filters.append(ResourceInventory.resource_group == resource_group)
+    if tenant_id:
+        query = query.join(Subscription, Finding.subscription_id == Subscription.id)
+        filters.append(Subscription.tenant_id == str(tenant_id))
+    if statuses:
+        filters.append(Finding.status.in_(statuses))
+    if severities:
+        filters.append(Finding.severity.in_(severities))
+    if subscription_id:
+        scope.require(subscription_id)  # 404: a gate must never pass because the key cannot see the subscription
+        filters.append(Finding.subscription_id == str(subscription_id))
+    if azure_subscription_id:
+        sub = (await db.execute(select(Subscription.id).where(
+            func.lower(Subscription.subscription_id) == azure_subscription_id.lower()))).scalar_one_or_none()
+        if sub is None or not scope.allows(sub):
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        filters.append(Finding.subscription_id == sub)
+    if category:
+        filters.append(Finding.category == category)
+    if finding_type:
+        filters.append(Finding.finding_type == finding_type)
+    if search:
+        term = f"%{search}%"
+        filters.append(or_(Finding.title.ilike(term), Finding.description.ilike(term)))
+    return query, filters
+
+
 @router.get("", response_model=dict)
 async def list_findings(
     db: AsyncSession = Depends(get_db),
@@ -145,7 +194,7 @@ async def list_findings(
     sort_desc: bool = Query(True),
 ) -> dict:
     """List findings with filtering, pagination, and resource details joined in."""
-    filters = [scope.where(Finding.subscription_id)]
+    filters = [scope.findings()]
     if severity:
         filters.append(Finding.severity.in_(severity))
     if status:
@@ -206,7 +255,7 @@ async def get_finding_stats(
     subscription_id: UUID | None = Query(None),
 ) -> FindingStats:
     """Aggregate finding statistics for dashboard widgets."""
-    q = select(Finding).where(scope.where(Finding.subscription_id))
+    q = select(Finding).where(scope.findings())
     if subscription_id:
         q = q.where(Finding.subscription_id == subscription_id)
 
@@ -239,6 +288,88 @@ async def get_finding_stats(
     )
 
 
+@router.get("/gate", response_model=dict)
+async def findings_gate(
+    db: AsyncSession = Depends(get_db),
+    scope: AccessScope = Depends(get_access_scope),
+    fail_on: str = Query("high", description="Fail on findings at or above this severity"),
+    ignore: str | None = Query(None, description="Comma-separated finding types the gate ignores"),
+    status: list[str] = Query(["open"], description="Finding statuses that count (default: open)"),
+    subscription_id: UUID | None = Query(None, description="ARG internal subscription ID"),
+    azure_subscription_id: str | None = Query(None, description="Azure subscription GUID"),
+    category: str | None = Query(None),
+) -> dict:
+    """
+    CI/CD gate over the findings you can see: `passed` is false when findings at or above `fail_on`
+    remain. Always HTTP 200 - the pipeline decides what to do with `passed` (see docs/ci-cd.md).
+    """
+    if fail_on not in GATE_SEVERITIES:
+        raise HTTPException(status_code=400, detail=f"fail_on must be one of {', '.join(GATE_SEVERITIES)}")
+    query, filters = await _scoped_filters(db, scope, status=status, subscription_id=subscription_id,
+                                           azure_subscription_id=azure_subscription_id, category=category)
+    counts = dict((await db.execute(
+        select(Finding.severity, func.count(Finding.id)).where(and_(*filters)).group_by(Finding.severity))).all())
+    by_severity = {s: int(counts.get(SeverityLevel(s), 0)) for s in GATE_SEVERITIES}
+    ignored = [t.strip() for t in (ignore or "").split(",") if t.strip()]
+    blocking_severities = [SeverityLevel(s) for s in GATE_SEVERITIES[:GATE_SEVERITIES.index(fail_on) + 1]]
+    gate_filters = filters + [Finding.severity.in_(blocking_severities)]
+    if ignored:
+        gate_filters.append(Finding.finding_type.notin_(ignored))
+    blocking_total = (await db.execute(select(func.count(Finding.id)).where(and_(*gate_filters)))).scalar_one()
+    examples: list = []
+    for sev in GATE_SEVERITIES[:GATE_SEVERITIES.index(fail_on) + 1]:
+        if not blocking_total or len(examples) >= 50:
+            break
+        rows = (await db.execute(query.where(and_(*gate_filters), Finding.severity == SeverityLevel(sev))
+                                 .order_by(Finding.estimated_monthly_savings_usd.desc().nulls_last())
+                                 .limit(50 - len(examples)))).scalars().all()
+        examples += [{k: v for k, v in _serialize(f).items() if k in GATE_FIELDS} for f in rows]
+    return {
+        "tool": "ARG", "fail_on": fail_on, "gate_ignore": ignored, "statuses": status,
+        "passed": blocking_total == 0, "blocking": blocking_total, "total": sum(by_severity.values()),
+        "findings_by_severity": by_severity, "blocking_findings": examples,
+    }
+
+
+@router.get("/ai-prompt", response_class=PlainTextResponse)
+async def findings_ai_prompt(
+    db: AsyncSession = Depends(get_db),
+    scope: AccessScope = Depends(get_access_scope),
+    severity: list[str] | None = Query(None),
+    status: list[str] = Query(["open"]),
+    category: str | None = Query(None),
+    subscription_id: UUID | None = Query(None),
+    azure_subscription_id: str | None = Query(None),
+    finding_type: str | None = Query(None),
+    search: str | None = Query(None),
+    resource_group: str | None = Query(None),
+    tenant_id: UUID | None = Query(None),
+    max_findings: int = Query(DEFAULT_MAX_FINDINGS, ge=1, le=2000),
+    mask_ids: bool = Query(True, description="Replace subscription / tenant / principal GUIDs with aliases"),
+) -> PlainTextResponse:
+    """Markdown prompt (instructions + context + findings) to paste into the AI assistant you use. Same filters as the list."""
+    query, filters = await _scoped_filters(db, scope, status=status, subscription_id=subscription_id,
+                                           azure_subscription_id=azure_subscription_id, category=category,
+                                           severity=severity, finding_type=finding_type, search=search,
+                                           resource_group=resource_group, tenant_id=tenant_id)
+    rows = (await db.execute(query.where(and_(*filters))
+                             .order_by(Finding.estimated_monthly_savings_usd.desc().nulls_last())
+                             .limit(PROMPT_ROW_LIMIT))).scalars().all()
+    findings = [_serialize(f) for f in rows]
+    sev = {s: sum(1 for f in findings if f["severity"] == s) for s in GATE_SEVERITIES}
+    subs = {f["subscription_id"] for f in findings}
+    sub_info: dict = {"name": f"{len(subs)} subscription(s)" if len(subs) != 1 else None, "id": None}
+    if len(subs) == 1:
+        sub = (await db.execute(select(Subscription).where(Subscription.id == next(iter(subs))))).scalar_one_or_none()
+        if sub:
+            sub_info = {"name": sub.display_name, "id": sub.subscription_id}
+    summary = {"subscription": sub_info, "findings": len(findings), "findings_by_severity": sev}
+    text = build_prompt(summary, findings, max_findings=max_findings, mask_ids=mask_ids)
+    if len(rows) >= PROMPT_ROW_LIMIT:
+        text += f"\nOnly the first {PROMPT_ROW_LIMIT} findings of this view are included - narrow the filters.\n"
+    return PlainTextResponse(text, media_type="text/markdown; charset=utf-8")
+
+
 @router.get("/{finding_id}", response_model=FindingDetail)
 async def get_finding(
     finding_id: UUID,
@@ -249,8 +380,9 @@ async def get_finding(
         select(Finding).options(selectinload(Finding.resource)).where(Finding.id == finding_id)
     )
     finding = result.scalar_one_or_none()
-    if not finding or not scope.allows(finding.subscription_id):
+    if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
+    scope.require_finding(finding)  # also hides tenant-wide (identity) findings below contributor
     return _serialize(finding)
 
 

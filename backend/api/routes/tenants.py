@@ -4,10 +4,8 @@ Tenants API routes.
 A Tenant represents an Azure Active Directory / Entra ID tenant. The
 model stores client_id in plaintext (it's not secret — service principal
 app IDs are visible in Azure AD app registrations) and only the client
-secret is encrypted, via the existing `encrypt()` helper rather than the
-combined-blob `encrypt_azure_credentials()` helper, since the model keeps
-client_id as its own column rather than bundling it into the encrypted
-payload.
+secret is encrypted, via the `encrypt()` helper. client_id stays in its own
+column rather than being bundled into the encrypted payload.
 """
 import logging
 from uuid import UUID

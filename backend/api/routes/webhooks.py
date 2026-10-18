@@ -10,12 +10,20 @@ Webhook URLs are configured via environment variables (WEBHOOK_SLACK_URL,
 WEBHOOK_TEAMS_URL, WEBHOOK_CUSTOM_URL) for the MVP — this avoids storing
 webhook secrets in the database. This module exposes a way to test
 configured webhooks and view delivery status.
+
+Every delivery is checked first (check_webhook_url): https only, no credentials in the URL, and the host must
+resolve to public addresses - so a webhook can never reach cloud metadata (169.254.169.254), localhost or the
+Docker network (SSRF). WEBHOOK_ALLOW_PRIVATE_HOSTS=true allows an internal receiver on purpose.
 """
+import asyncio
+import ipaddress
 import logging
 import hashlib
 import hmac
 import json
+import socket
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -78,11 +86,13 @@ async def test_webhook(
     payload = _build_payload(body.target, current_user.email)
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             response = await send_webhook(client, body.target, url, payload)
+    except WebhookUrlError as exc:
+        raise HTTPException(status_code=400, detail=f"Webhook URL rejected: {exc}")
     except httpx.HTTPError as exc:
         logger.error("Webhook test failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Webhook delivery failed: {exc}")
+        raise HTTPException(status_code=502, detail="Webhook delivery failed - see the backend log")
 
     return {
         "delivered": response.status_code < 300,
@@ -119,6 +129,43 @@ def _build_payload(target: str, triggered_by: str) -> dict:
         }
 
 
+class WebhookUrlError(ValueError):
+    """The webhook URL is not an https URL of a public host."""
+
+
+# Cloud instance metadata: never a webhook receiver, even with WEBHOOK_ALLOW_PRIVATE_HOSTS.
+METADATA_ADDRESSES = {ipaddress.ip_address("169.254.169.254"), ipaddress.ip_address("fd00:ec2::254")}
+
+
+async def _resolve(host: str, port: int) -> list:
+    return await asyncio.get_running_loop().getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+
+
+async def check_webhook_url(url: str) -> None:
+    """Raise WebhookUrlError unless the URL is https, has no credentials and its host resolves to public IPs."""
+    parsed = urlsplit(url or "")
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise WebhookUrlError("only https://<host>/... URLs are allowed")
+    if parsed.username or parsed.password:
+        raise WebhookUrlError("credentials in the URL are not allowed - use WEBHOOK_SECRET")
+    try:
+        port = parsed.port or 443
+    except ValueError:
+        raise WebhookUrlError("invalid port")
+    try:
+        infos = await _resolve(parsed.hostname, port)
+    except socket.gaierror:
+        raise WebhookUrlError(f"cannot resolve {parsed.hostname}")
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        address = getattr(address, "ipv4_mapped", None) or address
+        if address in METADATA_ADDRESSES:
+            raise WebhookUrlError(f"{parsed.hostname} resolves to the cloud metadata service")
+        if not address.is_global and not settings.WEBHOOK_ALLOW_PRIVATE_HOSTS:
+            raise WebhookUrlError(f"{parsed.hostname} resolves to a non-public address ({address}); "
+                                  "set WEBHOOK_ALLOW_PRIVATE_HOSTS=true for an internal receiver")
+
+
 async def send_webhook(
     client: httpx.AsyncClient,
     target: str,
@@ -128,8 +175,10 @@ async def send_webhook(
     """
     Send a webhook payload, signing custom webhooks with HMAC-SHA256
     if WEBHOOK_SECRET is configured (allows the receiver to verify
-    the request actually came from this ARG instance).
+    the request actually came from this ARG instance). The URL is
+    checked first (check_webhook_url) and redirects are never followed.
     """
+    await check_webhook_url(url)
     headers = {"Content-Type": "application/json"}
 
     if target == "custom" and settings.WEBHOOK_SECRET:
@@ -138,7 +187,7 @@ async def send_webhook(
         signature = hmac.new(secret, body_bytes, hashlib.sha256).hexdigest()
         headers["X-ARG-Signature"] = f"sha256={signature}"
 
-    return await client.post(url, json=payload, headers=headers)
+    return await client.post(url, json=payload, headers=headers, follow_redirects=False)
 
 
 async def notify_scan_completed(
@@ -180,11 +229,13 @@ async def notify_scan_completed(
         }),
     ]
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
         for target, url, payload in targets:
             if not url:
                 continue
             try:
                 await send_webhook(client, target, url, payload)
+            except WebhookUrlError as exc:
+                logger.warning("Skipped %s webhook: URL rejected (%s)", target, exc)
             except httpx.HTTPError as exc:
                 logger.warning("Failed to deliver %s webhook: %s", target, exc)

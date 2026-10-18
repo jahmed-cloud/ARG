@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from scanners.base.providers import STATUS_ORDER
+from scripts.subscription_analysis.ai_prompt import PROMPT_FILE, build_prompt
 from scripts.subscription_analysis.collector import AnalysisData, to_jsonable
 from scripts.subscription_analysis.estate import ESTATE_DIR, HYGIENE_TYPES, config_of, os_of, size_of, state_of
 from scripts.subscription_analysis.knowledge import (
@@ -964,6 +965,7 @@ def write_report(data: AnalysisData, output: Path) -> Model:
                            "generator": "scripts.subscription_analysis", "warnings": data.warnings,
                            "report_generated": datetime.now(timezone.utc).isoformat()})
     write(output / SUMMARY_FILE, json.dumps(to_jsonable(summarize(m)), indent=2, default=str))
+    write(output / PROMPT_FILE, build_prompt(to_jsonable(summarize(m)), m.findings))
     return m
 
 
@@ -974,7 +976,7 @@ def write_report(data: AnalysisData, output: Path) -> Model:
 SUMMARY_FILE = "summary.json"
 BRAND_CREDIT = ("Built with Azure Resource Guardian (ARG) · Author: Junaid Ahmed · [jahmed.cloud](https://jahmed.cloud) · "
                 "[github.com/jahmed-cloud/ARG](https://github.com/jahmed-cloud/ARG)")
-GENERATED_ENTRIES = ("README.md", SUMMARY_FILE, "01-current-findings", "02-gap-analysis", "03-cost-drivers",
+GENERATED_ENTRIES = ("README.md", SUMMARY_FILE, PROMPT_FILE, "01-current-findings", "02-gap-analysis", "03-cost-drivers",
                      "04-architectural-critique", "05-deep-dive",
                      "report-summary.html", "report-summary.pdf", "report-full.html", "report-full.pdf")
 

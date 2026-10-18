@@ -32,9 +32,6 @@ try:
         Font,
         PatternFill,
         Alignment,
-        Border,
-        Side,
-        NamedStyle,
     )
     from openpyxl.utils import get_column_letter
     EXCEL_AVAILABLE = True
@@ -43,9 +40,9 @@ except ImportError:
     logger.warning("openpyxl not installed; Excel export disabled")
 
 try:
-    from reportlab.lib.pagesizes import A4, letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm, inch
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
     from reportlab.lib import colors
     from reportlab.platypus import (
         SimpleDocTemplate,
@@ -54,10 +51,7 @@ try:
         Paragraph,
         Spacer,
         HRFlowable,
-        PageBreak,
     )
-    from reportlab.graphics.shapes import Drawing
-    from reportlab.graphics.charts.piecharts import Pie
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
@@ -186,7 +180,6 @@ class ReportService:
         header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
         header_fill = PatternFill("solid", fgColor="0A0F1E")
         center_align = Alignment(horizontal="center", vertical="center")
-        wrap_align = Alignment(wrap_text=True, vertical="top")
 
         severity_fills = {
             "critical": PatternFill("solid", fgColor="F44336"),
@@ -348,7 +341,7 @@ class ReportService:
 
         # ── Cover block ──────────────────────────────────────────────
         story.append(Paragraph(
-            f'<font color="#00D4FF" size="22"><b>Azure Resource Guardian</b></font>',
+            '<font color="#00D4FF" size="22"><b>Azure Resource Guardian</b></font>',
             styles["Title"],
         ))
         story.append(Paragraph(

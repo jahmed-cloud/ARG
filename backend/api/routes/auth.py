@@ -385,6 +385,11 @@ async def change_password(
     """Change the current user's password. Requires current password for verification."""
     if not current_user.hashed_password:
         raise HTTPException(status_code=400, detail="SSO accounts cannot change password here")
+    if (current_user.email or "").lower() == (settings.ADMIN_EMAIL or "").lower():
+        # The backend restores it from .env at every start, so a change here would silently come undone.
+        raise HTTPException(status_code=409, detail=(
+            "The local admin's password is ADMIN_PASSWORD in .env: change it there "
+            "(python -m scripts.configure_env --rotate-admin) and restart the backend."))
 
     if not verify_password(body.current_password, current_user.hashed_password):
         await log_audit(db, "auth.password_change_failed", current_user.id,
@@ -450,7 +455,7 @@ async def forgot_password(
     await db.commit()
 
     reset_link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/reset-password?token={raw_token}"
-    send_email(
+    sent = send_email(
         to_email=user.email,
         subject="Reset your Azure Resource Guardian password",
         body_text=(
@@ -460,6 +465,9 @@ async def forgot_password(
             f"If you didn't request this, you can safely ignore this email."
         ),
     )
+    if not sent and settings.LOG_PASSWORD_RESET_LINKS:
+        # Development only (off by default, warned about at startup): the link is a credential.
+        logger.warning("LOG_PASSWORD_RESET_LINKS is on - reset-password link for %s: %s", user.email, reset_link)
 
     await log_audit(db, "auth.password_reset_requested", user.id, "Password reset link issued", request)
     return generic_response
@@ -547,15 +555,15 @@ async def system_status(current_user: User = Depends(get_current_user)):
     editable through the UI) to keep credentials out of the database,
     matching how per-tenant scanning Service Principal secrets are
     handled separately under Settings. Admin-only since this reveals
-    operational configuration, not because the values themselves are
-    secret (no actual credentials are returned, just booleans).
+    operational configuration. Booleans only: no host names or other
+    infrastructure details (the SMTP host stays in .env and the log).
     """
     if current_user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
         raise HTTPException(status_code=403, detail="Admin access required")
     return {
         "smtp_configured": settings.smtp_configured,
-        "smtp_host": settings.SMTP_HOST if settings.smtp_configured else None,
         "microsoft_oauth_configured": settings.microsoft_oauth_configured,
+        "password_reset_links_logged": settings.LOG_PASSWORD_RESET_LINKS,
     }
 
 

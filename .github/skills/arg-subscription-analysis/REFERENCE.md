@@ -14,6 +14,7 @@
 | Faster, no cost datasets | `-SkipCost` · `--skip-cost` |
 | PDF with the analysis | `-Pdf summary` / `-Pdf full` · `--pdf [summary|full]` |
 | PDF of an existing report only | `python -m scripts.subscription_analysis --pdf-only -s <name> --pdf summary` |
+| CI/CD gate + artefacts | `--fail-on high [--gate-ignore t1,t2] [--sarif f] [--junit f] [--ci-json f]` (exit 2 = gate failed); `--gate-only` re-checks existing reports offline - see `docs/ci-cd.md` |
 | Whole tenant, faster | `-All -TenantId <id> -Parallel 3` · `python -m scripts.subscription_analysis --all --tenant <id> --parallel 3` |
 | Estate inventory + 30-day usage metrics (all subscriptions, ~4-5 min) | `-All -TenantId <id> -Estate` · `--all --tenant <id> --estate` · portal **Estate** → Refresh inventory |
 | Portal | `scripts\Start-LocalPortal.ps1 [-Port 8765] [-ReportsPath …] [-TenantId …] [-NoBrowser]` · `python -m scripts.local_portal` |
@@ -25,6 +26,7 @@
 reports/README.md                           index of analysed subscriptions
 reports/<subscription>/README.md            executive summary, headline savings, top risks, action list
 reports/<subscription>/summary.json         totals (cost_12m, cost_30d amortized, findings_by_severity, savings_usd, savings_billing)
+reports/<subscription>/ai-prompt.md         prompt for an AI assistant (instructions + findings, GUIDs masked; not linked in the UI)
 reports/<subscription>/01-current-findings/ baseline, workloads, architecture diagram, resource providers, resource-inventory.md
 reports/<subscription>/02-gap-analysis/     gaps by area x severity
 reports/<subscription>/03-cost-drivers/     trend, breakdowns, forecast, savings-register.md
@@ -45,7 +47,8 @@ Finding record fields in `findings.json`: `ref`, `finding_type`, `title`, `descr
 `idle_transactions_30d` (200), `hot_transactions_30d` (200,000,000), `min_family_size` (10), `management_ports`
 ([22, 3389, 5985, 5986]), `max_owners` (3), `secure_score_target` (0.8), `defender_severities` (["High"]),
 `min_daily_cap_gb` (0.5), `max_workspaces` (2), `max_workloads_per_subscription` (2), `overrun_months` (3),
-`ai_min_monthly_usd` (100), `max_ai_accounts` (2), `arm_concurrency` (8), `timeout_seconds` (900).
+`ai_min_monthly_usd` (100), `max_ai_accounts` (2), `arm_concurrency` (8), `timeout_seconds` (900),
+`region_min_saving_pct` (10), `region_min_saving_usd` (20), `region_excluded` ([]), `region_groups`.
 
 ## Troubleshooting
 

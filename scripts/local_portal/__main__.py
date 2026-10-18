@@ -4,6 +4,8 @@ python -m scripts.local_portal [--port 8765] [--reports-dir reports] [--tenant <
 Prerequisite: `az login` in a terminal (your own account; no service principal).
 Portal login: ARG_PORTAL_USER (default "admin") / ARG_PORTAL_PASSWORD; when no
 password is set, a one-time password is generated and printed below.
+Scripts / CI on this machine: set ARG_PORTAL_API_TOKEN (24+ characters) and call
+/api/v1/* with `Authorization: Bearer <token>`.
 """
 
 import argparse
@@ -56,6 +58,7 @@ def main(argv=None) -> int:
 
     username = os.environ.get("ARG_PORTAL_USER") or "admin"
     password = os.environ.get("ARG_PORTAL_PASSWORD")
+    api_token = os.environ.get("ARG_PORTAL_API_TOKEN") or None
     generated = not password
     if generated:
         password = secrets.token_urlsafe(9)
@@ -64,7 +67,7 @@ def main(argv=None) -> int:
     azure = AzureCliSession(tenant_id=args.tenant)
     jobs = JobManager(reports_dir, lambda: azure.credential, max_workers=max(1, args.workers))
     app = create_app(reports_dir=reports_dir, username=username, password=password, azure=azure, jobs=jobs,
-                     allowed_hosts=["127.0.0.1", "localhost", args.host])
+                     allowed_hosts=["127.0.0.1", "localhost", args.host], api_token=api_token)
 
     url = f"http://{'localhost' if args.host == 'localhost' else args.host}:{args.port}/"
     status = azure.status()
@@ -73,6 +76,7 @@ def main(argv=None) -> int:
     print(f"  Portal login : {username} / {password if generated else '(ARG_PORTAL_PASSWORD)'}"
           + ("   <- one-time password for this run" if generated else ""))
     print(f"  Reports dir  : {reports_dir}")
+    print(f"  API          : {url}api/v1/ (Bearer token {'enabled' if api_token else 'off - set ARG_PORTAL_API_TOKEN'})")
     if status["signed_in"]:
         print(f"  Azure CLI    : {status['account']} (tenant {status['tenant_id']})")
     else:

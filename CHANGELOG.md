@@ -5,6 +5,51 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security - 2026-10-18
+- **Webhooks cannot reach internal services (SSRF).** Slack / Teams / custom webhooks are delivered only to `https://`
+  URLs without credentials whose host resolves to public addresses; loopback, private, link-local and cloud metadata
+  (`169.254.169.254`) are refused and redirects are not followed. `WEBHOOK_ALLOW_PRIVATE_HOSTS=true` allows an internal
+  receiver on purpose (metadata stays blocked).
+- **Password reset links are no longer written to the log.** Without SMTP no reset email is sent and nothing but the
+  recipient and subject is logged, also when delivery fails; admins reset passwords under Settings - Users.
+  `LOG_PASSWORD_RESET_LINKS=true` restores the old behaviour for local development (warned about at start).
+- `GET /auth/system-status` returns booleans only (no SMTP host name).
+- `FRONTEND_BASE_URL` is validated (http(s), host, no credentials / query / fragment); a non-https URL in production
+  is warned about. Production refuses the placeholder `ENCRYPTION_KEY` and a default or short `ADMIN_PASSWORD`, not
+  only the placeholder `SECRET_KEY`.
+- Details: [docs/docker-deployment.md](docs/docker-deployment.md#security-settings). Tests: `test_security_hardening.py`.
+
+### CI/CD gate, API keys and cheaper regions - 2026-10-18
+- **CI/CD gate.** `python -m scripts.subscription_analysis --fail-on high` exits 2 when findings at or above the
+  severity remain (`--gate-ignore` types); `--sarif`, `--junit` and `--ci-json` write GitHub code scanning / Azure
+  DevOps test results; GitHub Actions and Azure DevOps annotations and job summaries. Guide: [docs/ci-cd.md](docs/ci-cd.md).
+- **Personal API keys** (Settings - API keys): `Authorization: Bearer arg_...` or `X-API-Key`, acting as their owner
+  (same role and subscriptions), at most 10 active, 1-365 days, stored as SHA-256 hashes; a key cannot create keys.
+  `GET /api/v1/findings/gate?fail_on=high` answers `passed` for pipelines.
+- **Local portal API** under `/api/v1` (subscriptions, analyses, reports, findings, gate, SARIF, JUnit) with
+  `Authorization: Bearer <ARG_PORTAL_API_TOKEN>`; OpenAPI at `/api/v1/openapi.json`.
+- **AI prompt (API only).** Every report folder gets `ai-prompt.md` (instructions, context and findings, GUIDs masked)
+  to paste into an approved AI assistant; also `GET /api/v1/reports/{key}/ai-prompt` and `/api/v1/findings/ai-prompt`.
+- **Cheaper regions** (`cheaper_region_available`, wave 3): running VMs and Premium App Service plans whose size lists
+  at least 10 % and USD 20/month cheaper in another region of the same geography, limited to "Allowed locations"
+  policies and valued at the resource's own price; shown as **Region move** and kept out of the savings totals.
+  Regional VM prices keep regions that share a meter.
+- **Tenant-wide data for admins and contributors only.** Identity (Entra ID) findings, score and trend are hidden
+  from subscription owners, readers and auditors everywhere (Findings, exports, dashboard, reports); on-demand scans
+  are for admins and contributors.
+- **Daily automatic scan at a fixed time**: `FULL_SCAN_SCHEDULE` (cron, default `0 9 * * *`) in
+  `SCAN_SCHEDULE_TIMEZONE` (default `Asia/Kolkata`); skipped, not failed, while no subscription is connected.
+- **The local admin from `.env` always stays**: it cannot be deactivated, demoted, deleted or reset in the UI, and
+  every backend start restores it from `.env`.
+- `connect_azure --client-id` connects a principal an Entra admin created (tenants where users may not register
+  applications). The header's Start a Scan opens the scan dialog.
+- Parallel local analyses share one cached `az` token and give `az` 45 s: no false "sign-in is no longer valid" under
+  load.
+- Sign-in page fits the window without scrolling.
+- Removed never-used code (`azure_service`, `cost_service`, unused Redux slices and helpers) and dependencies
+  (pandas, numpy, aiohttp, flower, passlib, tenacity, unused azure-mgmt SDKs, axios, @mui/lab, ESLint, Vitest).
+- Example names in tests and docs are neutral placeholders.
+
 ### Subscription-scoped access - 2026-09-30
 
 - Anyone in the configured Entra tenant can sign in with Microsoft (`ENTRA_AUTO_PROVISION`, needs

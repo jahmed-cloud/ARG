@@ -12,13 +12,11 @@ Design decisions:
 """
 
 import uuid
-from datetime import datetime
 from enum import Enum as PyEnum
-from typing import Optional
 
 from sqlalchemy import (
     Boolean, Column, Date, DateTime, Enum, Float, ForeignKey,
-    Index, Integer, JSON, String, Text, UniqueConstraint,
+    Index, Integer, String, Text, UniqueConstraint,
     func, text
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -217,6 +215,30 @@ class RefreshToken(Base):
     __table_args__ = (
         Index("ix_refresh_tokens_user_active", "user_id",
               postgresql_where=text("revoked_at IS NULL")),
+    )
+
+
+class ApiKey(Base):
+    """
+    Personal API keys for CI/CD and scripts (`Authorization: Bearer arg_...` or `X-API-Key`).
+    A key acts as its owner (same role and subscription scope); only the SHA-256 hash is stored,
+    the plain key is shown once at creation.
+    """
+    __tablename__ = "api_keys"
+
+    id           = Column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    user_id      = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name         = Column(String(100), nullable=False)
+    prefix       = Column(String(16), nullable=False)   # first characters, to recognise a key in lists and logs
+    key_hash     = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at   = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at   = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User")
+
+    __table_args__ = (
+        Index("ix_api_keys_user_active", "user_id", postgresql_where=text("revoked_at IS NULL")),
     )
 
 

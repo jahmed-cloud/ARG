@@ -185,3 +185,72 @@ def test_secret_is_never_logged():
     lines = []
     ca.connect(args(), run=FakeAz(), api_factory=FakeApi(), log=lines.append)
     assert not any('secret-new' in line or 'secret-reset' in line for line in lines)
+
+
+# ---- existing service principal (tenants where users may not register applications) -----------------
+
+class FakeHttp:
+    def __init__(self, subs, pages=1):
+        self.subs, self.pages, self.calls = subs, pages, []
+
+    def __call__(self, method, url, data=None, headers=None, timeout=30):
+        self.calls.append((method, url, data, headers))
+        if url.endswith('/oauth2/v2.0/token'):
+            return {'access_token': 'arm-token'}
+        page = sum(1 for c in self.calls if c[0] == 'GET')
+        chunk = self.subs[page - 1::self.pages]
+        return {'value': chunk, 'nextLink': f'{ca.ARM_URL}/next{page}' if page < self.pages else None}
+
+
+def arm_sub(sub_id, name, state='Enabled', tenant=TENANT):
+    return {'subscriptionId': sub_id, 'displayName': name, 'state': state, 'tenantId': tenant}
+
+
+def existing_args(**kw):
+    return args(client_id='app-admin', tenant_id=TENANT, **kw)
+
+
+def test_existing_principal_registers_every_subscription_it_reads_without_azure_changes():
+    http = FakeHttp([arm_sub(SUB_A, 'a'), arm_sub(SUB_B, 'b', 'Warned'), arm_sub(SUB_OFF, 'off', 'Disabled'),
+                     arm_sub(SUB_C, 'other-tenant', tenant=OTHER_TENANT)], pages=2)
+    fake_az, api = FakeAz(), FakeApi(subs=[{'azure_subscription_id': SUB_B}])
+    names = ca.connect_existing(existing_args(tenant_name='Contoso', scan=True), run=fake_az, api_factory=api,
+                                log=quiet, http=http, secret='s3cret')
+    assert names == ['a', 'b']
+    token = http.calls[0]
+    assert token[1] == f'{ca.LOGIN_URL}/{TENANT}/oauth2/v2.0/token' and token[2]['client_id'] == 'app-admin'
+    assert token[2]['scope'] == f'{ca.ARM_URL}/.default'
+    assert [c[3]['Authorization'] for c in http.calls[1:]] == ['Bearer arm-token'] * 2  # followed nextLink
+    tenant = [b for p, b in api.posts if p == '/tenants'][0]
+    assert (tenant['name'], tenant['client_id'], tenant['client_secret']) == ('Contoso', 'app-admin', 's3cret')
+    assert api.registered_subs() == [SUB_A]  # SUB_B was already registered
+    assert api.posts[-1][0] == '/scans/start'
+    assert fake_az.calls == [] and fake_az.created_roles() == []  # no az call at all with --tenant-id
+
+
+def test_existing_principal_updates_a_registered_tenant_and_never_logs_the_secret():
+    lines = []
+    api = FakeApi(tenants=[{'id': 'arg-1', 'name': 'Contoso', 'azure_tenant_id': TENANT}])
+    patched = []
+    api.call = (lambda orig: lambda m, p, b=None: patched.append((m, p, b)) or orig(m, p, b))(api.call)
+    ca.connect_existing(existing_args(), api_factory=api, log=lines.append,
+                        http=FakeHttp([arm_sub(SUB_A, 'a')]), secret='s3cret')
+    assert ('PATCH', '/tenants/arg-1', {'client_id': 'app-admin', 'client_secret': 's3cret'}) in patched
+    assert not any('s3cret' in line for line in lines)
+
+
+def test_existing_principal_without_readable_subscriptions_fails_before_touching_arg():
+    api = FakeApi()
+    with pytest.raises(ca.ConnectError, match='Reader'):
+        ca.connect_existing(existing_args(), api_factory=api, log=quiet,
+                            http=FakeHttp([arm_sub(SUB_OFF, 'off', 'Disabled')]), secret='x')
+    with pytest.raises(ca.ConnectError, match='cannot read'):
+        ca.connect_existing(existing_args(subscription=[SUB_C]), api_factory=api, log=quiet,
+                            http=FakeHttp([arm_sub(SUB_A, 'a')]), secret='x')
+    assert api.posts == []
+
+
+def test_blocked_app_registration_points_to_the_existing_principal_mode():
+    reason = ca.short_reason(ca.ConnectError('az ad sp failed: ERROR: Directory permission is needed for the '
+                                             'current user to register the application.'))
+    assert '--client-id' in reason

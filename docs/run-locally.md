@@ -17,6 +17,7 @@ The examples use `C:\src\ARG` as the repository root. Replace it with your check
 | URL | `http://127.0.0.1:8765/` (loopback only, so other machines can't reach it) |
 | Username | `admin`, or the value of `ARG_PORTAL_USER` |
 | Password | The value of `ARG_PORTAL_PASSWORD`. If it isn't set, a new one-time password is printed in the terminal on every start |
+| API token (optional) | `ARG_PORTAL_API_TOKEN` (24+ characters) lets scripts and CI agents on this machine call `/api/v1/*` with `Authorization: Bearer <token>` - see [CI/CD](ci-cd.md#3-local-portal-api) |
 | Azure identity | Your `az login` session. The portal login never signs in to Azure |
 | Reports folder | `C:\src\ARG\reports\<subscription>\` (git-ignored) |
 | Stop | Ctrl+C in the portal terminal, or see [§8](#8-stop-everything) |

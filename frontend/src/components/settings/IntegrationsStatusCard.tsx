@@ -17,8 +17,8 @@ import { useAppSelector } from '../../store/store';
 
 interface SystemStatus {
   smtp_configured: boolean;
-  smtp_host: string | null;
   microsoft_oauth_configured: boolean;
+  password_reset_links_logged?: boolean;
 }
 
 export const IntegrationsStatusCard: React.FC = () => {
@@ -75,7 +75,6 @@ export const IntegrationsStatusCard: React.FC = () => {
         <Row
           label="Email (SMTP)"
           enabled={status.smtp_configured}
-          detail={status.smtp_host ? `Sending via ${status.smtp_host}` : undefined}
           envHint="SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL"
         />
         <Box sx={{ borderTop: `1px solid ${alpha('#fff', 0.06)}` }} />
@@ -86,9 +85,11 @@ export const IntegrationsStatusCard: React.FC = () => {
         />
         {!status.smtp_configured && (
           <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: alpha('#fff', 0.35) }}>
-            Without SMTP, password reset links are written to the backend container logs instead
-            of emailed — run <code>docker compose logs backend | grep reset-password</code> to
-            find one.
+            {status.password_reset_links_logged
+              ? <>Without SMTP, password reset links are written to the backend log
+                (<code>LOG_PASSWORD_RESET_LINKS</code> - development only).</>
+              : <>Without SMTP, password reset emails are not sent and links are never logged - reset
+                a user's password under Users below.</>}
           </Typography>
         )}
       </CardContent>

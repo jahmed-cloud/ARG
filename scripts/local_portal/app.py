@@ -9,6 +9,9 @@ Security model (it is a single-user tool on your workstation):
 - Report pages are rendered with raw HTML neutralised (see render.py) and a
   strict Content-Security-Policy.
 - Azure access is the user's `az login` session; the portal holds no secrets.
+- Scripts and CI jobs on the same machine can call /api/* with
+  `Authorization: Bearer <ARG_PORTAL_API_TOKEN>` instead of the cookie; the
+  versioned API lives under /api/v1 (OpenAPI: /api/v1/openapi.json).
 """
 
 import asyncio
@@ -21,7 +24,15 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
@@ -30,6 +41,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from scripts.local_portal.azure_session import AzureCliSession, friendly_error
 from scripts.local_portal.jobs import JobManager
 from scripts.local_portal.render import render_markdown
+from scripts.subscription_analysis import ci
+from scripts.subscription_analysis.ai_prompt import DEFAULT_MAX_FINDINGS, build_prompt
 from scripts.subscription_analysis.report import display_names, read_summaries, write_index
 
 HERE = Path(__file__).resolve().parent
@@ -37,6 +50,7 @@ COOKIE = "arg_portal_session"
 SESSION_TTL_SECONDS = 12 * 3600
 SUBSCRIPTION_CACHE_SECONDS = 600
 MAX_JSON_PREVIEW_BYTES = 2_000_000
+MIN_API_TOKEN_LENGTH = 24
 PUBLIC_PATHS = ("/login", "/static/", "/favicon.ico")
 CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
@@ -79,7 +93,10 @@ def _safe_next(target: Optional[str]) -> str:
 
 
 def create_app(*, reports_dir: Path, username: str, password: str, azure: Optional[AzureCliSession] = None,
-               jobs: Optional[JobManager] = None, allowed_hosts: Optional[List[str]] = None) -> FastAPI:
+               jobs: Optional[JobManager] = None, allowed_hosts: Optional[List[str]] = None,
+               api_token: Optional[str] = None) -> FastAPI:
+    if api_token is not None and len(api_token) < MIN_API_TOKEN_LENGTH:
+        raise ValueError(f"ARG_PORTAL_API_TOKEN must be at least {MIN_API_TOKEN_LENGTH} characters")
     reports_dir = reports_dir.resolve()
     reports_dir.mkdir(parents=True, exist_ok=True)
     azure = azure or AzureCliSession()
@@ -97,6 +114,13 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
     app.add_middleware(GZipMiddleware, minimum_size=2048)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or ["127.0.0.1", "localhost"])
 
+    def api_token_ok(request: Request) -> bool:
+        """Bearer token for scripts / CI jobs; only for /api/* and only when ARG_PORTAL_API_TOKEN is set."""
+        if not api_token or not request.url.path.startswith("/api/"):
+            return False
+        scheme, _, value = request.headers.get("authorization", "").partition(" ")
+        return scheme.lower() == "bearer" and hmac.compare_digest(value.strip().encode(), api_token.encode())
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         path = request.url.path
@@ -106,7 +130,8 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
             referer = request.headers.get("referer")
             if (origin and origin != expected) or (not origin and referer and not referer.startswith(expected + "/")):
                 return JSONResponse({"detail": "Cross-origin request rejected"}, status_code=403)
-        if not path.startswith(PUBLIC_PATHS) and not auth.valid(request.cookies.get(COOKIE)):
+        if not path.startswith(PUBLIC_PATHS) and not auth.valid(request.cookies.get(COOKIE)) \
+                and not api_token_ok(request):
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "Not signed in to the portal"}, status_code=401)
             return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
@@ -374,6 +399,152 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
                 "title": target.name, "html": None, "listing": None, "json": pretty,
                 "crumbs": breadcrumbs(target), "sidebar": sidebar(target), "folder": folder_of(target)})
         return HTMLResponse("Unsupported file type", status_code=404)
+
+    # -- versioned API for scripts and CI/CD (cookie or Bearer ARG_PORTAL_API_TOKEN) ----------
+
+    def find_report(key: str) -> Optional[Path]:
+        """Report folder by folder name, subscription ID or display name (case-insensitive)."""
+        direct = report_folder(key)
+        if direct is not None:
+            return direct
+        wanted = key.lower()
+        for s in read_summaries(reports_dir):
+            sub = s.get("subscription") or {}
+            if wanted in (str(sub.get("id") or "").lower(), str(sub.get("name") or "").lower()):
+                return reports_dir / s["folder"]
+        return None
+
+    def not_found(key: str) -> JSONResponse:
+        return JSONResponse({"detail": f"No report for '{key}' - analyse the subscription first"}, status_code=404)
+
+    def severity_arg(value: Optional[str]) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if value not in ci.SEVERITIES:
+            raise ValueError(f"severity must be one of {', '.join(ci.SEVERITIES)}")
+        return value
+
+    @app.get("/api/v1/openapi.json", include_in_schema=False)
+    async def api_v1_openapi():
+        routes = [r for r in app.routes if getattr(r, "path", "").startswith("/api/v1/")]
+        return get_openapi(title="ARG Local Portal API", version="1",
+                           description="Authenticate with the portal cookie or `Authorization: Bearer "
+                                       "<ARG_PORTAL_API_TOKEN>`. See docs/ci-cd.md.", routes=routes)
+
+    @app.get("/api/v1/subscriptions", tags=["subscriptions"])
+    async def api_v1_subscriptions(refresh: bool = False):
+        status = await asyncio.to_thread(azure.status, refresh)
+        subs = await subscriptions(refresh=refresh) if status["signed_in"] else []
+        reports = summaries_by_id()
+        return {"azure": status, "error": cache["error"], "subscriptions": [
+            {**s, "report_folder": (reports.get(s["id"].lower()) or {}).get("folder")} for s in subs]}
+
+    @app.post("/api/v1/analyses", tags=["analyses"], status_code=202)
+    async def api_v1_start_analyses(request: Request):
+        """Body: {"subscriptions": ["<id or display name>", ...]} - queues one analysis job per subscription."""
+        body = await request.json()
+        wanted = [str(s) for s in (body.get("subscriptions") or body.get("subscription_ids") or [])]
+        if not wanted:
+            return JSONResponse({"detail": "No subscriptions given"}, status_code=400)
+        visible = await subscriptions()
+        lookup = {k: s for s in visible for k in (s["id"].lower(), str(s.get("name") or "").lower()) if k}
+        unknown = [w for w in wanted if w.lower() not in lookup]
+        if unknown:
+            return JSONResponse({"detail": f"Not visible to the az login session: {', '.join(unknown)}"},
+                                status_code=400)
+        chosen = {lookup[w.lower()]["id"]: lookup[w.lower()] for w in wanted}
+        return {"jobs": [jobs.submit(s["id"], s["name"]).to_dict() for s in chosen.values()]}
+
+    @app.get("/api/v1/analyses", tags=["analyses"])
+    async def api_v1_list_analyses():
+        return {"jobs": [j.to_dict() for j in jobs.list()]}
+
+    @app.get("/api/v1/analyses/{job_id}", tags=["analyses"])
+    async def api_v1_get_analysis(job_id: str):
+        job = jobs.get(job_id)
+        return job.to_dict() if job else JSONResponse({"detail": "Unknown job"}, status_code=404)
+
+    @app.get("/api/v1/reports", tags=["reports"])
+    async def api_v1_reports():
+        return {"reports": list(summaries_by_id().values())}
+
+    @app.get("/api/v1/reports/{key}", tags=["reports"])
+    async def api_v1_report(key: str):
+        target = find_report(key)
+        if target is None:
+            return not_found(key)
+        return {**ci.load_report(target)["summary"], "folder": target.name}
+
+    @app.get("/api/v1/reports/{key}/findings", tags=["reports"])
+    async def api_v1_findings(key: str, min_severity: Optional[str] = None, finding_type: Optional[str] = None,
+                              limit: int = 500, offset: int = 0):
+        target = find_report(key)
+        if target is None:
+            return not_found(key)
+        try:
+            floor = severity_arg(min_severity)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+        findings = (await asyncio.to_thread(ci.load_report, target))["findings"]
+        if floor:
+            findings = [f for f in findings if ci.sev_rank(f.get("severity")) <= ci.sev_rank(floor)]
+        if finding_type:
+            types = set(ci.parse_types(finding_type))
+            findings = [f for f in findings if f.get("finding_type") in types]
+        limit = max(1, min(limit, 5000))
+        offset = max(0, offset)
+        return {"folder": target.name, "total": len(findings), "offset": offset, "limit": limit,
+                "items": findings[offset:offset + limit]}
+
+    @app.get("/api/v1/reports/{key}/gate", tags=["ci"])
+    async def api_v1_gate(key: str, fail_on: str = "high", ignore: Optional[str] = None):
+        """CI gate: `passed` is false when findings at or above `fail_on` remain (always HTTP 200)."""
+        target = find_report(key)
+        if target is None:
+            return not_found(key)
+        try:
+            floor = severity_arg(fail_on)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+        report = await asyncio.to_thread(ci.load_report, target)
+        return ci.ci_summary([report], floor, ci.parse_types(ignore))
+
+    @app.get("/api/v1/reports/{key}/sarif", tags=["ci"])
+    async def api_v1_sarif(key: str):
+        target = find_report(key)
+        if target is None:
+            return not_found(key)
+        report = await asyncio.to_thread(ci.load_report, target)
+        return JSONResponse(ci.to_sarif([report], base=reports_dir), media_type="application/sarif+json")
+
+    @app.get("/api/v1/reports/{key}/junit", tags=["ci"])
+    async def api_v1_junit(key: str, fail_on: str = "high", ignore: Optional[str] = None):
+        target = find_report(key)
+        if target is None:
+            return not_found(key)
+        try:
+            floor = severity_arg(fail_on)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+        report = await asyncio.to_thread(ci.load_report, target)
+        return Response(ci.to_junit([report], floor, ci.parse_types(ignore)), media_type="application/xml")
+
+    @app.get("/api/v1/reports/{key}/ai-prompt", tags=["ai"])
+    async def api_v1_ai_prompt(key: str, min_severity: Optional[str] = None, max_findings: int = DEFAULT_MAX_FINDINGS,
+                               mask_ids: bool = True, download: bool = False):
+        """Markdown prompt for an AI assistant: instructions, subscription context and findings (GUIDs masked)."""
+        target = find_report(key)
+        if target is None:
+            return not_found(key)
+        try:
+            floor = severity_arg(min_severity)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+        report = await asyncio.to_thread(ci.load_report, target)
+        text = build_prompt(report["summary"], report["findings"], max_findings=max(1, min(max_findings, 2000)),
+                            mask_ids=mask_ids, min_severity=floor)
+        headers = {"Content-Disposition": f'attachment; filename="{target.name}-ai-prompt.md"'} if download else {}
+        return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
 
     @app.on_event("shutdown")
     def _shutdown() -> None:

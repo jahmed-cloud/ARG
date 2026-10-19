@@ -1,126 +1,22 @@
 /**
- * GovernanceConfigSection — admin UI for editing required tags, naming
- * convention patterns and the analysis settings (optional checks such as the
- * naming convention and Defender plan recommendations, blocked resource
- * providers, engineering hourly rate) used by the scanners.
+ * GovernanceConfigSection — admin UI for editing required tags and
+ * naming convention patterns used by governance scanners.
  */
 import React, { useEffect, useState } from 'react';
 import {
-  Box, Card, CardContent, Typography, TextField, Button, MenuItem,
-  Chip, Stack, Alert, Divider, IconButton, Tooltip, Switch, FormControlLabel, alpha,
+  Box, Card, CardContent, Typography, TextField, Button,
+  Chip, Stack, Alert, Divider, IconButton, Tooltip, alpha,
 } from '@mui/material';
 import { Add, DeleteOutline, RestartAlt, Save } from '@mui/icons-material';
 import { useApi, ApiError } from '../../hooks/useApi';
 import { useSnackbar } from 'notistack';
-
-type SettingValue = boolean | number | string | string[] | null;
-
-interface SettingDefinition {
-  key: string;
-  label: string;
-  kind: 'bool' | 'list' | 'number' | 'choice' | 'text';
-  default: SettingValue;
-  help: string;
-  choices: string[];
-}
 
 interface GovernanceConfigData {
   required_tags: string[];
   naming_patterns: Record<string, string>;
   naming_pattern_descriptions: Record<string, string>;
   is_default: boolean;
-  settings: Record<string, SettingValue>;
-  setting_definitions: SettingDefinition[];
 }
-
-const parseList = (text: string) => text.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
-
-/** One entry per line; keeps the raw text while typing so new lines are not swallowed. */
-const ListSettingField: React.FC<{
-  def: SettingDefinition;
-  value: string[];
-  onChange: (v: string[]) => void;
-  help: React.ReactNode;
-}> = ({ def, value, onChange, help }) => {
-  const [raw, setRaw] = useState(value.join('\n'));
-  useEffect(() => {
-    // Follow outside changes (load, reset to defaults) without fighting the user's typing.
-    if (parseList(raw).join('\n') !== value.join('\n')) setRaw(value.join('\n'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value.join('\n')]);
-  return (
-    <Box sx={{ mb: 2 }}>
-      <TextField
-        size="small" fullWidth multiline minRows={2} label={`${def.label} (one per line)`}
-        value={raw}
-        onChange={(e) => {
-          setRaw(e.target.value);
-          onChange(parseList(e.target.value));
-        }}
-        inputProps={{ style: { fontFamily: 'monospace', fontSize: 12 } }}
-      />
-      {help}
-    </Box>
-  );
-};
-
-const SettingField: React.FC<{
-  def: SettingDefinition;
-  value: SettingValue;
-  onChange: (v: SettingValue) => void;
-}> = ({ def, value, onChange }) => {
-  const help = (
-    <Typography variant="caption" sx={{ color: alpha('#fff', 0.45), display: 'block', mt: 0.25 }}>
-      {def.help}
-    </Typography>
-  );
-  if (def.kind === 'bool') {
-    return (
-      <Box sx={{ mb: 1.5 }}>
-        <FormControlLabel
-          control={<Switch checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />}
-          label={<Typography variant="body2">{def.label}</Typography>}
-        />
-        <Box sx={{ pl: 6.5 }}>{help}</Box>
-      </Box>
-    );
-  }
-  if (def.kind === 'list') {
-    return (
-      <ListSettingField def={def} value={Array.isArray(value) ? value : []} onChange={onChange} help={help} />
-    );
-  }
-  if (def.kind === 'text') {
-    return (
-      <Box sx={{ mb: 2 }}>
-        <TextField size="small" label={def.label} value={value ?? ''} sx={{ minWidth: 420 }}
-          onChange={(e) => onChange(e.target.value)} inputProps={{ maxLength: 300 }} />
-        {help}
-      </Box>
-    );
-  }
-  if (def.kind === 'choice') {
-    return (
-      <Box sx={{ mb: 2 }}>
-        <TextField select size="small" label={def.label} value={value ?? ''} onChange={(e) => onChange(e.target.value)}
-          sx={{ minWidth: 220 }}>
-          {def.choices.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
-        </TextField>
-        {help}
-      </Box>
-    );
-  }
-  return (
-    <Box sx={{ mb: 2 }}>
-      <TextField
-        size="small" type="number" label={def.label} value={value ?? ''} sx={{ minWidth: 220 }}
-        onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-        inputProps={{ min: 0, step: 'any' }}
-      />
-      {help}
-    </Box>
-  );
-};
 
 export const GovernanceConfigSection: React.FC = () => {
   const api = useApi();
@@ -137,14 +33,12 @@ export const GovernanceConfigSection: React.FC = () => {
   const [newResourceType, setNewResourceType] = useState('');
   const [newPattern, setNewPattern] = useState('');
   const [patternErrors, setPatternErrors] = useState<Record<string, string>>({});
-  const [settings, setSettings] = useState<Record<string, SettingValue>>({});
 
   useEffect(() => {
     api.get('/governance/config').then((data) => {
       setConfig(data);
       setTags(data.required_tags);
       setPatterns(data.naming_patterns);
-      setSettings(data.settings ?? {});
     }).catch(() => {
       enqueueSnackbar('Failed to load governance config', { variant: 'error' });
     }).finally(() => setLoading(false));
@@ -192,7 +86,7 @@ export const GovernanceConfigSection: React.FC = () => {
     if (hasErrors) { enqueueSnackbar('Fix pattern errors before saving', { variant: 'warning' }); return; }
     setSaving(true);
     try {
-      await api.put('/governance/config', { required_tags: tags, naming_patterns: patterns, settings });
+      await api.put('/governance/config', { required_tags: tags, naming_patterns: patterns });
       enqueueSnackbar('Governance config saved — changes take effect on next scan', { variant: 'success' });
     } catch (e) {
       enqueueSnackbar(e instanceof ApiError ? e.message : 'Save failed', { variant: 'error' });
@@ -206,7 +100,6 @@ export const GovernanceConfigSection: React.FC = () => {
       const defaults = await api.get('/governance/config/defaults');
       setTags(defaults.required_tags);
       setPatterns(defaults.naming_patterns);
-      setSettings(defaults.settings ?? {});
       setPatternErrors({});
       enqueueSnackbar('Reset to defaults — click Save to apply', { variant: 'info' });
     } catch {
@@ -299,7 +192,7 @@ export const GovernanceConfigSection: React.FC = () => {
                 </Typography>
               )}
               <Tooltip title="Remove this pattern">
-                <IconButton size="small" onClick={() => removePattern(rtype)} sx={{ color: alpha('#f44336', 0.7) }}>
+                <IconButton size="small" onClick={() => removePattern(rtype)} sx={{ color: alpha('#F44336', 0.7) }}>
                   <DeleteOutline fontSize="small" />
                 </IconButton>
               </Tooltip>
@@ -344,27 +237,6 @@ export const GovernanceConfigSection: React.FC = () => {
             Add
           </Button>
         </Box>
-
-        {(config?.setting_definitions?.length ?? 0) > 0 && (
-          <>
-            <Divider sx={{ mb: 3, borderColor: alpha('#fff', 0.08) }} />
-            <Typography variant="subtitle2" sx={{ mb: 1, color: alpha('#fff', 0.7) }}>
-              Analysis Settings
-            </Typography>
-            <Typography variant="caption" sx={{ color: alpha('#fff', 0.4), display: 'block', mb: 2 }}>
-              Which optional checks run and how implementation costs are shown. Findings of a check you switch off
-              are suppressed (with the reason) on the next scan.
-            </Typography>
-            {config!.setting_definitions.map((def) => (
-              <SettingField
-                key={def.key}
-                def={def}
-                value={settings[def.key] ?? def.default}
-                onChange={(v) => setSettings((prev) => ({ ...prev, [def.key]: v }))}
-              />
-            ))}
-          </>
-        )}
 
         <Button
           variant="contained"

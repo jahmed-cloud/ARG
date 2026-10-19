@@ -48,7 +48,8 @@ import { IntegrationsStatusCard } from '../components/settings/IntegrationsStatu
 import { UserManagementSection } from '../components/settings/UserManagementSection';
 import { AboutSection } from '../components/settings/AboutSection';
 import { GovernanceConfigSection } from '../components/settings/GovernanceConfigSection';
-import { ResetFindingsCard } from '../components/settings/ResetFindingsCard';
+import { AnalysisSettingsPanel } from '../components/settings/AnalysisSettingsPanel';
+import { ResetFindingsPanel } from '../components/settings/ResetFindingsPanel';
 
 interface TenantItem {
   id: string;
@@ -296,8 +297,8 @@ export const SettingsPage: React.FC = () => {
                             size="small"
                             label={t.is_active ? 'Active' : 'Inactive'}
                             sx={{
-                              bgcolor: alpha(t.is_active ? '#4caf50' : '#9e9e9e', 0.15),
-                              color: t.is_active ? '#4caf50' : '#9e9e9e',
+                              bgcolor: alpha(t.is_active ? '#4CAF50' : '#9E9E9E', 0.15),
+                              color: t.is_active ? '#4CAF50' : '#9E9E9E',
                               fontSize: 11,
                             }}
                           />
@@ -312,7 +313,7 @@ export const SettingsPage: React.FC = () => {
                           </Tooltip>
                         </TableCell>
                         <TableCell align="right">
-                          <IconButton size="small" onClick={() => setDeleteTarget(t)} sx={{ color: alpha('#f44336', 0.8) }}>
+                          <IconButton size="small" onClick={() => setDeleteTarget(t)} sx={{ color: alpha('#F44336', 0.8) }}>
                             <Delete fontSize="small" />
                           </IconButton>
                         </TableCell>
@@ -435,13 +436,8 @@ export const SettingsPage: React.FC = () => {
       <Divider sx={{ my: 3, borderColor: alpha('#b8d9ba', 0.1) }} />
 
       <GovernanceConfigSection />
-
-      {isAdmin && (
-        <>
-          <Divider sx={{ my: 3, borderColor: alpha('#b8d9ba', 0.1) }} />
-          <ResetFindingsCard />
-        </>
-      )}
+      {isAdmin && <AnalysisSettingsPanel />}
+      {isAdmin && <ResetFindingsPanel />}
 
       <Divider sx={{ my: 3, borderColor: alpha('#b8d9ba', 0.1) }} />
 

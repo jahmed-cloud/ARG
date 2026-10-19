@@ -271,8 +271,9 @@ are skipped in this mode.
   tenant's management groups and policy with the Azure Landing Zones reference (pinned ALZ library)
 - **Analysis** page in the Docker UI: the same 5-part analysis as the local report, written after each scan
   (`ANALYSIS_REPORT_AFTER_SCAN`), with a backlog CSV for Azure Boards and a zip download
-- **Finding detail**: scripts, gap area, savings wave, critique, evidence, and implementation guidance per finding -
-  why, when not to, effort in hours (story points), run-cost change and Microsoft Learn references
+- **Finding dossier**: open any finding (Findings, Cost Savings, Estate) for a side panel with why it matters, when
+  not to, what it costs (effort in hours and story points, run-cost change, net saving), steps, scripts, evidence and
+  Microsoft Learn references
 - **Reasoning**: every finding explains how ARG reached its recommendation; an optional **AI review** (Settings,
   off by default) asks an Azure OpenAI deployment in your own tenant to challenge it - GUIDs masked, no tag values
 - **Fit-for-purpose network access**: open PaaS endpoints get the cheapest control that fits their use (public

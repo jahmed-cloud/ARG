@@ -1,0 +1,85 @@
+/* ARG workspace pages - the Overview page's language (dashboard.css) for every analysis screen:
+   monospace eyebrows, light large headings, ruled summary strips, flat panels, numbered sections. */
+.ws{color:#ebece3;--muted:#a3b5ad;--line:#30423b;--accent:#b8d9ba;--panel:#17241f;--deep:#101b17;max-width:1460px;margin:auto}
+.ws a{color:var(--accent)}
+.ws .eyebrow{font:600 10px/1.5 'Consolas',monospace;letter-spacing:.16em;color:var(--muted);margin:0 0 10px;text-transform:uppercase}
+.ws-heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin:8px 0 28px;flex-wrap:wrap}
+.ws-heading h1{font-size:clamp(26px,2.6vw,38px);line-height:1.15;letter-spacing:-.045em;font-weight:500;margin:0}
+.ws-heading h1 span{color:var(--muted)}
+.ws-heading p{font-size:13px;color:var(--muted);margin:10px 0 0;max-width:640px;line-height:1.7}
+.ws-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ws-button{font:600 11px 'Consolas',monospace;letter-spacing:.06em;text-transform:uppercase;background:transparent;color:var(--accent);border:1px solid var(--line);padding:8px 12px;border-radius:2px;cursor:pointer;text-decoration:none;display:inline-flex;gap:8px;align-items:center}
+.ws-button:hover:not(:disabled){border-color:var(--accent)}
+.ws-button:disabled{opacity:.45;cursor:default}
+.ws-button.solid{background:#284d3c;color:#f4f7ef;border-color:#284d3c}
+.ws-button.solid:hover:not(:disabled){background:#18392a}
+.ws-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border-block:1px solid var(--line);padding:22px 0;margin-bottom:26px}
+.ws-metric{display:flex;flex-direction:column;padding:0 22px;border-left:1px solid var(--line);min-width:0}
+.ws-metric:first-child{border-left:0;padding-left:0}
+.ws-metric>span{font-size:11px;color:var(--muted)}
+.ws-metric strong{font-size:30px;font-weight:400;letter-spacing:-.04em;margin:8px 0 4px;line-height:1.1;overflow-wrap:anywhere}
+.ws-metric small{color:var(--muted);font-size:11px;line-height:1.5}
+.ws-panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:22px;min-width:0;margin-bottom:22px}
+.ws-panel-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.ws-panel-heading h2{font-weight:500;font-size:18px;letter-spacing:-.025em;margin:0}
+.ws-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:22px}
+.ws-section{border-top:1px solid var(--line);padding:18px 0 6px}
+.ws-section>h3{font:600 10px/1.5 'Consolas',monospace;letter-spacing:.14em;color:var(--muted);margin:0 0 10px;text-transform:uppercase}
+.ws-section>h3 b{color:var(--accent);font-weight:600;margin-right:10px}
+.ws-text{font-size:13px;line-height:1.75;margin:0 0 10px;white-space:pre-line;overflow-wrap:anywhere}
+.ws-muted{color:var(--muted)}
+.ws-facts{display:grid;grid-template-columns:minmax(120px,200px) 1fr;gap:8px 18px;margin:0;font-size:12px}
+.ws-facts dt{color:var(--muted);font:11px 'Consolas',monospace}
+.ws-facts dd{margin:0;overflow-wrap:anywhere}
+.ws-list{list-style:none;margin:0 0 10px;padding:0}
+.ws-list li{position:relative;padding:6px 0 6px 18px;font-size:13px;line-height:1.6;border-bottom:1px solid rgba(48,66,59,.55)}
+.ws-list li:last-child{border-bottom:0}
+.ws-list li::before{content:'';position:absolute;left:2px;top:14px;width:8px;border-top:1px solid var(--accent)}
+.ws-steps{counter-reset:step;list-style:none;margin:0 0 10px;padding:0}
+.ws-steps li{counter-increment:step;display:flex;gap:14px;padding:7px 0;font-size:13px;line-height:1.6}
+.ws-steps li::before{content:counter(step,decimal-leading-zero);font:600 11px 'Consolas',monospace;color:var(--accent);padding-top:2px}
+.ws-quote{border-left:2px solid var(--accent);padding:6px 0 6px 16px;margin:6px 0 12px;font-size:14px;line-height:1.7}
+.ws-tag{display:inline-block;font:10px 'Consolas',monospace;letter-spacing:.06em;border:1px solid var(--line);color:var(--muted);padding:3px 7px;margin:0 6px 6px 0;text-transform:uppercase}
+.ws-tag.on{border-color:var(--accent);color:var(--accent)}
+.ws-code{position:relative;background:var(--deep);border:1px solid var(--line);border-radius:2px;margin:0 0 12px}
+.ws-code pre{margin:0;padding:14px 16px;font:12px/1.6 'Consolas',monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
+.ws-code button{position:absolute;top:6px;right:6px}
+.ws-rows{width:100%;border-collapse:collapse;font-size:12px}
+.ws-rows th{font:600 10px 'Consolas',monospace;letter-spacing:.1em;color:var(--muted);text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);text-transform:uppercase;white-space:nowrap}
+.ws-rows td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.ws-rows tr.click{cursor:pointer}
+.ws-rows tr.click:hover td{background:rgba(184,217,186,.04)}
+.ws-rows .num{text-align:right;font-family:'Consolas',monospace;white-space:nowrap}
+.ws-rows .sev{width:3px;padding:0}
+.ws-rows .sev i{display:block;width:3px;min-height:34px}
+.ws-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:16px}
+.ws-filters label{display:flex;flex-direction:column;gap:5px;font:10px 'Consolas',monospace;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.ws-filters select,.ws-filters input{font-size:13px;font-family:inherit;color:#ebece3;background:var(--deep);border:1px solid var(--line);border-radius:2px;padding:7px 9px;min-width:150px}
+.ws-filters input[type=search]{min-width:240px}
+.ws-switch{display:inline-flex;border:1px solid var(--line);border-radius:2px;overflow:hidden}
+.ws-switch button{font:600 10px 'Consolas',monospace;letter-spacing:.08em;text-transform:uppercase;background:transparent;color:var(--muted);border:0;padding:8px 12px;cursor:pointer}
+.ws-switch button[aria-pressed=true]{background:#284d3c;color:#f4f7ef}
+.ws-bars{display:flex;flex-direction:column;gap:9px}
+.ws-bar{display:grid;grid-template-columns:minmax(110px,180px) 1fr 70px;gap:12px;align-items:center;font-size:12px;background:none;border:0;color:inherit;text-align:left;padding:0;cursor:pointer}
+.ws-bar span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-bar .track{height:4px;background:var(--line)}
+.ws-bar .track i{display:block;height:100%;background:var(--accent)}
+.ws-bar b{font:12px 'Consolas',monospace;font-weight:400;text-align:right}
+.ws-bar[aria-pressed=true] span:first-child{color:var(--accent)}
+.ws-markdown{font-size:13px;line-height:1.75;overflow-wrap:anywhere}
+.ws-markdown h1,.ws-markdown h2,.ws-markdown h3{font-weight:500;letter-spacing:-.02em}
+.ws-markdown table{border-collapse:collapse;width:100%;font-size:12px;display:block;overflow-x:auto}
+.ws-markdown th,.ws-markdown td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+.ws-markdown code{font:12px 'Consolas',monospace;background:var(--deep);padding:1px 4px}
+.ws-markdown pre{background:var(--deep);border:1px solid var(--line);padding:12px;overflow:auto}
+.ws-markdown blockquote{border-left:2px solid var(--accent);margin:0;padding:2px 14px;color:var(--muted)}
+.ws-empty{padding:26px 0;max-width:460px}
+.ws-empty .rule{width:50px;border-top:2px solid #6b8475;margin-bottom:14px}
+.ws-empty p{font-size:14px;margin:0 0 6px}
+.ws-empty small{font-size:12px;line-height:1.8;color:var(--muted)}
+.ws-notice{background:#dfe5d5;color:#23372f;border-radius:4px;padding:18px 22px;margin-bottom:22px;font-size:13px;line-height:1.7}
+.ws-notice .eyebrow{color:#556b5d}
+.dossier{width:min(760px,100vw);background:#111e19;color:#ebece3;height:100%;overflow:auto;padding:28px 30px 40px;--muted:#a3b5ad;--line:#30423b;--accent:#b8d9ba;--deep:#101b17}
+.dossier .eyebrow{font:600 10px/1.5 'Consolas',monospace;letter-spacing:.16em;color:var(--muted);margin:0 0 10px;text-transform:uppercase}
+.dossier h1{font-size:24px;font-weight:500;letter-spacing:-.03em;line-height:1.3;margin:0 0 6px}
+@media(max-width:700px){.ws-metric{padding:0 14px}.ws-strip{grid-template-columns:1fr 1fr;gap:18px 0}.ws-metric:nth-child(odd){border-left:0;padding-left:0}.ws-facts{grid-template-columns:1fr}.dossier{padding:20px 16px}.ws-grid{grid-template-columns:1fr}}

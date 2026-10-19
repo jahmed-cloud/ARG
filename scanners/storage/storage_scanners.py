@@ -51,6 +51,39 @@ def _account_of(uri: Optional[str]) -> Optional[str]:
 # Unused Storage Account Scanner
 # ---------------------------------------------------------------------------
 
+async def storage_activity(context: ScanContext, resource_id: str, warnings: List[str]) -> Optional[Dict[str, Any]]:
+    """30-day transactions (split by API when possible) and latest used capacity; None if unavailable.
+
+    Memoised per scan (context.cache): the unused-storage and access-hardening scanners share one set of calls."""
+    cache = getattr(context, "cache", None)
+    key = f"storage_activity:{resource_id.lower()}"
+    if cache is not None and key in cache:
+        return cache[key]
+    try:
+        tx = await cached_metrics(context, resource_id, ["Transactions"], days=30, interval="P1D", aggregation="Total")
+        cap = await cached_metrics(context, resource_id, ["UsedCapacity"], days=7, interval="PT12H", aggregation="Average")
+    except Exception as exc:
+        warnings.append(f"Storage metrics unavailable for {resource_id.split('/')[-1]}: {exc}")
+        return None
+    used = (cap.get("UsedCapacity") or {}).get("latest_average") or 0.0
+    activity: Dict[str, Any] = {
+        "transactions_30d": (tx.get("Transactions") or {}).get("total") or 0.0,
+        "used_capacity_gb": round(used / 1024 ** 3, 2),
+    }
+    split = getattr(context.arm_client, "metric_totals_by", None)
+    if split is not None:
+        try:
+            by_api = await split(resource_id, "Transactions", "ApiName", days=30)
+        except Exception as exc:
+            warnings.append(f"Storage API breakdown unavailable for {resource_id.split('/')[-1]}: {exc}")
+        else:
+            activity["data_operations_30d"] = storage_data_operations(by_api)
+            activity["transactions_by_api"] = dict(sorted(by_api.items(), key=lambda kv: -kv[1])[:15])
+    if cache is not None:
+        cache[key] = activity
+    return activity
+
+
 @register_scanner
 class UnusedStorageAccountScanner(BaseScanner):
     """
@@ -309,28 +342,7 @@ class UnusedStorageAccountScanner(BaseScanner):
         return vhd, boot
 
     async def _activity(self, context: ScanContext, resource_id: str, warnings: List[str]) -> Optional[Dict[str, Any]]:
-        """30-day transactions (split by API when possible) and latest used capacity; None if unavailable."""
-        try:
-            tx = await cached_metrics(context, resource_id, ["Transactions"], days=30, interval="P1D", aggregation="Total")
-            cap = await cached_metrics(context, resource_id, ["UsedCapacity"], days=7, interval="PT12H", aggregation="Average")
-        except Exception as exc:
-            warnings.append(f"Storage metrics unavailable for {resource_id.split('/')[-1]}: {exc}")
-            return None
-        used = (cap.get("UsedCapacity") or {}).get("latest_average") or 0.0
-        activity: Dict[str, Any] = {
-            "transactions_30d": (tx.get("Transactions") or {}).get("total") or 0.0,
-            "used_capacity_gb": round(used / 1024 ** 3, 2),
-        }
-        split = getattr(context.arm_client, "metric_totals_by", None)
-        if split is not None:
-            try:
-                by_api = await split(resource_id, "Transactions", "ApiName", days=30)
-            except Exception as exc:
-                warnings.append(f"Storage API breakdown unavailable for {resource_id.split('/')[-1]}: {exc}")
-            else:
-                activity["data_operations_30d"] = storage_data_operations(by_api)
-                activity["transactions_by_api"] = dict(sorted(by_api.items(), key=lambda kv: -kv[1])[:15])
-        return activity
+        return await storage_activity(context, resource_id, warnings)
 
     async def _run_arg_query(self, context: ScanContext, query: str) -> List[Dict]:
         if context.resource_graph_client is None:

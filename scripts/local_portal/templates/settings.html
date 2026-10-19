@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Settings - ARG Local Portal{% endblock %}
+{% block user %}
+<div class="user">
+  <span title="Portal user">User: {{ username }}</span>
+  <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
+</div>
+{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Analysis settings</h1>
+  <p class="muted">Which optional checks run and how implementation costs are shown. They apply to the next analysis
+    started here or with <code>Invoke-SubscriptionAnalysis.ps1</code> / <code>python -m scripts.subscription_analysis</code>
+    (same reports folder); <code>--config file.json</code> still overrides them for one run.
+    Stored in <code>{{ settings_file }}</code>.</p>
+  {% if saved %}<p class="notice" role="status">Saved. Re-run an analysis to apply the settings to a report.</p>{% endif %}
+  <form method="post" action="/settings" class="settings-form">
+    {% for s in definitions %}
+    <div class="setting">
+      {% if s.kind == "bool" %}
+      <label class="check">
+        <input type="checkbox" name="{{ s.key }}" {% if values[s.key] %}checked{% endif %}>
+        <strong>{{ s.label }}</strong>
+      </label>
+      {% elif s.kind == "list" %}
+      <label for="{{ s.key }}"><strong>{{ s.label }}</strong> <span class="muted small">(one per line)</span></label>
+      <textarea id="{{ s.key }}" name="{{ s.key }}" rows="4">{{ (values[s.key] or []) | join("\n") }}</textarea>
+      {% elif s.kind == "choice" %}
+      <label for="{{ s.key }}"><strong>{{ s.label }}</strong></label>
+      <select id="{{ s.key }}" name="{{ s.key }}">
+        {% for c in s.choices %}<option value="{{ c }}" {% if values[s.key] == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select>
+      {% elif s.kind == "text" %}
+      <label for="{{ s.key }}"><strong>{{ s.label }}</strong></label>
+      <input id="{{ s.key }}" name="{{ s.key }}" type="text" maxlength="300" value="{{ values[s.key] or '' }}"
+             placeholder="not set">
+      {% else %}
+      <label for="{{ s.key }}"><strong>{{ s.label }}</strong></label>
+      <input id="{{ s.key }}" name="{{ s.key }}" type="number" min="0" step="any"
+             value="{{ values[s.key] if values[s.key] is not none else '' }}" placeholder="not set">
+      {% endif %}
+      <p class="muted small">{{ s.help }}</p>
+    </div>
+    {% endfor %}
+    <button type="submit" class="primary">Save settings</button>
+  </form>
+</section>
+{% endblock %}

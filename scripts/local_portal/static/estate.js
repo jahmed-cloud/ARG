@@ -45,8 +45,8 @@
   }
   const fmt = (n) => (n === undefined || n === null || n === "" ? "" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }));
   // The Currency dropdown (/api/currency). "billing": every subscription in its own billing currency, at the rate
-  // Cost Management applied to its cost (perUsd); another code: savings (USD) at the reference rate, costs (billing
-  // currency) through USD at the subscription's own rate.
+  // Cost Management applied to its amortized cost (perUsd); another code: savings (USD) at the reference rate,
+  // costs (billing currency) through USD at the subscription's own rate.
   let currency = { selected: "billing", per_usd: {} };
   const round2 = (v) => Math.round(v * 100) / 100;
   const targetRate = () => (currency.selected === "USD" ? 1 : currency.per_usd[currency.selected]);
@@ -99,10 +99,11 @@
       const sub = subsList[s.s] || {};
       const r = s.r === undefined || s.r === null ? null : resources[s.r];
       const report = sub.folder ? "/reports/" + sub.folder : "/reports";
+      const amount = billing(s.usd || 0, sub);
       return {
         ref: s.ref || "", title: s.title || "", severity: s.sev || "info", type: s.type || "", wave: s.wave || "",
         hygiene: !!s.hy,
-        savingsUsd: s.usd || 0, savings: billing(s.usd || 0, sub).value, savingsCurrency: billing(s.usd || 0, sub).currency,
+        savingsUsd: s.usd || 0, savings: amount.value, savingsCurrency: amount.currency,
         subscriptionId: sub.id || "", subscription: sub.name || sub.id || "",
         resourceId: r ? r.id : "", resourceName: r ? r.name : (s.name || "(subscription)"),
         category: r ? r.category : "Subscription", typeLabel: r ? r.typeLabel : "Subscription",
@@ -117,10 +118,6 @@
     $("estate-status").textContent = "Loading estate…";
     let response, data;
     try {
-      const choice = await fetch("/api/currency", { credentials: "same-origin" });
-      if (choice.ok) currency = await choice.json();
-    } catch (err) { /* billing currency stays */ }
-    try {
       response = await fetch("/api/estate", { credentials: "same-origin" });
       if (response.ok) data = await response.json();
     } catch (err) {
@@ -129,6 +126,10 @@
     }
     if (response.status === 401) { location.href = "/login?next=/estate"; return; }
     if (!response.ok) { $("estate-status").textContent = "Could not load the estate: " + response.statusText; return; }
+    try {
+      const choice = await fetch("/api/currency", { credentials: "same-origin" });
+      if (choice.ok) currency = await choice.json();
+    } catch (err) { /* billing currency */ }
     estate = expand(data);
     _index = null;
     subs.clear();
@@ -583,7 +584,7 @@
   function csv() {
     const columns = state.view === "resources"
       ? ["name", "typeLabel", "category", "size", "vcpu", "ramGB", "cpuAvg", "cpuPeakHour", "cpuP95", "cpuMax", "burstHours", "memAvg", "usage", "activity", "idle", "config", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
-      : ["severity", "ref", "title", "type", "resourceName", "typeLabel", "category", "subscription", "savingsUsd", "wave", "resourceId"];
+      : ["severity", "ref", "title", "type", "resourceName", "typeLabel", "category", "subscription", "savings", "savingsCurrency", "savingsUsd", "wave", "resourceId"];
     const escape = (v) => {
       let text = v === undefined || v === null ? "" : String(v);
       if (/^[=+\-@]/.test(text)) text = "'" + text; // no formula injection when opened in Excel

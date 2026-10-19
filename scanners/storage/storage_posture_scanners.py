@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import re
 from typing import Any, Dict, List
 
+from scanners.base import access_need
 from scanners.base.azure_api import DEFAULT_ARM_CONCURRENCY, gather_limited, cached_metrics, cost_for, get_defender_plans, get_resource_costs
 from scanners.base.base_scanner import (
     ScanContext,
@@ -25,6 +26,11 @@ from scanners.base.base_scanner import (
 from scanners.base.posture_scanner import PostureScanner
 
 DEFENDER_FOR_STORAGE_USD_PER_ACCOUNT = 10.0
+
+
+def _open_to_all(sa: Dict[str, Any]) -> bool:
+    return ((sa.get("public_network") or "Enabled").lower() != "disabled"
+            and (sa.get("default_action") or "Allow").lower() == "allow" and not sa.get("pe_count"))
 
 
 def account_family(name: str) -> str:
@@ -50,6 +56,9 @@ class StorageAccessHardeningScanner(PostureScanner):
                   shared_key = tobool(properties.allowSharedKeyAccess),
                   public_network = tostring(properties.publicNetworkAccess),
                   default_action = tostring(properties.networkAcls.defaultAction),
+                  ip_rules = array_length(properties.networkAcls.ipRules),
+                  vnet_rules = array_length(properties.networkAcls.virtualNetworkRules),
+                  hns = tobool(properties.isHnsEnabled),
                   pe_count = array_length(properties.privateEndpointConnections)
         """
         try:
@@ -58,6 +67,14 @@ class StorageAccessHardeningScanner(PostureScanner):
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
         warnings = []
+        open_accounts = [sa for sa in accounts if _open_to_all(sa)]
+        boot_diag = await self._boot_diagnostics(context, warnings) if open_accounts else {}
+        if self.is_live(context) and open_accounts:
+            from scanners.storage.storage_scanners import storage_activity
+
+            async def _usage(sa):
+                sa["activity"] = await storage_activity(context, sa["id"], warnings)
+            await gather_limited(open_accounts, _usage, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
         if self.is_live(context):
             async def _enrich(sa):
                 if (sa.get("kind") or "").lower() not in ("storagev2", "blobstorage", "blockblobstorage"):
@@ -86,18 +103,27 @@ class StorageAccessHardeningScanner(PostureScanner):
                     evidence={"allowSharedKeyAccess": sa.get("shared_key")}, cis_control="3.3",
                     estimated_monthly_savings_usd=0.0,
                 ))
-            open_network = ((sa.get("public_network") or "Enabled").lower() != "disabled"
-                            and (sa.get("default_action") or "Allow").lower() == "allow")
-            if open_network and not sa.get("pe_count"):
+            if _open_to_all(sa):
+                activity = sa.get("activity") or {}
+                ops = activity.get("data_operations_30d")
+                vms = sorted(boot_diag.get(name.lower(), ()))
+                fix = await access_need.assess(
+                    self, context, "storage", sa, data_operations_30d=ops,
+                    boot_diagnostics_vms=vms or None,
+                    sub_resources=2 if sa.get("hns") else 1, ip_rules=sa.get("ip_rules") or 0,
+                    vnet_rules=sa.get("vnet_rules") or 0)
+                decision = fix["decision"]
                 findings.append(self.resource_finding(
-                    sa, finding_type="storage_public_network_access", title=f"Storage open to all networks: {name}",
+                    sa, finding_type="storage_public_network_access",
+                    title=f"Storage open to all networks: {name} - {decision['title'].lower()}",
                     description=(f"Storage account '{name}' allows data-plane traffic from all networks "
-                                 f"(firewall defaultAction=Allow) and has no private endpoint."),
-                    resource_type="microsoft.storage/storageaccounts",
-                    remediation_steps=("Add a private endpoint (or VNet/IP rules for the known clients) and set the "
-                                       "firewall default action to Deny."),
-                    azure_cli_script=f"az storage account update -g {rg} -n {name} --default-action Deny",
-                    evidence={"publicNetworkAccess": sa.get("public_network"), "defaultAction": sa.get("default_action")},
+                                 f"(firewall defaultAction=Allow) and has no private endpoint "
+                                 f"({decision['usage']}). {decision['why']}"),
+                    resource_type="microsoft.storage/storageaccounts", severity=fix["severity"],
+                    remediation_steps=fix["remediation_steps"], azure_cli_script=fix["azure_cli_script"],
+                    evidence={"publicNetworkAccess": sa.get("public_network"), "defaultAction": sa.get("default_action"),
+                              "transactions_30d": activity.get("transactions_30d"), "data_operations_30d": ops,
+                              **fix["evidence"]},
                     cis_control="3.8", nist_control="SC-7", estimated_monthly_savings_usd=0.0,
                 ))
             if sa.get("blob_soft_delete") is False:
@@ -111,6 +137,24 @@ class StorageAccessHardeningScanner(PostureScanner):
                     evidence={"blob_soft_delete": False}, estimated_monthly_savings_usd=0.0,
                 ))
         return ScanOutput(findings=findings, resources_scanned=len(accounts), warnings=warnings)
+
+    async def _boot_diagnostics(self, context: ScanContext, warnings: List[str]) -> Dict[str, set]:
+        """{account name: VMs writing boot diagnostics to it} - Azure is its only writer."""
+        from scanners.storage.storage_scanners import UnusedStorageAccountScanner, _account_of
+
+        if context.resource_graph_client is None:
+            return {}
+        try:
+            rows = await self.arg(context, UnusedStorageAccountScanner.VM_REFERENCES_QUERY)
+        except Exception as exc:
+            warnings.append(f"VM boot-diagnostics references unavailable: {exc}")
+            return {}
+        out: Dict[str, set] = {}
+        for row in rows:
+            account = _account_of(row.get("bootDiag"))
+            if account:
+                out.setdefault(account, set()).add(row.get("name"))
+        return out
 
     def _mock_data(self) -> List[Dict[str, Any]]:
         return [{

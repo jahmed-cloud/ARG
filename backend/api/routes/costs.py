@@ -1,10 +1,9 @@
 """
 Costs API routes.
 
-Cost data comes from two tables populated independently:
-  - ResourceCost: actual monthly spend per resource, synced from Azure
-    Cost Management by the cost worker. No subscription_id column directly —
-    it's reached via resource_id -> ResourceInventory.subscription_id.
+Cost data comes from two sources:
+  - Spend: the amortized Cost Management cost of the last 30 days per subscription, collected by the estate refresh
+    (EstateSnapshot.data["cost_30d"], backend/services/estate.py recorded_costs).
   - Finding (with estimated_monthly_savings_usd set): savings opportunities
     identified by scanners. Resource name/type come from the joined
     ResourceInventory row, not the Finding row itself.
@@ -21,12 +20,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.api.dependencies.database import get_db
-from backend.models.models import Finding, ResourceCost, ResourceInventory, FindingStatus
+from backend.api.routes.findings import finding_implementation
+from backend.models.models import Finding, FindingStatus, Subscription
+from scripts.subscription_analysis.guidance import cost_summary
 from backend.services.access import AccessScope, get_access_scope
 
 logger = logging.getLogger(__name__)
@@ -54,17 +55,12 @@ async def get_cost_summary(
     subscription_id: UUID | None = Query(None),
 ) -> CostSummary:
     """Aggregate cost summary + top 10 savings opportunities."""
-    # Actual spend: ResourceCost joined through ResourceInventory for subscription filtering
-    cost_query = select(func.coalesce(func.sum(ResourceCost.cost_usd), 0))
-    if subscription_id or scope.scoped:
-        cost_query = cost_query.join(
-            ResourceInventory, ResourceCost.resource_id == ResourceInventory.id
-        ).where(scope.where(ResourceInventory.subscription_id))
-    if subscription_id:
-        cost_query = cost_query.where(ResourceInventory.subscription_id == subscription_id)
+    from backend.services.estate import recorded_costs
 
-    cost_result = await db.execute(cost_query)
-    total_monthly = float(cost_result.scalar_one() or 0)
+    # Spend: amortized Cost Management cost of the last 30 days per visible subscription, from the newest estate
+    # refresh (USD; the UI shows it in the chosen currency)
+    totals, _ = await recorded_costs(db, scope.where(Subscription.id), str(subscription_id) if subscription_id else None)
+    total_monthly = sum(float(t.get("cost_usd") or 0) for t in totals.values())
 
     # Savings opportunities: open findings with a positive estimated saving
     savings_query = (
@@ -94,7 +90,14 @@ async def get_cost_summary(
         saving_findings,
         key=lambda f: f.estimated_monthly_savings_usd or 0,
         reverse=True,
-    )[:10]
+    )[:25]
+
+    def implementation(f: Finding) -> dict:
+        impl = finding_implementation(f)
+        return {"why": impl.get("why"), "cost_to_implement": cost_summary(impl),
+                "implementation_monthly_usd": impl.get("monthly_usd"),
+                "net_monthly_usd": impl.get("net_monthly_usd"), "hours": impl.get("hours"),
+                "saving_basis": (f.evidence or {}).get("saving_basis")}
 
     return CostSummary(
         total_monthly_cost=round(total_monthly, 2),
@@ -114,6 +117,7 @@ async def get_cost_summary(
                 "annual_saving": round((f.estimated_monthly_savings_usd or 0) * 12, 2),
                 "severity": f.severity.value if hasattr(f.severity, "value") else f.severity,
                 "remediation_steps": f.remediation_steps,
+                **implementation(f),
             }
             for f in top
         ],

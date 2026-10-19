@@ -20,7 +20,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional
 
 from scanners.base.azure_api import (
     HOURS_PER_MONTH,
@@ -36,7 +36,7 @@ from scanners.base.base_scanner import (
     SeverityLevel,
     register_scanner,
 )
-from scanners.base.posture_scanner import PostureScanner
+from scanners.base.posture_scanner import PostureScanner, is_stopped
 
 INTERNET_SOURCES = {"*", "internet", "0.0.0.0/0", "any", "::/0"}
 MANAGEMENT_PORTS = {22: "SSH", 3389: "RDP", 5985: "WinRM-HTTP", 5986: "WinRM-HTTPS"}
@@ -244,10 +244,9 @@ class OrphanedNSGScanner(PostureScanner):
 @register_scanner
 class OpenManagementPortScanner(PostureScanner):
     """
-    Inbound Allow rules exposing RDP/SSH/WinRM to '*' / Internet. CRITICAL
-    when the NSG is effective (on a subnet or on a NIC attached to a VM);
-    HIGH when latent (orphaned NSG or a NIC without VM) - re-attaching the
-    NIC or NSG would expose a machine instantly.
+    Inbound Allow rules exposing RDP/SSH/WinRM to '*' / Internet, graded by what they expose today: CRITICAL on a
+    subnet or a running VM; MEDIUM when every VM behind the NSG is deallocated / stopped (exposed once started); LOW
+    when the NSG reaches no VM at all (orphaned NSG, or NICs without a VM - the orphan findings cover the clean-up).
     """
 
     scanner_name = "open_management_port_scanner"
@@ -269,7 +268,13 @@ class OpenManagementPortScanner(PostureScanner):
         Resources
         | where type =~ 'microsoft.network/networkinterfaces'
         | where isnotnull(properties.virtualMachine)
-        | project nic_id = tolower(id)
+        | project nic_id = tolower(id), vm_id = tolower(tostring(properties.virtualMachine.id))
+        | join kind=leftouter (
+            Resources
+            | where type =~ 'microsoft.compute/virtualmachines'
+            | project vm_id = tolower(id), power = tostring(properties.extended.instanceView.powerState.code)
+          ) on vm_id
+        | project nic_id, vm = tostring(split(vm_id, '/')[-1]), power
         """
         try:
             nsgs = await self.arg(context, nsg_query)
@@ -293,10 +298,22 @@ class OpenManagementPortScanner(PostureScanner):
                 continue
 
             nic_ids = {(n.get("id") or "").lower() for n in (nsg.get("nic_ids") or [])}
-            effective = bool(nsg.get("subnet_count")) or bool(nic_ids & nics_with_vm)
-            severity = SeverityLevel.CRITICAL if effective else SeverityLevel.HIGH
+            vms = {nics_with_vm[n]["vm"]: nics_with_vm[n]["power"] for n in nic_ids if n in nics_with_vm}
+            running = [vm for vm, power in vms.items() if not is_stopped(power)]
+            effective = bool(nsg.get("subnet_count")) or bool(running)
+            if effective:
+                severity = SeverityLevel.CRITICAL
+                state = ("on a subnet" if nsg.get("subnet_count") else
+                         f"on running VM(s) {', '.join(sorted(running))}") + " - reachable now"
+            elif vms:
+                severity = SeverityLevel.MEDIUM
+                state = (f"only on VM(s) that are deallocated / stopped ({', '.join(sorted(vms))}) - not reachable "
+                         f"today, exposed as soon as one starts")
+            else:
+                severity = SeverityLevel.LOW
+                state = ("on no subnet and no VM - no exposure today; it applies again if the NSG or its NIC is "
+                         "re-attached (delete them, see the orphaned NSG / NIC findings)")
             port_names = sorted({MANAGEMENT_PORTS.get(p, str(p)) for e in exposed for p in e["ports"]})
-            state = "applied to a running workload path" if effective else "currently latent (no VM behind it)"
 
             findings.append(self.resource_finding(
                 nsg,
@@ -322,7 +339,8 @@ class OpenManagementPortScanner(PostureScanner):
                     f"Remove-AzNetworkSecurityRuleConfig -Name '{e['rule']}' | Set-AzNetworkSecurityGroup"
                     for e in exposed
                 ),
-                evidence={"exposed_rules": exposed, "effective": effective},
+                evidence={"exposed_rules": exposed, "effective": effective, "vms": vms,
+                          "subnets": nsg.get("subnet_count") or 0},
                 cis_control="6.1",
                 nist_control="SC-7",
                 estimated_monthly_savings_usd=0.0,
@@ -330,11 +348,13 @@ class OpenManagementPortScanner(PostureScanner):
 
         return ScanOutput(findings=findings, resources_scanned=len(nsgs))
 
-    async def _nics_with_vm(self, context: ScanContext, query: str) -> Set[str]:
+    async def _nics_with_vm(self, context: ScanContext, query: str) -> Dict[str, Dict[str, str]]:
+        """{NIC ID: {"vm": name, "power": power state code}} for every NIC attached to a VM."""
         if context.resource_graph_client is None:
-            return {"/subscriptions/sub-1/resourcegroups/rg-net/providers/microsoft.network/networkinterfaces/nic-vm-1"}
+            return {"/subscriptions/sub-1/resourcegroups/rg-net/providers/microsoft.network/networkinterfaces/nic-vm-1":
+                    {"vm": "vm-1", "power": "PowerState/running"}}
         rows = await self.arg(context, query)
-        return {r.get("nic_id") for r in rows}
+        return {r.get("nic_id"): {"vm": r.get("vm") or "", "power": r.get("power") or ""} for r in rows}
 
     def _mock_data(self) -> List[Dict[str, Any]]:
         return [{
@@ -461,11 +481,17 @@ class VMPublicIPWithBastionScanner(PostureScanner):
         | mv-expand ipc = properties.ipConfigurations
         | where isnotnull(ipc.properties.publicIPAddress.id)
         | extend subnet_id = tostring(ipc.properties.subnet.id)
-        | project nic_name = name,
-                  vm_id = tostring(properties.virtualMachine.id),
+        | project nic_name = name, ipconfig = tostring(ipc.name),
+                  vm_id = tostring(properties.virtualMachine.id), vm_key = tolower(tostring(properties.virtualMachine.id)),
                   pip_id = tostring(ipc.properties.publicIPAddress.id),
                   vnet_id = tolower(substring(subnet_id, 0, indexof(subnet_id, '/subnets/'))),
                   resourceGroup, subscriptionId, location
+        | join kind=leftouter (
+            Resources
+            | where type =~ 'microsoft.compute/virtualmachines'
+            | project vm_key = tolower(id), power = tostring(properties.extended.instanceView.powerState.code)
+          ) on vm_key
+        | project-away vm_key, vm_key1
         """
         try:
             bastions = await self._rows(context, bastion_query, "bastions")
@@ -481,13 +507,17 @@ class VMPublicIPWithBastionScanner(PostureScanner):
                 continue
             vm_name = (nic.get("vm_id") or "").split("/")[-1]
             pip_name = (nic.get("pip_id") or "").split("/")[-1]
+            stopped = is_stopped(nic.get("power"))
             findings.append(await price_at_actual_cost(context, self.make_finding(
                 finding_type="vm_public_ip_bypasses_bastion",
-                title=f"VM public IP next to Bastion: {vm_name}",
+                title=f"VM public IP next to Bastion: {vm_name}" + (" (VM deallocated)" if stopped else ""),
                 description=(
                     f"VM '{vm_name}' keeps public IP '{pip_name}' although Bastion '{bastion['bastion']}' "
-                    f"({bastion.get('sku')}) serves the same VNet. The public IP is a second, direct entry path."
+                    f"({bastion.get('sku')}) serves the same VNet. The public IP is a second, direct entry path"
+                    + (" - not reachable while the VM is deallocated, open again as soon as it starts." if stopped
+                       else ".")
                 ),
+                severity=SeverityLevel.MEDIUM if stopped else SeverityLevel.HIGH,
                 resource_id=nic.get("vm_id"),
                 resource_name=vm_name,
                 resource_type="microsoft.compute/virtualmachines",
@@ -497,10 +527,10 @@ class VMPublicIPWithBastionScanner(PostureScanner):
                 remediation_steps="Dissociate and delete the public IP; connect through Bastion (or JIT) only.",
                 azure_cli_script=(
                     f"az network nic ip-config update -g {nic.get('resourceGroup')} --nic-name {nic.get('nic_name')} "
-                    f"-n ipconfig1 --remove publicIpAddress\n"
+                    f"-n {nic.get('ipconfig') or 'ipconfig1'} --remove publicIpAddress\n"
                     f"az network public-ip delete -g {nic.get('resourceGroup')} -n {pip_name}"
                 ),
-                evidence={"public_ip": pip_name, "nic": nic.get("nic_name"),
+                evidence={"public_ip": pip_name, "nic": nic.get("nic_name"), "power_state": nic.get("power"),
                           "bastion": bastion["bastion"], "bastion_sku": bastion.get("sku")},
                 nist_control="AC-17",
                 estimated_monthly_savings_usd=3.65,

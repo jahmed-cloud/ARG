@@ -1,10 +1,10 @@
 /**
- * Currency for every amount the UI shows. ARG stores savings in USD; the Currency dropdown in the top bar picks
- * what they are shown in:
- * - "billing" (default): the Azure invoice's billing currency (e.g. EUR) at the rate Cost Management itself applies
- *   (billing cost / USD cost over the last 30 days, recorded by each scan);
+ * Currency for every amount the UI shows. ARG stores savings and costs in USD; the Currency dropdown in the top
+ * bar picks what they are shown in:
+ * - "billing" (default): the Azure invoice's billing currency (e.g. CHF) at the rate Cost Management itself applies
+ *   (billing cost / USD cost of the amortized cost over the last 30 days, recorded by each estate refresh);
  * - USD, or any other currency at the European Central Bank's reference rate (GET /dashboard/currency).
- * The choice is remembered per browser; Settings → Governance → Analysis settings sets the default.
+ * The choice is remembered per browser; Settings → Analysis Settings → "Currency shown" sets the default.
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useApi } from './useApi';

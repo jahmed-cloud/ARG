@@ -110,7 +110,8 @@ def test_estate_provider_overview():
     assert (rows["Microsoft.Web"]["registered"], rows["Microsoft.Web"]["not_registered"]) == (1, 1)
     text = "\n".join(_providers_overview(list(rows.values()), 3))
     assert "### Providers in use (1)" in text and "| Microsoft.Compute | 2 | 2 | 3 | 0 |" in text
-    assert "| Microsoft.Web | 1 | 1 |" in text                     # registered but unused in one subscription
+    assert "### Niche providers registered but unused" not in text   # Microsoft.Web is a core service
+    assert "| Microsoft.Web | on request | 0 | 1 | 1 | 1 | core service |" in text
 
 
 class BudgetArm:

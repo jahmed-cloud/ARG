@@ -64,3 +64,14 @@ reports/
 *.bundle
 .merge/
 .validation/
+.claude/
+.copilot/
+.cursor/
+scratch/
+tmp/
+local/
+scripts/local/
+*.local.ps1
+*.local.py
+*.local.sh
+*.local.md

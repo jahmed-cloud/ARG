@@ -28,12 +28,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from scanners.base.azure_api import point_profile
-from scanners.base.naming import env_from_name, env_from_tags, is_nva_image
+from scanners.base.azure_api import normalise_bools, point_profile
+from scanners.base.naming import (  # noqa: F401 - env_from_subscription is re-exported
+    env_from_name,
+    env_from_subscription,
+    env_from_tags,
+    environment_of,
+    is_nva_image,
+)
+from scanners.base.providers import BASELINE_PROVIDERS, CORE_PROVIDERS
 
 ESTATE_DIR = "_estate"
 ESTATE_FILE = "estate.json"
 INVENTORY_FILE = "inventory.json"
+POLICY_FILE = "policy.json"   # policy in force (landing-zone view) - kept out of estate.json, which the browser loads
 SUBSCRIPTIONS_PER_QUERY = 1000
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 _WRITE_LOCK = threading.Lock()
@@ -840,13 +848,6 @@ def state_of(row: Dict[str, Any]) -> str:
     return "" if state.lower() in ("succeeded", "ready", "running", "online") else state
 
 
-def environment_of(row: Dict[str, Any], subscription: str = "") -> str:
-    env = env_from_tags(row.get("tags")) or env_from_name(row.get("name") or "")
-    if not env:
-        env = env_from_name(row.get("resourceGroup") or "") or env_from_name(subscription)
-    return {"prod": "Production", "nonprod": "Non-production"}.get(env or "", "Unknown")
-
-
 def display_name(row: Dict[str, Any]) -> str:
     """Child resources read like the Azure portal: 'vm-app-01 › DSC' instead of just 'DSC'."""
     rtype = (row.get("type") or "").lower()
@@ -905,10 +906,10 @@ def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def query_estate(credential: Any, subscription_ids: List[str], page_size: int = 1000) -> List[Dict[str, Any]]:
-    from azure.mgmt.resourcegraph import ResourceGraphClient
+    from scanners.base.azure_api import resource_graph_client
     from azure.mgmt.resourcegraph.models import QueryRequest, QueryRequestOptions
 
-    client = ResourceGraphClient(credential)
+    client = resource_graph_client(credential)
     rows: List[Dict[str, Any]] = []
     for i in range(0, len(subscription_ids), SUBSCRIPTIONS_PER_QUERY):
         batch = subscription_ids[i:i + SUBSCRIPTIONS_PER_QUERY]
@@ -921,6 +922,7 @@ async def query_estate(credential: Any, subscription_ids: List[str], page_size: 
             skip_token = getattr(response, "skip_token", None)
             if not skip_token:
                 break
+    normalise_bools(ESTATE_QUERY, rows)
     for row in rows:
         if row.get("agentPools"):
             row["agentPools"] = [{k: p.get(k) for k in ("name", "vmSize", "count", "mode", "osType")}
@@ -935,9 +937,179 @@ def collect_inventory(credential: Any, subscriptions: List[Dict[str, Any]]) -> D
     if rows:
         asyncio.run(enrich_compute(credential, rows))
         usage = asyncio.run(collect_usage(credential, rows))
+    try:
+        architecture = asyncio.run(collect_architecture(credential, ids)) if ids else {}
+    except Exception as exc:  # the diagrams are an add-on: the inventory stands without them
+        architecture = {"error": str(exc)[:300]}
+    try:
+        policy = asyncio.run(collect_tenant_policy(credential)) if ids else {}
+    except Exception as exc:  # the landing-zone view shows structure and network without it
+        policy = {"error": str(exc)[:300]}
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "source": "resource-graph",
             "subscriptions": [{"id": s["id"].lower(), "name": s.get("name")} for s in subscriptions],
-            "usage": usage, "resources": rows, "providers": asyncio.run(collect_providers(credential, ids))}
+            "usage": usage, "resources": rows, "providers": asyncio.run(collect_providers(credential, ids)),
+            "architecture": architecture, "policy": policy}
+
+
+async def collect_tenant_policy(credential: Any) -> Dict[str, Any]:
+    """Policy in force across the tenant (assignments, definitions, exemptions, compliance) - landing-zone view."""
+    from scanners.base.azure_api import resource_graph_client
+    from scripts.subscription_analysis.policy_catalog import collect_policy
+
+    return await collect_policy(credential, _arg_rows, resource_graph_client(credential))
+
+
+# --- architecture diagrams: management-group hierarchy, Azure Policy assignments, VNets and peerings ----------------
+
+HIERARCHY_QUERY = """
+resourcecontainers
+| where type =~ 'microsoft.resources/subscriptions'
+| project subscriptionId = tolower(subscriptionId), chain = properties.managementGroupAncestorsChain
+"""
+MANAGEMENT_GROUP_QUERY = """
+resourcecontainers
+| where type =~ 'microsoft.management/managementgroups'
+| project name, displayName = tostring(properties.displayName), parent = tostring(properties.details.parent.name)
+"""
+POLICY_ASSIGNMENT_QUERY = """
+policyresources
+| where type =~ 'microsoft.authorization/policyassignments'
+| extend scope = tolower(tostring(properties.scope))
+| where scope startswith '/providers/microsoft.management/managementgroups/' or scope matches regex '^/subscriptions/[^/]+$'
+| project id = tolower(id), name = tostring(properties.displayName), scope,
+          definition = tolower(tostring(properties.policyDefinitionId)),
+          enforcement = tostring(properties.enforcementMode),
+          effect = tostring(properties.parameters.effect.value),
+          allowed_locations = properties.parameters.listOfAllowedLocations.value,
+          allowed_types = properties.parameters.listOfResourceTypesAllowed.value,
+          denied_types = properties.parameters.listOfResourceTypesNotAllowed.value
+"""
+VNET_QUERY = """
+resources
+| where type =~ 'microsoft.network/virtualnetworks'
+| project id = tolower(id), name, subscriptionId = tolower(subscriptionId), resourceGroup, location,
+          space = properties.addressSpace.addressPrefixes, subnets = array_length(properties.subnets),
+          subnet_list = properties.subnets, peerings = properties.virtualNetworkPeerings,
+          dns = properties.dhcpOptions.dnsServers, ddos = tobool(properties.enableDdosProtection)
+"""
+ALLOWED_LOCATION_DEFINITIONS = ("e56962a6-4747-49cd-b67b-bf8b01975c4c", "e765b5de-1225-4ba3-bd56-1ac6695af988")
+ALLOWED_TYPES_DEFINITION = "a08ec900-254a-4555-9bf5-e42af04b5c5c"
+DENIED_TYPES_DEFINITION = "6c112d4e-5bc7-47ae-a041-ea2d9dccd749"
+
+
+async def _arg_rows(client: Any, query: str, subscriptions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Every page of a Resource Graph query; tenant scope (all visible subscriptions and management groups)
+    without a subscription list."""
+    from azure.mgmt.resourcegraph.models import QueryRequest, QueryRequestOptions
+
+    rows: List[Dict[str, Any]] = []
+    batches = [subscriptions[i:i + SUBSCRIPTIONS_PER_QUERY] for i in range(0, len(subscriptions),
+                                                                             SUBSCRIPTIONS_PER_QUERY)] \
+        if subscriptions else [None]
+    for batch in batches:
+        skip: Optional[str] = None
+        while True:
+            request = QueryRequest(query=query, options=QueryRequestOptions(result_format="objectArray", top=1000,
+                                                                            skip_token=skip))
+            if batch:
+                request.subscriptions = batch
+            response = await asyncio.to_thread(client.resources, request)
+            rows.extend(response.data or [])
+            skip = getattr(response, "skip_token", None)
+            if not skip:
+                break
+    return normalise_bools(query, rows)
+
+
+def policy_record(row: Dict[str, Any]) -> Dict[str, Any]:
+    definition = row.get("definition") or ""
+    guid = definition.rsplit("/", 1)[-1]
+    allowed_locations = [str(x).lower() for x in row.get("allowed_locations") or []] if guid in \
+        ALLOWED_LOCATION_DEFINITIONS else []
+    allowed_types = [str(x).lower() for x in row.get("allowed_types") or []] if guid == ALLOWED_TYPES_DEFINITION else []
+    denied_types = [str(x).lower() for x in row.get("denied_types") or []] if guid == DENIED_TYPES_DEFINITION else []
+    effect = (row.get("effect") or "").strip()
+    if allowed_locations or allowed_types or denied_types:
+        effect = effect or "Deny"   # these built-ins deny by default
+    return {"id": row.get("id"), "name": row.get("name") or guid, "scope": row.get("scope") or "",
+            "initiative": "/policysetdefinitions/" in definition,
+            "enforced": (row.get("enforcement") or "Default") != "DoNotEnforce", "effect": effect,
+            "allowed_locations": allowed_locations, "allowed_types": allowed_types, "denied_types": denied_types}
+
+
+async def collect_architecture(credential: Any, subscription_ids: List[str]) -> Dict[str, Any]:
+    """Management-group placement of every subscription, the policy assignments on management groups and
+    subscriptions, and VNets with their peerings - what the architecture diagrams draw."""
+    from scanners.base.azure_api import resource_graph_client
+
+    client = resource_graph_client(credential)
+    wanted = {s.lower() for s in subscription_ids}
+    groups: Dict[str, Dict[str, Any]] = {}
+    parents: Dict[str, List[str]] = {}
+    for row in await _arg_rows(client, HIERARCHY_QUERY, subscription_ids):
+        chain = [c for c in row.get("chain") or [] if isinstance(c, dict) and c.get("name")]
+        if row.get("subscriptionId") not in wanted:
+            continue
+        parents[row["subscriptionId"]] = [c["name"] for c in chain]
+        for i, c in enumerate(chain):
+            groups.setdefault(c["name"], {"name": c["name"], "displayName": c.get("displayName") or c["name"],
+                                          "parent": chain[i + 1]["name"] if i + 1 < len(chain) else None})
+    try:   # management groups without subscriptions, and parents the chains do not show
+        for row in await _arg_rows(client, MANAGEMENT_GROUP_QUERY):
+            groups.setdefault(row["name"], {"name": row["name"], "displayName": row.get("displayName") or row["name"],
+                                            "parent": row.get("parent") or None})
+    except Exception:
+        pass
+    try:
+        policies = [policy_record(r) for r in await _arg_rows(client, POLICY_ASSIGNMENT_QUERY)]
+    except Exception:
+        policies = []
+    from scripts.subscription_analysis.network import collect_network, subnet_record
+
+    vnets = []
+    for row in await _arg_rows(client, VNET_QUERY, subscription_ids):
+        peerings = []
+        for p in row.get("peerings") or []:
+            props = (p or {}).get("properties") or {}
+            remote = ((props.get("remoteVirtualNetwork") or {}).get("id") or "").lower()
+            if remote:
+                peerings.append({"remote": remote, "state": props.get("peeringState") or "",
+                                 "gateway_transit": bool(props.get("allowGatewayTransit")),
+                                 "remote_gateways": bool(props.get("useRemoteGateways")),
+                                 "forwarded": bool(props.get("allowForwardedTraffic"))})
+        vnets.append({"id": row["id"], "name": row.get("name"), "subscriptionId": row.get("subscriptionId"),
+                      "resourceGroup": row.get("resourceGroup"), "location": row.get("location"),
+                      "space": list(row.get("space") or []), "subnets": row.get("subnets") or 0,
+                      "subnet_list": [subnet_record(x) for x in row.get("subnet_list") or []],
+                      "dns": list(row.get("dns") or []), "ddos": bool(row.get("ddos")),
+                      "peerings": peerings})
+    try:
+        network = await collect_network(client, subscription_ids, _arg_rows)
+    except Exception as exc:   # the hierarchy and policy views still work without it
+        network = {"error": str(exc)}
+    return {"collected_at": datetime.now(timezone.utc).isoformat(), "management_groups": groups,
+            "subscription_parents": parents, "policies": policies, "vnets": vnets, "network": network}
+
+
+def merge_architecture(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    from scripts.subscription_analysis.network import merge_network
+
+    out: Dict[str, Any] = {"management_groups": {}, "subscription_parents": {}, "policies": [], "vnets": []}
+    seen = set()
+    out["network"] = merge_network(p.get("network") for p in parts if p and not p.get("error")
+                                   and not (p.get("network") or {}).get("error"))
+    for part in parts:
+        if not part or part.get("error"):
+            continue
+        out["collected_at"] = part.get("collected_at")
+        out["management_groups"].update(part.get("management_groups") or {})
+        out["subscription_parents"].update(part.get("subscription_parents") or {})
+        for p in part.get("policies") or []:
+            if p.get("id") not in seen:
+                seen.add(p.get("id"))
+                out["policies"].append(p)
+        out["vnets"].extend(part.get("vnets") or [])
+    return out
 
 
 async def collect_providers(credential: Any, subscription_ids: List[str], concurrency: int = 16
@@ -989,6 +1161,8 @@ def provider_overview(resources: List[Dict[str, Any]], providers: Dict[str, List
         row["in_use"] = len(used.get(ns, set()))
         row["resources"] = counts.get(ns, 0)
         row["registered_unused"] = max(0, row["registered"] - row["in_use"])
+        row["baseline"] = ns in BASELINE_PROVIDERS
+        row["core"] = ns in CORE_PROVIDERS
     return sorted(rows.values(), key=lambda r: (-r["in_use"], -r["registered"], r["namespace"].lower()))
 
 
@@ -1490,7 +1664,8 @@ def _reports(reports_dir: Path) -> Dict[str, Dict[str, Any]]:
         result[(sub.get("id") or "").lower()] = {
             "folder": child.name, "name": sub.get("name"), "generated_at": summary.get("generated_at"),
             "currency": summary.get("currency") or "",
-            "per_usd": summary.get("per_usd") if isinstance(summary.get("per_usd"), (int, float)) else None,
+            # billing currency per USD, from the subscription's amortized 30-day cost (Cost Management)
+            "per_usd": _load_json(raw / "cost" / "usd_to_billing.json", None),
             "findings": _load_json(raw / "findings.json", []),
             "costs": _load_json(raw / "cost" / "last30_by_resource.json", {}),
             "resources": _load_json(raw / "inventory" / "resources.json", []),
@@ -1498,13 +1673,21 @@ def _reports(reports_dir: Path) -> Dict[str, Dict[str, Any]]:
     return result
 
 
-def _suggestion(f: Dict[str, Any], sub_id: str, folder: str, resource: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _suggestion(f: Dict[str, Any], sub_id: str, folder: str, resource: Optional[Dict[str, Any]],
+                report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    from scripts.subscription_analysis.currency import localise_amounts
+
+    rep = report or {}
+    rate = rep.get("per_usd") if isinstance(rep.get("per_usd"), (int, float)) else None
     return {
-        "ref": f.get("ref"), "title": f.get("title"), "severity": (f.get("severity") or "info").lower(),
+        # amounts in titles ('~USD 84/month') in the subscription's billing currency, like its report
+        "ref": f.get("ref"), "title": localise_amounts(f.get("title") or "", rate, rep.get("currency") or ""),
+        "severity": (f.get("severity") or "info").lower(),
         "type": f.get("finding_type"), "area": f.get("area"), "wave": f.get("wave"),
         "hygiene": f.get("finding_type") in HYGIENE_TYPES,
         "savingsUsd": f.get("estimated_monthly_savings_usd"),
-        "link": f"/reports/{folder}/05-deep-dive/{f['folder']}/README.md" if f.get("folder") else f"/reports/{folder}/README.md",
+        "link": (f"/reports/{folder}/05-deep-dive/{f['folder']}/README.md" + (f"#{f['ref'].lower()}" if f.get("ref") else "")
+                 if f.get("folder") else f"/reports/{folder}/README.md"),
         "subscriptionId": sub_id, "resourceId": (resource or {}).get("id") or "",
         "resourceName": (resource or {}).get("name") or f.get("resource_name") or "(subscription)",
         "category": (resource or {}).get("category") or "Subscription",
@@ -1512,13 +1695,17 @@ def _suggestion(f: Dict[str, Any], sub_id: str, folder: str, resource: Optional[
     }
 
 
-def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_estate(reports_dir: Optional[Path], inventory: Optional[Dict[str, Any]] = None,
+                 reports: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
     Join the inventory with the reports. Without a live inventory (none passed and no _estate/inventory.json),
     the reports' own resources.json files are used, so the estate always covers every analysed subscription.
+    `reports` (same shape as _reports()) replaces the report folders - the Docker stack passes its database
+    findings and live costs this way; reports_dir is then only read for a missing inventory.
     """
-    reports = _reports(reports_dir)
-    if inventory is None:
+    if reports is None:
+        reports = _reports(reports_dir) if reports_dir is not None else {}
+    if inventory is None and reports_dir is not None:
         inventory = _load_json(reports_dir / ESTATE_DIR / INVENTORY_FILE, None)
     if inventory is None:
         inventory = {"generated_at": None, "source": "reports",
@@ -1543,7 +1730,7 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
                 by_id[rid]["currency"] = entry.get("currency") or rep["currency"]
         for f in rep["findings"]:
             resource = by_id.get((f.get("resource_id") or "").lower())
-            suggestions.append(_suggestion(f, sub_id, rep["folder"], resource))
+            suggestions.append(_suggestion(f, sub_id, rep["folder"], resource, rep))
 
     counts: Dict[str, Counter] = defaultdict(Counter)
     hygiene: Counter = Counter()
@@ -1567,7 +1754,7 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
         subscriptions.append({
             "id": sub_id, "name": sub_names.get(sub_id) or sub_id, "folder": rep.get("folder") or "",
             "analysedAt": rep.get("generated_at"), "currency": rep.get("currency") or "",
-            "perUsd": rep.get("per_usd"),   # billing-currency units per USD: the Currency dropdown converts with it
+            "perUsd": rep.get("per_usd") if isinstance(rep.get("per_usd"), (int, float)) else None,
             "resources": sum(1 for r in resources if r["subscriptionId"] == sub_id),
             "suggestions": sum(1 for s in suggestions if s["subscriptionId"] == sub_id),
         })
@@ -1580,6 +1767,7 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
         "subscriptions": subscriptions,
         "resources": sorted(resources, key=lambda r: (r["category"], r["typeLabel"], r["subscription"].lower(), r["name"].lower())),
         "suggestions": suggestions,
+        "architecture": inventory.get("architecture") or {},
     }
 
 
@@ -1622,18 +1810,27 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
         suggestions.append({k: v for k, v in row.items() if v not in (None, "") or k == "s"})
     return {"format": 2, "generated_at": estate["generated_at"], "inventory_at": estate["inventory_at"],
             "source": estate["source"], "usage": estate.get("usage") or {}, "subscriptions": estate["subscriptions"], "types": types,
-            "resources": resources, "suggestions": suggestions}
+            "resources": resources, "suggestions": suggestions, "architecture": estate.get("architecture") or {}}
 
 
 def write_estate(reports_dir: Path, estate: Dict[str, Any], inventory: Optional[Dict[str, Any]] = None) -> Path:
     folder = reports_dir / ESTATE_DIR
     folder.mkdir(parents=True, exist_ok=True)
     if inventory is not None:
-        (folder / INVENTORY_FILE).write_text(json.dumps(inventory, default=str), encoding="utf-8")
+        policy = inventory.get("policy")
+        if policy and not policy.get("error"):
+            (folder / POLICY_FILE).write_text(json.dumps(policy, default=str), encoding="utf-8")
+        (folder / INVENTORY_FILE).write_text(json.dumps({k: v for k, v in inventory.items() if k != "policy"},
+                                                        default=str), encoding="utf-8")
     (folder / ESTATE_FILE).write_text(json.dumps(compact(estate), default=str, ensure_ascii=False,
                                                  separators=(",", ":")), encoding="utf-8")
     (folder / "README.md").write_text(render_estate_markdown(estate) + "\n", encoding="utf-8")
     return folder
+
+
+def load_policy(reports_dir: Path) -> Optional[Dict[str, Any]]:
+    """The policy collection saved by the last live estate refresh, None before the first one."""
+    return _load_json(reports_dir / ESTATE_DIR / POLICY_FILE, None)
 
 
 def refresh_estate(reports_dir: Path, credential: Any = None,
@@ -1725,7 +1922,32 @@ def _rightsizing_note(r: Dict[str, Any]) -> str:
     return "; ".join(notes) or "one size down"
 
 
-def _validated_rightsizing(resources: List[Dict[str, Any]], suggestions: List[Dict[str, Any]]) -> List[str]:
+def saving_amount(usd: Optional[float], subscription: Optional[Dict[str, Any]]) -> Tuple[float, str]:
+    """A USD saving in its subscription's billing currency, at the rate Cost Management applied to the
+    subscription's amortized cost (perUsd); USD when that rate is unknown."""
+    sub = subscription or {}
+    if usd and sub.get("perUsd") and sub.get("currency") and sub["currency"] != "USD":
+        return usd * sub["perUsd"], sub["currency"]
+    return usd or 0.0, "USD"
+
+
+def saving_text(usd: Optional[float], subscription: Optional[Dict[str, Any]]) -> str:
+    value, currency = saving_amount(usd, subscription)
+    return f"{value:,.0f} {currency}" if usd else "0"
+
+
+def _saving_total(items: Iterable[Dict[str, Any]], subscriptions: Dict[str, Dict[str, Any]]) -> str:
+    """Savings summed per currency - '1,234 CHF', or '1,234 CHF + 56 EUR' across billing currencies."""
+    totals: Dict[str, float] = defaultdict(float)
+    for s in items:
+        if s.get("savingsUsd"):
+            value, currency = saving_amount(s["savingsUsd"], subscriptions.get(s.get("subscriptionId") or ""))
+            totals[currency] += value
+    return " + ".join(f"{v:,.0f} {c}" for c, v in sorted(totals.items(), key=lambda kv: -kv[1])) or "-"
+
+
+def _validated_rightsizing(resources: List[Dict[str, Any]], suggestions: List[Dict[str, Any]],
+                           subscriptions: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
     """VM resizes that passed every check of vm_rightsizing_scanner (30 days of CPU, memory, disk, network)."""
     by_id = {r["id"].lower(): r for r in resources}
     rows = sorted((s for s in suggestions if s.get("type") == "vm_rightsizing_opportunity"),
@@ -1737,14 +1959,16 @@ def _validated_rightsizing(resources: List[Dict[str, Any]], suggestions: List[Di
              "and memory P99 at most 60 % over 30 days (Azure Advisor's limits for user-facing workloads), disk and "
              "network headroom, and the same Premium Storage / Accelerated Networking / temp-disk capabilities. "
              "Details and the evidence are in each subscription's report.", "",
-             _table(["VM", "Suggestion", "Est. saving / month (USD)", "Subscription"], [
-                 [s["resourceName"], s["title"].split(": ", 1)[-1], f"{s['savingsUsd']:,.0f}" if s.get("savingsUsd") else "0",
+             _table(["VM", "Suggestion", "Est. saving / month", "Subscription"], [
+                 [s["resourceName"], s["title"].split(": ", 1)[-1],
+                  saving_text(s.get("savingsUsd"), (subscriptions or {}).get(s.get("subscriptionId") or "")),
                   (by_id.get((s.get("resourceId") or "").lower()) or {}).get("subscription") or s.get("subscriptionId")]
                  for s in rows], ["---", "---", "---:", "---"]), ""]
     return lines
 
 
-def _utilisation(resources: List[Dict[str, Any]], suggestions: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+def _utilisation(resources: List[Dict[str, Any]], suggestions: Optional[List[Dict[str, Any]]] = None,
+                 subscriptions: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
     """Running VMs by 30-day average CPU, validated right-sizing suggestions, then a low-CPU screening list."""
     vms = [r for r in resources if r["type"] == "microsoft.compute/virtualmachines" and r["state"] == "running"]
     if not vms:
@@ -1754,7 +1978,7 @@ def _utilisation(resources: List[Dict[str, Any]], suggestions: Optional[List[Dic
     candidates, excluded = rightsizing(vms)
     lines = ["### Running VMs by average CPU (last 30 days)", "",
              _table(["Average CPU", "VMs"], [[b, bands[b]] for b in order if bands.get(b)], ["---", "---:"]), ""]
-    lines += _validated_rightsizing(resources, suggestions or [])
+    lines += _validated_rightsizing(resources, suggestions or [], subscriptions)
     if candidates or excluded:
         lines += [f"### Right-sizing screening: {len(candidates)} running VM(s) with {RIGHTSIZE_MIN_VCPU}+ vCPU, under "
                   f"{RIGHTSIZE_MAX_CPU:.0f} % average CPU and under {RIGHTSIZE_MAX_MEM:.0f} % memory used", "",
@@ -1825,23 +2049,34 @@ def _providers_overview(rows: List[Dict[str, Any]], subscriptions: int) -> List[
     if not rows:
         return []
     in_use = [r for r in rows if r["in_use"]]
-    idle = sorted((r for r in rows if r["registered_unused"] and not r["automatic"]),
+    idle = sorted((r for r in rows if r["registered_unused"] and not r["automatic"] and not r.get("baseline")),
                   key=lambda r: (-r["registered_unused"], r["namespace"].lower()))
     lines = ["## Resource providers", "",
              f"A subscription accepts a provider's resources only once the provider is **registered**. Across "
-             f"{subscriptions} subscriptions, {len(in_use)} providers are in use. Registered but unused providers "
-             f"are normal (the portal and tools register them on first use) and are not findings; per-subscription "
-             f"detail and any allow / deny resource-type policies are in each report (01 - Current findings, "
-             f"section 7).", "",
+             f"{subscriptions} subscriptions, {len(in_use)} of {len(rows)} providers are in use. Core services "
+             f"(Compute, Storage, Network, Key Vault, Web, ...) and the governance baseline (Defender, Policy, Monitor, "
+             f"Cost Management) are expected to be registered without resources and are never unregister "
+             f"candidates. Niche providers registered but unused are listed for information only: unregistering "
+             f"saves nothing - restrict services with an 'Allowed / Not allowed resource types' policy instead. "
+             f"Each subscription's report lists its own providers (01 - Current findings → "
+             f"resource-providers.md).", "",
              f"### Providers in use ({len(in_use)})", "",
              _table(["Provider", "Subscriptions using it", "Resources", "Registered in", "Not registered in"], [
                  [r["namespace"], r["in_use"], r["resources"], r["registered"], r["not_registered"]]
                  for r in in_use], ["---", "---:", "---:", "---:", "---:"]), ""]
     if idle:
-        lines += [f"### Registered but unused (on-request providers, {len(idle)})", "",
+        lines += [f"### Niche providers registered but unused - for information ({len(idle)})", "",
                   _table(["Provider", "Subscriptions where registered but unused", "Registered in"], [
-                      [r["namespace"], r["registered_unused"], r["registered"]] for r in idle[:40]],
+                      [r["namespace"], r["registered_unused"], r["registered"]] for r in idle],
                          ["---", "---:", "---:"]), ""]
+    lines += [f"### All providers ({len(rows)})", "",
+              _table(["Provider", "Registration", "In use in", "Registered in", "Registered but unused in",
+                      "Not registered in", "Note"], [
+                  [r["namespace"], "automatic" if r["automatic"] else "on request", r["in_use"], r["registered"],
+                   r["registered_unused"], r["not_registered"],
+                   "core service" if r.get("core") else "governance baseline" if r.get("baseline") else ""]
+                  for r in sorted(rows, key=lambda r: r["namespace"].lower())],
+                     ["---", "---", "---:", "---:", "---:", "---:", "---"]), ""]
     return lines
 
 
@@ -1935,7 +2170,7 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
     lines += _sizes(resources, "microsoft.azurearcdata/sqlserverinstances",
                     "Arc SQL Server instances by version · edition · vCores")
     lines += _sizes(resources, "microsoft.sqlvirtualmachine/sqlvirtualmachines", "SQL Server on VMs by edition · license")
-    lines += _utilisation(resources, suggestions)
+    lines += _utilisation(resources, suggestions, {s["id"]: s for s in estate.get("subscriptions") or []})
     lines += _usage_overview(resources, estate.get("usage"))
     lines += _providers_overview(estate.get("providers") or [], len(estate["subscriptions"]))
 
@@ -1951,11 +2186,11 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
     by_finding: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for s in suggestions:
         by_finding[s["type"] or "?"].append(s)
+    subs_by_id = {s["id"]: s for s in estate.get("subscriptions") or []}
     lines += ["## Most common suggestions", "", _table(
-        ["Suggestion type", "Worst severity", "Count", "Subscriptions", "Est. saving / month (USD)"], [
+        ["Suggestion type", "Worst severity", "Count", "Subscriptions", "Est. saving / month"], [
             [t, next((x for x in SEVERITY_ORDER if any(s["severity"] == x for s in g)), ""), len(g),
-             len({s["subscriptionId"] for s in g}),
-             f"{sum(s['savingsUsd'] or 0 for s in g):,.0f}" if any(s["savingsUsd"] for s in g) else "-"]
+             len({s["subscriptionId"] for s in g}), _saving_total(g, subs_by_id)]
             for t, g in sorted(by_finding.items(), key=lambda kv: (SEVERITY_ORDER.index(
                 next((x for x in SEVERITY_ORDER if any(s["severity"] == x for s in kv[1])), "info")), -len(kv[1])))[:40]
         ], ["---", "---", "---:", "---:", "---:"]), ""]

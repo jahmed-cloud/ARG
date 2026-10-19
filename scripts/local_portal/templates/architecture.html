@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Architecture - ARG Local Portal{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block user %}
+<div class="user">
+  <span title="Portal user">User: {{ username }}</span>
+  <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
+</div>
+{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="toolbar arch-toolbar">
+    <h1 class="estate-title">{% if view == 'landing' %}Landing zone{% else %}{% if subscription %}Subscription{% else %}Tenant{% endif %} {% if view == 'network' %}network{% else %}architecture{% endif %}{% endif %}</h1>
+    <nav class="arch-views" aria-label="Diagram layer">
+      <a href="/architecture?view=resources{% if subscription %}&subscription={{ subscription }}{% endif %}" {% if view == 'resources' %}aria-current="page"{% endif %}>Resources &amp; policy</a>
+      <a href="/architecture?view=network{% if subscription %}&subscription={{ subscription }}{% endif %}" {% if view == 'network' %}aria-current="page"{% endif %}>Network</a>
+      <a href="/architecture?view=landing" {% if view == 'landing' %}aria-current="page"{% endif %}>Landing zone</a>
+    </nav>
+    {% if view != 'landing' %}
+    <form method="get" action="/architecture" class="arch-pick">
+      <input type="hidden" name="view" value="{{ view }}">
+      <label class="sr-only" for="arch-sub">View</label>
+      <select id="arch-sub" name="subscription">
+        <option value="">{% if view == 'network' %}Tenant - hubs, spokes and peerings{% else %}Tenant - management groups, subscriptions, Azure Policy{% endif %}</option>
+        {% for s in subscriptions %}
+        <option value="{{ s.id }}" {% if s.id == subscription %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+      <noscript><button type="submit" class="secondary">Show</button></noscript>
+    </form>
+    {% endif %}
+    <input id="arch-search" type="search" placeholder="Find a subscription, group, resource group, service…" aria-label="Search the diagram">
+    <span class="arch-buttons" role="group" aria-label="Zoom and export">
+      <button id="arch-out" type="button" class="secondary" title="Zoom out">−</button>
+      <span id="arch-zoom" class="muted small">100 %</span>
+      <button id="arch-in" type="button" class="secondary" title="Zoom in">+</button>
+      <button id="arch-fit" type="button" class="secondary">Fit</button>
+      <button id="arch-100" type="button" class="secondary">100 %</button>
+      <button id="arch-svg-export" type="button" class="secondary">Export SVG</button>
+      <button id="arch-png-export" type="button" class="primary">Export PNG</button>
+    </span>
+  </div>
+  {% if view == 'landing' %}
+  <p class="muted small">Your management groups, Azure Policy and hub network compared with Microsoft's Azure Landing
+    Zones reference. Archetypes come from the group names and positions - correct them with
+    <a href="/settings">Settings</a> &gt; Landing zone - management group archetypes. Built from the estate inventory{% if collected %} of {{ collected }}{% endif %}
+    (refresh on the <a href="/estate">Estate</a> page).</p>
+  {% else %}
+  <p class="muted small">Wheel to zoom, drag to move{% if not subscription %}, click a {% if view == 'network' %}VNet{% else %}subscription{% endif %} to open it{% endif %}.
+    Built from the estate inventory{% if collected %} of {{ collected }}{% endif %} - refresh it on the
+    <a href="/estate">Estate</a> page. Icons: Microsoft Azure architecture icons.</p>
+  {% endif %}
+  <p id="arch-status" class="muted small" role="status">Loading…</p>
+  <div id="arch-stage" class="arch-stage"><div id="arch-svg" class="arch-svg"></div></div>
+</section>
+{% if view == 'landing' %}
+<section class="card">
+  <div class="toolbar">
+    <h2>Landing zone details</h2>
+    <a class="button secondary" href="/api/landing-zone.md">Download Markdown</a>
+  </div>
+  <div id="lz-details" class="markdown"><p class="muted small">Loading…</p></div>
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="/static/architecture.js"></script>{% endblock %}

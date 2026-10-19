@@ -5,17 +5,42 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Estate, architecture, analysis, guidance and AI review - 2026-10-19
+- **Estate page in the Docker UI** (admins): every resource across the connected subscriptions with filters,
+  breakdowns, usage profiles, cost, suggestions, CSV and markdown overview; refreshed by the worker after every scan
+  (`ESTATE_REFRESH_AFTER_SCAN`) or on demand. API: `/api/v1/estate`, `/estate/status`, `/estate/refresh`,
+  `/estate/overview.md`. Migration `f3b8d2a6c917` (`estate_snapshots`).
+- **Architecture**: network diagrams (hubs, spokes, peering, routes, DNS, firewalls) and a landing-zone view that
+  compares management groups and Azure Policy in force with the Azure Landing Zones reference (pinned library,
+  `python -m scripts.update_alz_library`); local portal and Docker UI.
+- **Analysis page** in the Docker UI: the 5-part subscription analysis written by the worker after each scan
+  (`ANALYSIS_REPORT_AFTER_SCAN`), backlog CSV (Azure Boards import), zip download. Migration `b5d2e8f1c3a7`.
+- **Finding detail**: click a finding for scripts, analysis, evidence, resource context, related findings and
+  implementation guidance (why, when not, effort hours / story points, run-cost change, references).
+- **Reasoning and AI review**: built-in reasoning on every finding; optional AI review by an Azure OpenAI deployment
+  in your own tenant (Settings, off by default; GUIDs masked; Entra ID sign-in or `ARG_AOAI_API_KEY`).
+- **Insights**: Defender for Cloud and Advisor items correlated with ARG findings (no double counting), retirement
+  calendar, resilience posture, fit-for-purpose network access decisions (`sensitive_data_tags`).
+- **Analysis settings** (local portal *Settings* page, Docker *Settings*; `scanner_settings`, migration
+  `a7c41e9d2b58`): optional checks, blocked providers, confidential-data tags, AI review, currency, amortized cost,
+  required VM extensions, landing-zone mapping. `.env` (`AMORTIZED_COST`, `DISPLAY_CURRENCY`,
+  `REQUIRED_VM_EXTENSIONS`) sets the defaults until saved.
+- **Reset findings** (admins) and a sign-in check before a scan runs (no mock data when credentials fail).
+- **Azure DevOps**: `azure-pipelines.yml` with the same checks as the GitHub workflow, including the gitleaks secret
+  scan; guides [prerequisites.md](docs/prerequisites.md) and [azure-devops.md](docs/azure-devops.md). Throw-away
+  script folders (`scratch/`, `tmp/`, `local/`, `*.local.*`) are git- and docker-ignored.
+
 ### Currency dropdown and amortized / actual cost - 2026-10-19
 - **Currency dropdown** in the Docker UI top bar and the local portal: *Billing currency* (the invoice's, at Cost
-  Management's own rate - recorded per subscription by each scan), USD, or any currency with a European Central
+  Management's own rate), USD, or any currency with a European Central
   Bank reference rate. Dashboard, Cost Savings, Findings (including amounts inside titles), local report pages, the
   portal dashboard and the estate page convert; the choice is remembered per browser. `GET /api/v1/dashboard/currency`.
-- **Amortized or actual cost.** Amortized stays the default; switch with Settings → Governance Configuration →
-  Analysis settings (Docker), `--actual-cost` / `AMORTIZED_COST=false` (CLI and local portal) or `amortized_cost` in
+- **Amortized or actual cost.** Amortized stays the default; switch with Settings → Analysis settings (Docker and
+  local portal), `--actual-cost` / `AMORTIZED_COST=false` (CLI and local portal) or `amortized_cost` in
   `--config`. Every Cost Management query without an explicit type follows it; budgets keep actual cost.
-- Analysis settings also hold the default currency and the required VM agent extensions. Migration
-  `f3b8d2a6c710` adds `governance_configs.analysis_settings` and `subscriptions.billing_fx`.
-  Tests: `test_currency_and_cost_basis.py`.
+- The default currency, the cost basis and the required VM agent extensions are analysis settings (see above);
+  the Docker billing rate comes from the estate snapshot. Tests: `test_currency_choice.py`,
+  `test_billing_currency.py`, `test_currency_and_cost_basis.py`.
 
 ### Azure Policy governance - 2026-10-18
 - **Policy scanners** (one shared Resource Graph snapshot per subscription, including assignments and exemptions

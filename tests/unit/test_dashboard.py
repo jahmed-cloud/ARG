@@ -92,6 +92,14 @@ def test_subscription_filter_reaches_every_summary_query():
         assert subscription_id in compiled.params.values(), str(compiled)
 
 
+def test_recorded_cost_trend_sums_amortized_months_of_visible_subscriptions():
+    from backend.services.estate import trend_by_month
+
+    trend = {"a": [{"month": "2026-08", "cost": 81.0, "cost_usd": 100.0}, {"month": "2026-09", "cost_usd": 120.0}],
+             "b": [{"month": "2026-09", "cost_usd": 30.0}, {"month": "2026-10", "cost_usd": None}]}
+    assert trend_by_month(trend) == [("2026-08", 100.0), ("2026-09", 150.0)]
+
+
 def test_history_rejects_invalid_and_reversed_dates():
     with client_for(Transaction()) as client:
         assert client.get('/dashboard/score-history?start_date=garbage').status_code == 422

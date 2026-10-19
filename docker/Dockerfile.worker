@@ -43,6 +43,7 @@ WORKDIR /app
 
 COPY backend/ ./backend/
 COPY scanners/ ./scanners/
+COPY scripts/ ./scripts/
 COPY workers/ ./workers/
 
 RUN mkdir -p /app/beat && chown -R arg:arg /app

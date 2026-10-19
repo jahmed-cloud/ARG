@@ -7,7 +7,7 @@ governance check so both agree on what "dev" and "prod" mean.
 """
 
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 NON_PROD_TOKENS = ("dev", "development", "test", "tst", "stage", "staging", "stg", "uat", "qa",
                    "sandbox", "sbx", "train", "training", "demo", "poc", "nonprod", "preprod", "prep", "systest",
@@ -68,3 +68,16 @@ def env_from_tags(tags: Optional[Dict[str, str]]) -> Optional[str]:
             if any(t in PROD_TOKENS for t in tokens):
                 return "prod"
     return None
+
+
+def env_from_subscription(name: str) -> Optional[str]:
+    """'prod' / 'nonprod' from the subscription's name tokens (e.g. 'sub-prod-app', 'payments-dev')."""
+    return env_from_name(name or "")
+
+
+def environment_of(row: Dict[str, Any], subscription: str = "") -> str:
+    """Tags, then the resource / resource-group name, then the subscription's name (most specific wins)."""
+    env = env_from_tags(row.get("tags")) or env_from_name(row.get("name") or "")
+    if not env:
+        env = env_from_name(row.get("resourceGroup") or "") or env_from_subscription(subscription)
+    return {"prod": "Production", "nonprod": "Non-production"}.get(env or "", "Unknown")

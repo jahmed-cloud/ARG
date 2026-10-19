@@ -11,3 +11,11 @@ export function useCanOperate(): boolean {
   const role = useAppSelector((s) => s.auth.user?.role);
   return !!role && OPERATOR_ROLES.includes(role);
 }
+
+/** ARG administrators (admin, super_admin) - e.g. the Estate page; the API enforces the same (require_admin). */
+export const ADMIN_ROLES = ['super_admin', 'admin'];
+
+export function useIsAdmin(): boolean {
+  const role = useAppSelector((s) => s.auth.user?.role);
+  return !!role && ADMIN_ROLES.includes(role);
+}

@@ -41,6 +41,8 @@ Screenshots use ARG's built-in demo data - no real tenant, subscription or user.
 | Connect Azure subscriptions to the Docker stack | [Connect Azure](docs/connect-azure.md) |
 | Decide who sees which subscription (Entra groups, owners, readers) | [Access control](docs/access-control.md) |
 | Check that Azure Policy works: exemptions, remediation, blind spots, "what governs this resource?" | [Azure Policy governance](docs/azure-policy.md) |
+| Check software, roles, permissions, network endpoints and ports per mode | [Prerequisites](docs/prerequisites.md) |
+| Host the repository and its validation pipeline in Azure DevOps | [Azure DevOps](docs/azure-devops.md) |
 | Build, deploy, back up or upgrade containers | [Docker deployment](docs/docker-deployment.md) |
 | Understand components and data flow | [Architecture](docs/architecture.md) |
 | Review merge decisions and verified behavior | [Merge and validation record](docs/merge-validation.md) |
@@ -53,7 +55,7 @@ The local portal uses your `az login` session and needs no database or Docker. T
 | Question | ARG's Answer |
 |---|---|
 | What resources are costing money unnecessarily? | Cost Optimization Engine with Azure Cost Management integration |
-| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (72 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
+| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (75 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
 | Which resources violate governance standards? | Governance Module with CAF + Zero Trust scoring |
 | Is Azure Policy actually enforcing anything? | Policy scanners: exemptions without expiry, remediation never run, policies that cannot take effect, uncovered resource types |
 | Which Entra ID objects are security risks? | Full Microsoft Graph hygiene analysis |
@@ -120,7 +122,7 @@ The local portal uses your `az login` session and needs no database or Docker. T
 - Cost trend analysis
 - Previous-generation App Service plans (Premium v2 → v3) and CPU-saturated plans
 - Hyperscale databases on the legacy storage meter
-- Azure OpenAI / Foundry spend without an AI gateway, and AI account sprawl
+- Azure OpenAI / Foundry spend without an AI gateway (saving net of the gateway's own cost), and AI account sprawl
 - Storage account sprawl and transaction hotspots
 - Budgets exceeded month after month, and Advisor reservation / savings-plan opportunities
 - Cheaper regions: VMs and Premium App Service plans that list at least 10 % less in another region of the same
@@ -219,6 +221,14 @@ python -m scripts.local_portal                                                  
   (Azure Advisor's user-facing limits, applied to every VM) and cross-checked with Advisor. Filter by any of these, click breakdowns
   to drill down, switch to the Suggestions view, export CSV and share filtered links. [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#5c-estate-inventory-all-subscriptions).
 
+- **Architecture diagrams** (portal and Docker UI **Architecture** page): the tenant (management groups with their
+  Azure Policy assignments, subscriptions with environment, resources and cost) and each subscription (effective
+  policy - what is allowed and what is not, and what in use violates it - VNets and peerings, resource groups and
+  services), drawn with the official Microsoft Azure icons, plus a **Network** layer (hubs and spokes, subnets and
+  what runs in them, private endpoints, PaaS exposure, deallocated / stopped VMs). Zoom, pan, search, click to drill
+  down, export SVG / PNG. The overview pages chart the same inventory (spend, VM power state and CPU, exposure).
+  [docs/subscription-analysis.md §5c](docs/subscription-analysis.md#architecture-diagrams).
+
 - **Portal login** is a simple local username/password that only protects the portal:
   `ARG_PORTAL_USER` (default `admin`) / `ARG_PORTAL_PASSWORD`. If no password is set, a one-time
   password is printed in the terminal at start-up. The portal never signs in to Azure itself.
@@ -252,6 +262,24 @@ currency at the subscription's implied exchange rate. Re-running a subscription 
 that share a display name get `<name>_<first 8 of ID>/` so they never overwrite each other.
 Reports contain resource IDs and principal IDs - `reports/` is git-ignored. Entra ID (Graph) scanners
 are skipped in this mode.
+
+### Estate, architecture and analysis
+- **Estate** (local portal and, for admins, the Docker UI): every resource across all connected subscriptions with
+  filters, usage profiles (vCPU, RAM, CPU / memory 30 d), cost, suggestions, CSV export and a markdown overview;
+  the worker refreshes it after each scan (`ESTATE_REFRESH_AFTER_SCAN`)
+- **Architecture**: network and landing-zone diagrams drawn with Microsoft's Azure icons, and a comparison of the
+  tenant's management groups and policy with the Azure Landing Zones reference (pinned ALZ library)
+- **Analysis** page in the Docker UI: the same 5-part analysis as the local report, written after each scan
+  (`ANALYSIS_REPORT_AFTER_SCAN`), with a backlog CSV for Azure Boards and a zip download
+- **Finding detail**: scripts, gap area, savings wave, critique, evidence, and implementation guidance per finding -
+  why, when not to, effort in hours (story points), run-cost change and Microsoft Learn references
+- **Reasoning**: every finding explains how ARG reached its recommendation; an optional **AI review** (Settings,
+  off by default) asks an Azure OpenAI deployment in your own tenant to challenge it - GUIDs masked, no tag values
+- **Fit-for-purpose network access**: open PaaS endpoints get the cheapest control that fits their use (public
+  access off, trusted services, service endpoint, IP rules) and a private endpoint only for confidential data
+  (`sensitive_data_tags`)
+- Defender for Cloud and Advisor items merged into ARG's own findings (no double counting), Azure retirement
+  calendar and resilience posture; **Settings** page for the optional checks; **Reset findings** for admins
 
 ### ARG vs. Azure FinOps hubs
 

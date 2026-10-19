@@ -23,19 +23,26 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import select, func, and_, or_, update
+from sqlalchemy import delete, select, func, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.api.dependencies.auth import require_analyst
+from backend.api.dependencies.auth import require_admin, require_analyst
 from backend.api.dependencies.database import get_db
-from backend.models.models import Finding, ResourceInventory, FindingStatus, SeverityLevel, Subscription, User
+from backend.api.routes.governance_config import effective_settings
+from backend.models.models import (
+    AuditLog, EstateSnapshot, Finding, FindingStatus, GovernanceConfig, ResourceInventory, SeverityLevel, Subscription,
+    User,
+)
 from backend.services.access import AccessScope, get_access_scope
 from scanners.base.base_scanner import ORPHAN_FINDING_TYPES
+from scripts.subscription_analysis import reasoning
 from scripts.subscription_analysis.ai_prompt import DEFAULT_MAX_FINDINGS, build_prompt
+from scripts.subscription_analysis.guidance import implementation_analysis
+from scripts.subscription_analysis.knowledge import CRITIQUES, DEEP_DIVE_FOLDERS, WAVE_NAMES, classify
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["findings"])
@@ -44,6 +51,7 @@ GATE_SEVERITIES = [s.value for s in SeverityLevel]  # most severe first
 GATE_FIELDS = {"id", "finding_type", "title", "severity", "status", "resource_name", "resource_group",
                "azure_resource_id", "subscription_id", "estimated_monthly_savings_usd"}
 PROMPT_ROW_LIMIT = 5000
+RELATED_FINDINGS_LIMIT = 20
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +78,65 @@ class FindingListItem(BaseModel):
     resolved_at: datetime | None
 
 
+class FindingCritique(BaseModel):
+    key: str
+    title: str
+    likely_rationale: str
+    why_it_falls_short: str
+    alternatives: list[str]
+
+
+class FindingAnalysis(BaseModel):
+    """The local report's classification of a finding (scripts/subscription_analysis/knowledge.py)."""
+    area: str
+    deep_dive: str
+    deep_dive_title: str
+    wave: int
+    wave_name: str
+    critique: FindingCritique | None
+
+
+class FindingResourceContext(BaseModel):
+    sku: dict | None
+    tags: dict
+    environment_tag: str | None
+    owner_tag: str | None
+    azure_created_at: datetime | None
+
+
+class RelatedFinding(BaseModel):
+    id: str
+    finding_type: str
+    title: str
+    severity: str
+    status: str
+
+
+class FindingSubscription(BaseModel):
+    name: str | None
+    subscription_id: str | None  # the Azure subscription GUID (not ARG's internal ID)
+
+
+class FindingImplementation(BaseModel):
+    """scripts/subscription_analysis/guidance.py implementation_analysis(): why, when not, cost, references."""
+    source: str
+    why: str
+    skip_when: str
+    effort: str
+    hours: list[float] | None
+    monthly_usd: float | None
+    run_cost: str
+    saving_usd: float | None
+    net_monthly_usd: float | None
+    cost_included_in_saving: bool
+    one_off_usd: list[float] | None
+    prices_as_of: str
+    references: list[dict]
+    items: list[dict] = []
+    decision: dict | None = None      # open endpoints: the target control (access_need.py)
+    options: list[dict] = []          # every control considered, with its role and remaining exposure
+
+
 class FindingDetail(FindingListItem):
     remediation_steps: str | None
     evidence: dict
@@ -78,6 +145,18 @@ class FindingDetail(FindingListItem):
     cis_control: str | None
     suppression_reason: str | None
     scan_job_id: str | None
+    estimated_annual_savings_usd: float | None = None
+    suppressed_until: datetime | None = None
+    affected_resources: list = []
+    azure_cli_script: str | None = None
+    powershell_script: str | None = None
+    analysis: FindingAnalysis | None = None
+    implementation: FindingImplementation | None = None
+    subscription: FindingSubscription | None = None
+    resource_context: FindingResourceContext | None = None
+    related_findings: list[RelatedFinding] = []
+    reasoning: dict | None = None     # built-in thinking (scripts/subscription_analysis/reasoning.py)
+    ai_review: dict | None = None     # optional Azure OpenAI review (thinking.py), when it ran
 
 
 class FindingStatusUpdate(BaseModel):
@@ -128,6 +207,79 @@ def _serialize(f: Finding) -> dict:
         "cis_control": f.cis_control,
         "suppression_reason": f.suppression_reason,
         "scan_job_id": str(f.scan_job_id) if f.scan_job_id else None,
+    }
+
+
+def _enum_value(value) -> str:
+    return value.value if hasattr(value, "value") else value
+
+
+def finding_analysis(finding_type: str, category: str) -> dict:
+    """Same gap area / deep dive / savings wave / critique the local subscription report gives a finding."""
+    c = classify(finding_type, category)
+    critique = CRITIQUES.get(c.critique) if c.critique else None
+    return {
+        "area": c.area,
+        "deep_dive": c.folder,
+        "deep_dive_title": DEEP_DIVE_FOLDERS.get(c.folder, c.folder),
+        "wave": c.wave,
+        "wave_name": WAVE_NAMES.get(c.wave, f"Wave {c.wave}"),
+        "critique": {"key": c.critique, "title": critique.title, "likely_rationale": critique.likely_rationale,
+                     "why_it_falls_short": critique.why_it_falls_short,
+                     "alternatives": list(critique.alternatives)} if critique else None,
+    }
+
+
+def finding_implementation(f: Finding, hourly_rate_usd: float | None = None) -> dict:
+    """Why it is needed, when it is not, cost of implementation and references - same as the local report."""
+    resource = f.resource
+    return implementation_analysis(
+        {"finding_type": f.finding_type, "description": f.description, "evidence": f.evidence or {},
+         "estimated_monthly_savings_usd": f.estimated_monthly_savings_usd},
+        resource_monthly_usd=getattr(resource, "monthly_cost_usd", None) if resource else None,
+        hourly_rate_usd=hourly_rate_usd)
+
+
+def _serialize_detail(f: Finding, related: list, hourly_rate_usd: float | None = None) -> dict:
+    """Everything the expanded finding row shows: the list fields plus scripts, analysis and resource context."""
+    resource = f.resource
+    subscription = getattr(f, "subscription", None)
+    implementation = finding_implementation(f, hourly_rate_usd)
+    as_dict = {
+        "finding_type": f.finding_type, "title": f.title, "description": f.description, "evidence": f.evidence or {},
+        "remediation_steps": f.remediation_steps, "estimated_monthly_savings_usd": f.estimated_monthly_savings_usd,
+        "resource_id": getattr(resource, "azure_resource_id", None) if resource else None,
+        "resource_name": getattr(resource, "resource_name", None) if resource else None,
+        "resource_type": getattr(resource, "resource_type", None) if resource else None,
+        "resource_group": getattr(resource, "resource_group", None) if resource else None,
+        "location": getattr(resource, "location", None) if resource else None,
+        "subscription_id": getattr(subscription, "subscription_id", None) if subscription else None,
+    }
+    return {
+        **_serialize(f),
+        "estimated_annual_savings_usd": f.estimated_annual_savings_usd,
+        "suppressed_until": f.suppressed_until,
+        "affected_resources": f.affected_resources or [],
+        "azure_cli_script": f.azure_cli_script,
+        "powershell_script": f.powershell_script,
+        "analysis": finding_analysis(f.finding_type, f.category),
+        "implementation": implementation,
+        "reasoning": reasoning.reason(as_dict, [r.title for r in related], implementation),
+        "ai_review": (f.evidence or {}).get("ai_review"),
+        "subscription": {"name": getattr(subscription, "display_name", None),
+                         "subscription_id": getattr(subscription, "subscription_id", None)} if subscription else None,
+        "resource_context": {
+            "sku": resource.sku if isinstance(resource.sku, dict) else None,
+            "tags": resource.tags or {},
+            "environment_tag": resource.environment_tag,
+            "owner_tag": resource.owner_tag,
+            "azure_created_at": resource.azure_created_at,
+        } if resource else None,
+        "related_findings": [
+            {"id": str(r.id), "finding_type": r.finding_type, "title": r.title,
+             "severity": _enum_value(r.severity), "status": _enum_value(r.status)}
+            for r in related
+        ],
     }
 
 
@@ -370,6 +522,38 @@ async def findings_ai_prompt(
     return PlainTextResponse(text, media_type="text/markdown; charset=utf-8")
 
 
+class FindingResetRequest(BaseModel):
+    confirm: str  # must be exactly "RESET"
+
+
+@router.post("/reset", response_model=dict)
+async def reset_findings(
+    body: FindingResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> dict:
+    """
+    Delete every finding (their recommendations and remediation tasks go with them) and the estate snapshots built
+    from them, so the next scan regenerates everything with the current scanners and settings. Admins only, needs
+    {"confirm": "RESET"}, written to the audit log. Subscriptions, tenants, inventory and settings are kept.
+    """
+    if body.confirm != "RESET":
+        raise HTTPException(status_code=400, detail='Send {"confirm": "RESET"} to delete all findings')
+    findings_deleted = (await db.execute(delete(Finding))).rowcount or 0
+    snapshots_deleted = (await db.execute(
+        delete(EstateSnapshot).where(EstateSnapshot.status != "running"))).rowcount or 0
+    await db.execute(update(ResourceInventory).values(is_orphaned=False))
+    db.add(AuditLog(user_id=admin.id, action="findings.reset", resource_type="finding",
+                    description=f"Deleted {findings_deleted} findings and {snapshots_deleted} estate snapshots",
+                    ip_address=request.client.host if request.client else None,
+                    user_agent=request.headers.get("user-agent", "")[:512], outcome="success"))
+    await db.commit()
+    logger.warning("User %s reset findings: %d findings, %d estate snapshots deleted", admin.id, findings_deleted,
+                   snapshots_deleted)
+    return {"findings_deleted": findings_deleted, "estate_snapshots_deleted": snapshots_deleted}
+
+
 @router.get("/{finding_id}", response_model=FindingDetail)
 async def get_finding(
     finding_id: UUID,
@@ -377,13 +561,26 @@ async def get_finding(
     scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     result = await db.execute(
-        select(Finding).options(selectinload(Finding.resource)).where(Finding.id == finding_id)
+        select(Finding).options(selectinload(Finding.resource), selectinload(Finding.subscription))
+        .where(Finding.id == finding_id)
     )
     finding = result.scalar_one_or_none()
     if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
     scope.require_finding(finding)  # also hides tenant-wide (identity) findings below contributor
-    return _serialize(finding)
+    related: list = []
+    if finding.resource_id:
+        related = (await db.execute(
+            select(Finding)
+            .where(Finding.resource_id == finding.resource_id, Finding.id != finding.id, scope.findings())
+            .order_by(Finding.severity, Finding.title)
+            .limit(RELATED_FINDINGS_LIMIT)
+        )).scalars().all()
+    saved = (await db.execute(
+        select(GovernanceConfig.scanner_settings).where(GovernanceConfig.tenant_id.is_(None)).limit(1)
+    )).scalar_one_or_none()
+    rate = effective_settings(saved).get("engineering_hourly_rate_usd")
+    return _serialize_detail(finding, related, rate)
 
 
 @router.patch("/{finding_id}/status", response_model=dict)

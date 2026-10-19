@@ -206,6 +206,14 @@ class Settings(BaseSettings):
     FEATURE_AUTO_REMEDIATION: bool = False  # Disabled by default — safety first
     FEATURE_SCHEDULED_SCANS: bool = True
     FEATURE_WEBHOOKS: bool = True
+    # Refresh the admin Estate inventory (Resource Graph, usage metrics, cost; about 5 minutes) after every
+    # completed scan. The Estate page's "Refresh inventory" button works either way.
+    ESTATE_REFRESH_AFTER_SCAN: bool = True
+    # Write the 5-part subscription analysis (README, current findings, gap analysis, cost drivers, critique,
+    # deep dives) after each subscription of a scan - the Analysis page. Adds the cost / inventory collection
+    # (about 1-3 minutes per subscription); the scanners are not run twice.
+    ANALYSIS_REPORT_AFTER_SCAN: bool = True
+    ANALYSIS_REPORTS_KEEP: int = 5   # newest reports kept per subscription
 
     # -------------------------------------------------------------------------
     # Webhooks (notifications)

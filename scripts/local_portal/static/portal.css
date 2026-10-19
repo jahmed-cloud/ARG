@@ -41,7 +41,7 @@ button.primary { background: var(--primary); color: #fff; border-color: var(--pr
 button.primary:hover { background: var(--primary-dark); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.link { background: none; border: none; color: #fff; padding: 0; text-decoration: underline; }
-input[type=search], input[type=password], input:not([type]) { font: inherit; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+input[type=search], input[type=password], input[type=number], input:not([type]), select, textarea { font: inherit; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
 .login form { display: grid; gap: 12px; }
 .login label { display: grid; gap: 4px; }
 
@@ -205,3 +205,41 @@ main.with-sidebar > * { min-width: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+/* Architecture page */
+.arch-toolbar { flex-wrap: wrap; gap: 8px; }
+.arch-toolbar select { max-width: 360px; }
+.arch-toolbar input[type=search] { flex: 1 1 220px; min-width: 200px; }
+.arch-buttons { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.arch-buttons button { min-height: 34px; padding: 4px 12px; }
+.arch-stage { position: relative; height: calc(100vh - 260px); min-height: 420px; overflow: hidden; background: #fff;
+              border: 1px solid var(--border); border-radius: 8px; cursor: grab; touch-action: none; }
+.arch-stage.dragging { cursor: grabbing; }
+.arch-svg { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.arch-svg svg { display: block; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.arch-views { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.arch-views a { padding: 6px 12px; text-decoration: none; color: inherit; font-size: 13px; }
+.arch-views a[aria-current="page"] { background: var(--primary); color: #fff; font-weight: 600; }
+
+/* Settings page */
+.settings-form .setting { margin-bottom: 16px; max-width: 760px; }
+.settings-form .setting > label { display: block; margin-bottom: 4px; }
+.settings-form .setting label.check { display: flex; align-items: center; gap: 8px; }
+.settings-form textarea, .settings-form input[type=number] { display: block; width: 100%; max-width: 420px; }
+.settings-form textarea { font-family: Consolas, monospace; font-size: 13px; }
+.settings-form .setting p { margin: 4px 0 0; }
+.notice { border-left: 3px solid var(--primary); padding: 8px 12px; background: rgba(15, 108, 189, 0.06); }
+
+/* Estate telemetry (dashboard) */
+.tele-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 8px 0 14px; }
+.tele-kpi { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); }
+.tele-kpi strong { display: block; font-size: 20px; }
+.tele-kpi span { font-size: 12px; color: var(--muted); }
+.tele-kpi.bad strong, .tele-bad { color: var(--crit); }
+.tele-kpi.warn strong { color: var(--warn); }
+.tele-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 12px; }
+.tele-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--card); }
+.tele-card h3 { margin: 0 0 8px; font-size: 14px; }
+.tele-chart { display: block; max-width: 520px; }
+.tele-chart text { fill: var(--text); font-family: inherit; }
+@media (max-width: 640px) { .tele-grid { grid-template-columns: 1fr; } }

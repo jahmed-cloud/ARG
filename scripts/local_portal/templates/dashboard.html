@@ -18,6 +18,17 @@
   <div class="overview-item"><span class="muted small">Enabled subscriptions</span><strong>{{ subscriptions|selectattr('state', 'equalto', 'Enabled')|list|length }}</strong><span class="small">Available to analyze</span></div>
   <div class="overview-item"><span class="muted small">Saved analyses</span><strong>{{ summaries|length }}</strong><span class="small">Latest report per subscription</span></div>
 </section>
+{% if telemetry %}
+<section class="card tele" aria-labelledby="tele-title">
+  <div class="toolbar">
+    <h2 id="tele-title">Estate telemetry</h2>
+    <span class="muted small">From the estate inventory -
+      <a href="/estate">Estate</a> · <a href="/architecture?view=network">Network topology</a> ·
+      <a href="/architecture">Architecture</a></span>
+  </div>
+  {{ telemetry|safe }}
+</section>
+{% endif %}
 <section class="card azure {% if azure.signed_in %}ok{% else %}warn{% endif %}" id="azure-status">
   <div>
     <h2>Azure CLI session</h2>
@@ -65,8 +76,8 @@
         </td>
         <td>{{ s.state }}</td>
         <td>{{ (summary.generated_at or '')[:16]|replace('T', ' ') if summary else '-' }}</td>
-        <td>{% if summary %}<span class="sev critical">{{ summary.findings_by_severity.critical }}</span> /
-            <span class="sev high">{{ summary.findings_by_severity.high }}</span>{% else %}-{% endif %}</td>
+        <td>{% if summary %}{% set sev = summary.findings_by_severity %}<span class="sev critical{% if not sev.critical %} zero{% endif %}">{{ sev.critical }}</span> /
+            <span class="sev high{% if not sev.high %} zero{% endif %}">{{ sev.high }}</span>{% else %}-{% endif %}</td>
         <td class="num">{% if summary %}{{ money(summary.cost_30d or 0, summary.currency, summary.per_usd) }}{% else %}-{% endif %}</td>
         <td class="num">{% if summary and summary.savings_billing.wave_1 is not none %}{{ money((summary.savings_billing.wave_1 or 0) + (summary.savings_billing.wave_2 or 0), summary.currency, summary.per_usd) }}{% else %}-{% endif %}</td>
         <td class="actions">

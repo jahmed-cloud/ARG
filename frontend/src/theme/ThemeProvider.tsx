@@ -13,8 +13,8 @@ import React, { createContext, useContext, useMemo, useState } from 'react';
 import { ThemeProvider, createTheme, alpha } from '@mui/material/styles';
 import type { PaletteMode } from '@mui/material';
 
-// Brand palette
-const BRAND = {
+// Brand palette (exported for components that draw their own accents)
+export const BRAND = {
   navy:       '#101b17',   // Deepest background
   midnight:   '#111e19',   // App background (dark)
   slate:      '#192820',   // Card background (dark)
@@ -28,6 +28,25 @@ const BRAND = {
   critical:   '#D32F2F',   // Critical findings
   textPrimary: '#ebece3',
   textSecondary: '#a3b5ad',
+  teal:       '#365b47',   // Buttons (accent background with white text)
+  tealDark:   '#284d3c',   // Button hover
+  brandNavy:  '#23372f',   // Headings on light surfaces
+  petrol:     '#3b6150',   // Avatars, light-mode accents
+};
+
+// Severity colours on dark surfaces
+export const SEVERITY_COLORS: Record<string, string> = {
+  critical: '#F44336',
+  high: '#FF9800',
+  medium: '#FFC107',
+  low: '#2196F3',
+  info: '#9E9E9E',
+};
+
+// Neutral and status colours shared by data views
+export const PALETTE = {
+  grey: '#9E9E9E',
+  orange: '#FF9800',
 };
 
 interface ColorModeContext {

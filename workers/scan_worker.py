@@ -13,13 +13,14 @@ Design:
 
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import List
 
 from celery import Celery
 from celery.schedules import crontab
-from sqlalchemy import create_engine, select, update
+from sqlalchemy import create_engine, or_, select, update, delete
 from sqlalchemy.orm import sessionmaker, Session
 
 from backend.core.config import settings
@@ -76,6 +77,7 @@ celery_app.conf.update(
     task_routes={
         "workers.scan_worker.run_scan_job": {"queue": "scans"},
         "workers.scan_worker.run_single_scanner": {"queue": "scanners"},
+        "workers.scan_worker.refresh_estate": {"queue": "scans"},
         "workers.report_worker.generate_report": {"queue": "reports"},
     },
 )
@@ -124,6 +126,10 @@ _sync_engine = create_engine(
     pool_size=5,
     max_overflow=10,
     pool_pre_ping=True,
+    pool_recycle=1800,
+    # a container network hiccup must not leave a commit waiting forever on a dead socket
+    connect_args={"connect_timeout": 10, "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10,
+                  "keepalives_count": 3, "options": "-c statement_timeout=300000"},
 )
 SyncSessionLocal = sessionmaker(bind=_sync_engine, autocommit=False, autoflush=False)
 
@@ -218,7 +224,7 @@ def run_scan_job(
         total_resources = 0
         findings_by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         job_warnings: list[str] = []
-        analysis = _analysis_settings(db)   # amortized_cost, required_vm_extensions, ... (Settings)
+        unscanned: list[str] = []
 
         for sub in subs:
             logger.info(f"Scanning subscription: {sub.subscription_id}")
@@ -229,14 +235,25 @@ def run_scan_job(
                 logger.error(f"Tenant not found for subscription {sub.subscription_id}")
                 continue
 
-            # Build scan context with Azure clients
-            context = _build_scan_context(
-                subscription_id=sub.subscription_id,
-                tenant=tenant,
-                job_id=job_id,
-            )
+            # Build scan context with Azure clients and prove the sign-in works before any scanner runs: without
+            # clients every scanner would fall back to its mock data (fake findings), and without a token each one
+            # would wait for its own sign-in timeout (~45 s x every scanner) and change nothing.
+            try:
+                context = _build_scan_context(
+                    subscription_id=sub.subscription_id,
+                    tenant=tenant,
+                    job_id=job_id,
+                )
+                _check_sign_in(context)
+            except Exception as exc:
+                message = f"{sub.display_name or sub.subscription_id}: not scanned - {exc}"
+                logger.error(message)
+                job_warnings.append(message)
+                unscanned.append(message)
+                continue
+            context.subscription_name = sub.display_name or ""
             from scanners.base.azure_api import cost_basis_from
-            context.cost_basis = cost_basis_from(analysis)   # amortized unless the setting is off
+            context.cost_basis = cost_basis_from(_analysis_config(db))   # setting amortized_cost (default on)
 
             # Attach imported Terraform state, if any, so TerraformDriftScanner
             # has something to diff against. Without this the scanner always
@@ -263,6 +280,9 @@ def run_scan_job(
             # client wasn't broken, the loop it was bound to had already
             # been torn down by the time the next scanner tried to use it.
             async def _run_all_scanners_for_subscription():
+                # Outputs are persisted after every scanner ran, so Defender / Advisor items that a native finding
+                # already covers are merged first (scripts/subscription_analysis/correlate.py).
+                completed: list = []
                 for scanner_class in scanner_classes:
                     scanner_name = scanner_class.scanner_name
                     scan_result = ScanResult(
@@ -281,14 +301,16 @@ def run_scan_job(
                         # admin-configured tags/patterns, not hardcoded defaults.
                         from backend.models.models import GovernanceConfig
                         from backend.api.routes.governance_config import (
-                            DEFAULT_REQUIRED_TAGS, DEFAULT_NAMING_PATTERNS
+                            DEFAULT_REQUIRED_TAGS, DEFAULT_NAMING_PATTERNS, effective_settings
                         )
                         gov_cfg_row = db.execute(
                             select(GovernanceConfig).where(
                                 GovernanceConfig.tenant_id.is_(None)
                             ).limit(1)
                         ).scalar_one_or_none()
-                        scanner_extra_config = {}
+                        # Analysis settings (optional checks, blocked providers, ...) - Settings → Governance
+                        scanner_extra_config = effective_settings(
+                            getattr(gov_cfg_row, "scanner_settings", None) if gov_cfg_row else None)
                         if gov_cfg_row:
                             if gov_cfg_row.required_tags:
                                 scanner_extra_config["required_tags"] = gov_cfg_row.required_tags
@@ -297,15 +319,10 @@ def run_scan_job(
                         else:
                             scanner_extra_config["required_tags"] = DEFAULT_REQUIRED_TAGS
                             scanner_extra_config["naming_patterns"] = DEFAULT_NAMING_PATTERNS
-                        scanner_extra_config["required_vm_extensions"] = analysis["required_vm_extensions"]
-                        scanner_extra_config["include_arc_machines"] = analysis["include_arc_machines"]
 
                         scanner_instance = scanner_class(config=scanner_extra_config)
                         output = await scanner_instance.execute(context)
-
-                        # Persist findings
-                        for finding_data in output.findings:
-                            _persist_finding(db, finding_data, sub, job_id)
+                        completed.append((scanner_instance, output))
 
                         # The terraform scanner computes managed/unmanaged/missing
                         # counts in its metadata, but nothing previously read it —
@@ -381,8 +398,14 @@ def run_scan_job(
                         )
                         db.commit()
 
+                _persist_correlated(db, completed, sub, job_id)
+                if settings.ANALYSIS_REPORT_AFTER_SCAN and completed:
+                    await _write_analysis_report(db, context, sub, job_id, completed)
+
             asyncio.run(_run_all_scanners_for_subscription())
-            _record_billing_fx(db, sub, context)
+
+        if len(unscanned) == len(subs):
+            raise RuntimeError("No subscription could be scanned: " + "; ".join(unscanned)[:900])
 
         # Finalize scan job — but never overwrite a job the user already
         # cancelled. Without this guard, a cancel request whose Celery
@@ -412,6 +435,8 @@ def run_scan_job(
 
         if result.rowcount == 0:
             logger.info(f"Scan job {job_id} finished but was already cancelled — not overwriting status.")
+        elif settings.ESTATE_REFRESH_AFTER_SCAN:
+            queue_estate_refresh(db, f"scan:{job_id}")
 
         if job_warnings:
             logger.warning(
@@ -444,42 +469,83 @@ def run_scan_job(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Analysis report (the 5-part subscription analysis, as the local tool writes it)
 # ---------------------------------------------------------------------------
 
-def _analysis_settings(db: Session) -> dict:
-    """The admin's analysis settings over the built-in / .env defaults (governance_config.analysis_defaults)."""
-    from backend.api.routes.governance_config import effective_analysis_settings
+def _analysis_config(db: Session) -> dict:
+    """Scanner / report settings as the scanners get them: analysis settings + required tags + naming patterns."""
+    from backend.api.routes.governance_config import DEFAULT_NAMING_PATTERNS, DEFAULT_REQUIRED_TAGS, effective_settings
     from backend.models.models import GovernanceConfig
 
+    row = db.execute(select(GovernanceConfig).where(GovernanceConfig.tenant_id.is_(None)).limit(1)).scalar_one_or_none()
+    config = effective_settings(getattr(row, "scanner_settings", None) if row else None)
+    config["required_tags"] = (row.required_tags if row and row.required_tags else DEFAULT_REQUIRED_TAGS)
+    config["naming_patterns"] = (row.naming_patterns if row and row.naming_patterns else DEFAULT_NAMING_PATTERNS)
+    return config
+
+
+async def _write_analysis_report(db: Session, context: any, sub: any, job_id: str, completed: list) -> None:
+    """Build and store the analysis report of one subscription; copy AI reviews onto its findings.
+    Never raises: the scan's findings are already stored, and a failed report is recorded as such."""
+    from backend.models.models import AnalysisReport
+    from scripts.subscription_analysis.cloud_report import build_from_scan
+
+    result: dict = {}
     try:
-        row = db.execute(
-            select(GovernanceConfig).where(GovernanceConfig.tenant_id.is_(None)).limit(1)
-        ).scalar_one_or_none()
-    except Exception as exc:  # column missing before the migration ran: defaults
-        logger.warning("Analysis settings unavailable, using defaults: %s", exc)
+        previous = db.execute(
+            select(AnalysisReport).where(AnalysisReport.subscription_id == sub.id,
+                                         AnalysisReport.status == "completed")
+            .order_by(AnalysisReport.generated_at.desc()).limit(1)).scalar_one_or_none()
+        history = (previous.files or {}).get("history.json") if previous else None
+        subscription = {"id": (sub.subscription_id or "").lower(), "name": sub.display_name or sub.subscription_id,
+                        "tenant_id": getattr(context, "tenant_id", "")}
+        result = await build_from_scan(context, subscription, completed, _analysis_config(db),
+                                       getattr(context, "credential", None), history=history)
+        row = AnalysisReport(subscription_id=sub.id, scan_job_id=job_id, status="completed",
+                             findings_count=result["findings"], summary=result["summary"],
+                             thinking=result["thinking"], files=result["files"])
+    except Exception as exc:
         db.rollback()
-        row = None
-    return effective_analysis_settings(getattr(row, "analysis_settings", None) if row else None)
-
-
-def _record_billing_fx(db: Session, sub: any, context: any) -> None:
-    """Store the subscription's billing currency and Cost Management's own rate (billing cost / USD cost of the
-    per-resource costs the scanners fetched) for the Currency dropdown. Nothing when no cost data was read."""
-    from backend.models.models import Subscription
-    from scripts.subscription_analysis.currency import exchange_rate
-
-    costs = [v for k, v in (getattr(context, "cache", None) or {}).items() if str(k).startswith("resource_costs:")]
-    fx = exchange_rate(costs)
-    if not fx:
-        return
+        logger.error(f"Analysis report for {sub.subscription_id} failed: {exc}", exc_info=True)
+        row = AnalysisReport(subscription_id=sub.id, scan_job_id=job_id, status="failed",
+                             error_message=str(exc)[:1000])
     try:
-        db.execute(update(Subscription).where(Subscription.id == sub.id).values(billing_fx=fx))
+        db.add(row)
+        db.commit()
+        _apply_ai_reviews(db, sub, result.get("ai_reviews") or [])
+        keep = db.execute(select(AnalysisReport.id).where(AnalysisReport.subscription_id == sub.id)
+                          .order_by(AnalysisReport.generated_at.desc())
+                          .limit(settings.ANALYSIS_REPORTS_KEEP)).scalars().all()
+        db.execute(delete(AnalysisReport).where(AnalysisReport.subscription_id == sub.id,
+                                                AnalysisReport.id.notin_(keep)))
         db.commit()
     except Exception as exc:
-        logger.warning("Could not record the billing rate for %s: %s", sub.subscription_id, exc)
         db.rollback()
+        logger.error(f"Could not store the analysis report for {sub.subscription_id}: {exc}")
 
+
+def _apply_ai_reviews(db: Session, sub: any, reviews: list) -> None:
+    """The AI review of a finding goes into its evidence, so the finding detail shows it next to the reasoning."""
+    if not reviews:
+        return
+    from backend.models.models import Finding, FindingStatus, ResourceInventory
+
+    wanted = {(r["finding_type"], (r.get("resource_id") or "").lower()): r["ai_review"] for r in reviews}
+    rows = db.execute(
+        select(Finding, ResourceInventory.azure_resource_id)
+        .join(ResourceInventory, Finding.resource_id == ResourceInventory.id, isouter=True)
+        .where(Finding.subscription_id == sub.id, Finding.status == FindingStatus.OPEN,
+               Finding.finding_type.in_({t for t, _ in wanted}))).all()
+    for finding, azure_id in rows:
+        review = wanted.get((finding.finding_type, (azure_id or "").lower()))
+        if review:
+            finding.evidence = {**(finding.evidence or {}), "ai_review": review}
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _build_scan_context(subscription_id: str, tenant: any, job_id: str) -> any:
     """
@@ -489,58 +555,71 @@ def _build_scan_context(subscription_id: str, tenant: any, job_id: str) -> any:
     from scanners.base.base_scanner import ScanContext
     from backend.utils.encryption import decrypt
 
+    # No fallback: a context without clients makes every scanner return its mock data, which would be stored as
+    # real findings. A failure here fails this subscription (the caller records why).
     try:
-        # Decrypt the stored client secret
         client_secret = decrypt(tenant.client_secret_encrypted)
+    except Exception as exc:
+        raise RuntimeError(f"the tenant's client secret cannot be decrypted ({exc.__class__.__name__}) - "
+                           f"was ENCRYPTION_KEY changed? Re-enter the secret under Settings > Tenants.") from exc
 
-        from azure.identity import ClientSecretCredential
-        credential = ClientSecretCredential(
-            tenant_id=tenant.tenant_id,
-            client_id=tenant.client_id,
-            client_secret=client_secret,
-        )
+    from azure.identity import ClientSecretCredential
+    credential = ClientSecretCredential(
+        tenant_id=tenant.tenant_id,
+        client_id=tenant.client_id,
+        client_secret=client_secret,
+    )
 
-        from azure.mgmt.resourcegraph import ResourceGraphClient
-        resource_graph_client = ResourceGraphClient(credential)
+    from scanners.base.azure_api import resource_graph_client as make_graph_client
+    resource_graph_client = make_graph_client(credential)
 
-        context = ScanContext(
-            subscription_id=subscription_id,
-            tenant_id=tenant.tenant_id,
-            scan_job_id=job_id,
-            resource_graph_client=resource_graph_client,
-        )
+    context = ScanContext(
+        subscription_id=subscription_id,
+        tenant_id=tenant.tenant_id,
+        scan_job_id=job_id,
+        resource_graph_client=resource_graph_client,
+    )
+    context.credential = credential   # the analysis report's optional AI review signs in with it
 
-        # Add Cost Management client if available
-        try:
-            from azure.mgmt.costmanagement import CostManagementClient
-            context.cost_management_client = CostManagementClient(credential)
-        except Exception:
-            logger.warning("Cost Management client not available")
+    # Add Cost Management client if available
+    try:
+        from azure.mgmt.costmanagement import CostManagementClient
+        context.cost_management_client = CostManagementClient(credential)
+    except Exception:
+        logger.warning("Cost Management client not available")
 
-        # ARM REST client for posture scanners (metrics, diagnostic settings,
-        # firewall rules, site config, Cost Management query, budgets).
-        from scanners.base.azure_api import ArmClient
-        context.arm_client = ArmClient(credential)
+    # ARM REST client for posture scanners (metrics, diagnostic settings,
+    # firewall rules, site config, Cost Management query, budgets).
+    from scanners.base.azure_api import ArmClient
+    context.arm_client = ArmClient(credential)
 
-        # Add Graph client if available
-        try:
-            if tenant.graph_permissions_granted:
-                from msgraph import GraphServiceClient
-                context.graph_client = GraphServiceClient(credential)
-        except Exception:
-            logger.warning("Graph client not available")
+    # Add Graph client if available
+    try:
+        if tenant.graph_permissions_granted:
+            from msgraph import GraphServiceClient
+            context.graph_client = GraphServiceClient(credential)
+    except Exception:
+        logger.warning("Graph client not available")
 
-        return context
+    return context
 
-    except Exception as e:
-        logger.error(f"Failed to build scan context: {e}")
-        # Return context without clients — scanners will return mock/empty data
-        from scanners.base.base_scanner import ScanContext
-        return ScanContext(
-            subscription_id=subscription_id,
-            tenant_id=tenant.tenant_id,
-            scan_job_id=job_id,
-        )
+
+SIGN_IN_TIMEOUT_SECONDS = 60
+
+
+def _check_sign_in(context: any) -> None:
+    """One ARM token before any scanner runs; raises with the reason (DNS / network / secret) when it fails."""
+    from scanners.base.azure_api import ARM_SCOPE, call_with_timeout
+
+    try:
+        call_with_timeout(context.credential.get_token, SIGN_IN_TIMEOUT_SECONDS, ARM_SCOPE)
+    except Exception as exc:
+        reason = (str(exc).strip().splitlines() or [exc.__class__.__name__])[-1][:240]
+        hint = ("the worker cannot resolve or reach login.microsoftonline.com - check the container DNS / network "
+                "(local-run.md, Podman DNS)" if re.search(r"resolve|name resolution|getaddrinfo|timed? ?out|"
+                                                          r"connect", reason, re.IGNORECASE)
+                else "check the tenant's client ID and secret (Settings > Tenants)")
+        raise RuntimeError(f"cannot sign in to Microsoft Entra ID: {reason}. {hint}.") from exc
 
 
 # Finding types that represent a genuinely orphaned/unused resource —
@@ -623,7 +702,11 @@ def _persist_finding(db: Session, finding_data: any, subscription: any, scan_job
         # Update existing finding
         existing.last_detected_at = datetime.now(timezone.utc)
         existing.scan_job_id = scan_job_id
+        existing.title = finding_data.title
         existing.description = finding_data.description
+        existing.severity = finding_data.severity.value
+        # Evidence carries what the detail view explains (Defender's own text, cost of the change) - keep it current.
+        existing.evidence = finding_data.evidence
         existing.estimated_monthly_savings_usd = finding_data.estimated_monthly_savings_usd
         if finding_data.estimated_monthly_savings_usd:
             existing.estimated_annual_savings_usd = finding_data.estimated_monthly_savings_usd * 12
@@ -670,6 +753,115 @@ def _persist_finding(db: Session, finding_data: any, subscription: any, scan_job
     )
     db.add(finding)
     db.commit()
+
+
+def _persist_correlated(db: Session, completed: list, subscription: any, scan_job_id: str) -> None:
+    """
+    Persist every scanner's findings for one subscription after merging Defender / Advisor items that a native
+    finding already covers, then close what each scanner no longer reports. A Defender finding dropped as a
+    duplicate is suppressed with that reason instead of resolved.
+    """
+    from scripts.subscription_analysis.correlate import _scope, correlate
+
+    everything = [f for _, output in completed for f in output.findings]
+    kept, stats = correlate(everything)
+    kept_ids = {id(f) for f in kept}
+    duplicates = {_scope(f) for f in everything if id(f) not in kept_ids}
+    for scanner, output in completed:
+        for finding_data in output.findings:
+            if id(finding_data) in kept_ids:
+                _persist_finding(db, finding_data, subscription, scan_job_id)
+        # Findings this scanner no longer reports (fixed, filtered out, merged, or check switched off)
+        _retire_undetected_findings(db, scanner, output, subscription, scan_job_id, duplicate_scopes=duplicates)
+    if any(stats.values()):
+        logger.info("Correlation for %s: %s", subscription.subscription_id, stats)
+
+
+def _retire_undetected_findings(db: Session, scanner: any, output: any, subscription: any, scan_job_id: str,
+                                duplicate_scopes: set = frozenset()) -> int:
+    """
+    Close open findings of the scanner's finding types (declared, or read from its source) that this run no longer
+    reported.
+
+    Only after a clean run (no warnings) - a scanner that could not read its data must not close anything. A finding
+    that went away because of a setting (the check switched off,
+    or a Defender plan recommendation now excluded) is suppressed with that reason; anything else is resolved.
+    """
+    from backend.models.models import Finding, FindingStatus
+
+    emitted = getattr(scanner, "emitted_finding_types", None)
+    types = emitted() if emitted else getattr(scanner, "finding_types", None)
+    if not types or output.warnings:
+        return 0
+    disabled = (output.metadata or {}).get("disabled_by_setting")
+    reason_for = getattr(scanner, "suppression_reason_for", None)
+    stale = db.execute(select(Finding).where(
+        Finding.subscription_id == subscription.id,
+        Finding.finding_type.in_(sorted(types)),
+        Finding.status.in_([FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED]),
+        or_(Finding.scan_job_id.is_(None), Finding.scan_job_id != scan_job_id),
+    )).scalars().all()
+    now = datetime.now(timezone.utc)
+    for f in stale:
+        resource_id = (getattr(getattr(f, "resource", None), "azure_resource_id", None) or "").lower()
+        if "/providers/microsoft.security/" in resource_id and "/resourcegroups/" not in resource_id:
+            resource_id = resource_id.split("/providers/")[0]   # Defender's subscription-level entities
+        reason = (f"Check switched off in Settings ({disabled})" if disabled
+                  else reason_for(f.evidence or {}) if reason_for else None)
+        if not reason and resource_id and resource_id in duplicate_scopes:
+            reason = "Covered by ARG's own finding on this resource (see 'also reported by' there)"
+        if reason:
+            f.status = FindingStatus.SUPPRESSED
+            f.suppression_reason = reason
+        else:
+            f.status = FindingStatus.RESOLVED
+            f.resolved_at = now
+    if stale:
+        db.commit()
+        logger.info("%s: closed %d finding(s) no longer reported", scanner.scanner_name, len(stale))
+    return len(stale)
+
+
+# ---------------------------------------------------------------------------
+# Estate inventory (admin Estate page) - backend/services/estate.py
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    name="workers.scan_worker.refresh_estate",
+    soft_time_limit=3000,
+    time_limit=3060,
+)
+def refresh_estate(snapshot_id: str):
+    """Resource Graph inventory, usage metrics and cost of every active subscription, joined with the findings."""
+    from backend.services.estate import run_refresh
+
+    db = get_sync_db()
+    try:
+        run_refresh(db, snapshot_id)
+    finally:
+        db.close()
+
+
+def queue_estate_refresh(db: Session, triggered_by: str) -> None:
+    """Start an estate refresh unless one is running. Never fails the caller (a finished scan)."""
+    try:
+        from backend.models.models import EstateSnapshot
+        from backend.services.estate import FAILED, claim_refresh
+
+        snapshot = claim_refresh(db, triggered_by)
+        if snapshot is None:
+            logger.info(f"Estate refresh after {triggered_by} skipped: one is already running")
+            return
+        try:
+            refresh_estate.delay(snapshot_id=snapshot.id)
+        except Exception as exc:
+            db.execute(update(EstateSnapshot).where(EstateSnapshot.id == snapshot.id).values(
+                status=FAILED, completed_at=datetime.now(timezone.utc), error_message=f"Could not queue: {exc}"))
+            db.commit()
+            raise
+        logger.info(f"Estate refresh {snapshot.id} queued after {triggered_by}")
+    except Exception as exc:
+        logger.warning(f"Could not start the estate refresh after {triggered_by}: {exc}")
 
 
 @celery_app.task(name="workers.scan_worker.run_scheduled_full_scan")
@@ -763,8 +955,36 @@ def cleanup_old_results():
         db.commit()
         if stale_result.rowcount:
             logger.warning(f"Recovered {stale_result.rowcount} stale PENDING scan job(s)")
+
+        # RUNNING jobs whose worker died (container restart / rebuild, out of memory) stayed "running" forever.
+        # Every scanner writes a ScanResult row when it starts; no new row for an hour (well past one scanner's
+        # timeout) means nothing is working on the job any more.
+        orphaned = recover_orphaned_running_jobs(db, datetime.now(timezone.utc) - timedelta(
+            seconds=max(3600, settings.SCANNER_TIMEOUT_SECONDS * 3)))
+        if orphaned:
+            logger.warning(f"Recovered {orphaned} orphaned RUNNING scan job(s)")
     finally:
         db.close()
+
+
+def recover_orphaned_running_jobs(db: Session, cutoff: datetime) -> int:
+    """Fail RUNNING jobs with no scanner started since `cutoff`; returns how many."""
+    from sqlalchemy import func
+    from backend.models.models import ScanJob, ScanResult, ScanStatus
+
+    last_progress = (select(func.max(ScanResult.started_at)).where(ScanResult.scan_job_id == ScanJob.id)
+                     .scalar_subquery())
+    result = db.execute(
+        update(ScanJob)
+        .where(ScanJob.status == ScanStatus.RUNNING,
+               func.coalesce(last_progress, ScanJob.started_at, ScanJob.created_at) < cutoff)
+        .values(status=ScanStatus.FAILED, completed_at=datetime.now(timezone.utc),
+                error_message="The worker stopped while this scan was running (restart, rebuild or crash) - no "
+                              "scanner made progress for an hour. Start the scan again.")
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return result.rowcount
 
 
 @celery_app.task(name="workers.scan_worker.snapshot_scores")

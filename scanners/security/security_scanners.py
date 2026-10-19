@@ -176,15 +176,19 @@ class PublicSQLServerScanner(BaseScanner):
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
+        from scanners.base import access_need
+
         findings = []
         for sql in resources:
+            fix = await access_need.assess(self, context, "sql", sql)
+            decision = fix["decision"]
             findings.append(self.make_finding(
                 finding_type="public_sql_server",
-                title=f"Public SQL server: {sql['name']}",
+                title=f"Public SQL server: {sql['name']} - {decision['title'].lower()}",
                 description=(
-                    f"SQL Server '{sql['name']}' has public network access enabled. "
-                    f"FQDN: {sql.get('fqdn', 'Unknown')}. This server is internet-reachable "
-                    f"subject only to firewall rules."
+                    f"SQL Server '{sql['name']}' has public network access enabled (FQDN: "
+                    f"{sql.get('fqdn', 'Unknown')}): reachable from the internet, limited only by its firewall rules "
+                    f"(permissive rules are reported separately). {decision['why']}"
                 ),
                 resource_id=sql["id"],
                 resource_name=sql["name"],
@@ -192,23 +196,16 @@ class PublicSQLServerScanner(BaseScanner):
                 resource_group=sql.get("resourceGroup"),
                 subscription_id=sql.get("subscriptionId"),
                 location=sql.get("location"),
-                severity=SeverityLevel.CRITICAL,
-                remediation_steps=(
-                    "1. Disable public network access and use Private Endpoints.\n"
-                    "2. Audit firewall rules - remove any allowing the full IP range.\n"
-                    "3. Enable Microsoft Defender for SQL.\n"
-                    "4. Enable Azure AD authentication; disable SQL authentication if possible."
-                ),
-                azure_cli_script=(
-                    f"az sql server update --name {sql['name']} "
-                    f"--resource-group {sql.get('resourceGroup')} --enable-public-network false"
-                ),
+                severity=fix["severity"],
+                remediation_steps=(fix["remediation_steps"] + "\nAlso: Entra ID authentication, and SQL "
+                                   "authentication off where the apps allow it."),
+                azure_cli_script=fix["azure_cli_script"],
                 powershell_script=(
                     f"Set-AzSqlServer -ServerName '{sql['name']}' "
                     f"-ResourceGroupName '{sql.get('resourceGroup')}' "
                     f"-PublicNetworkAccess 'Disabled'"
-                ),
-                evidence={"fqdn": sql.get("fqdn"), "version": sql.get("version")},
+                ) if decision["option"] in ("disable_public", "private_endpoint") else None,
+                evidence={"fqdn": sql.get("fqdn"), "version": sql.get("version"), **fix["evidence"]},
                 cis_control="4.1",
                 estimated_monthly_savings_usd=0.0,
             ))
@@ -268,7 +265,6 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
             'microsoft.keyvault/vaults',
             'microsoft.sql/servers',
             'microsoft.sql/servers/databases',
-            'microsoft.network/networksecuritygroups',
             'microsoft.web/sites',
             'microsoft.cognitiveservices/accounts',
             'microsoft.devices/iothubs',
@@ -306,15 +302,21 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
                 continue
             confirmed = resource["id"] in verified
             rtype = (resource.get("type") or "").lower()
+            from scanners.base.access_need import production_of
+
+            production = production_of(resource, context)
             if "keyvault" in rtype:
-                severity = SeverityLevel.HIGH
-                advice = (
-                    "Enable audit logging for all Key Vault operations. Send logs to a "
-                    "Log Analytics Workspace with a 90-day retention minimum."
-                )
+                severity = SeverityLevel.HIGH if production is not False else SeverityLevel.MEDIUM
+                advice = ("Send the Key Vault 'audit' category group (who read which secret, key or certificate) to "
+                          "the central Log Analytics workspace, retained at least 90 days.")
             else:
-                severity = SeverityLevel.MEDIUM
-                advice = "Enable diagnostic settings and stream logs to Log Analytics."
+                severity = SeverityLevel.MEDIUM if production is not False else SeverityLevel.LOW
+                advice = ("Send the 'audit' category group to the central Log Analytics workspace - who changed or "
+                          "read what - not 'allLogs': request / trace logs multiply ingestion cost and belong in "
+                          "Application Insights or a temporary troubleshooting setting.")
+            advice += ("\nCost: audit logs are usually well under 1 GB per resource per month - about USD 2.99 per "
+                       "GB ingested beyond the workspace's free allowance; archive to a storage account if longer "
+                       "retention is required.")
 
             findings.append(self.make_finding(
                 finding_type="missing_diagnostic_settings",
@@ -323,6 +325,7 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
                     f"Resource '{resource['name']}' ({rtype}) "
                     f"{'has no' if confirmed else 'may be missing'} diagnostic "
                     f"settings. Without audit logs, security events cannot be investigated."
+                    + ("" if production is not False else " Non-production: lower priority.")
                 ),
                 resource_id=resource["id"],
                 resource_name=resource["name"],
@@ -333,12 +336,14 @@ class MissingDiagnosticSettingsScanner(BaseScanner):
                 severity=severity,
                 remediation_steps=advice,
                 azure_cli_script=(
-                    f"# Replace <workspace-id> with your Log Analytics workspace resource ID:\n"
-                    f"az monitor diagnostic-settings create --name 'arg-diagnostics' "
+                    f"# Replace <workspace-id> with the central Log Analytics workspace resource ID:\n"
+                    f"az monitor diagnostic-settings create --name 'audit-to-law' "
                     f"--resource '{resource['id']}' --workspace <workspace-id> "
-                    f"--logs '[{{\"categoryGroup\": \"allLogs\", \"enabled\": true}}]'"
+                    f"--logs '[{{\"categoryGroup\": \"audit\", \"enabled\": true}}]'"
                 ),
-                evidence={"resource_type": rtype, "verified": confirmed},
+                evidence={"resource_type": rtype, "verified": confirmed, "production": production,
+                          "cost_of_change": {"monthly_usd": 1.0,
+                                             "basis": "audit logs, typically under 1 GB/month at about USD 2.99/GB"}},
                 estimated_monthly_savings_usd=0.0,
             ))
 

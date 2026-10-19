@@ -20,11 +20,15 @@ import { ARGThemeProvider } from './theme/ThemeProvider';
 import { AppLayout } from './components/common/AppLayout';
 import { CurrencyProvider } from './hooks/useCurrency';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
-import { useCanOperate } from './hooks/useRoles';
+import { useCanOperate, useIsAdmin } from './hooks/useRoles';
 
 // Tenant-wide and write pages (Identity, Remediation): admins and contributors only; others go to the overview.
 const OperatorsOnly: React.FC<{ children: React.ReactElement }> = ({ children }) =>
   useCanOperate() ? children : <Navigate to="/dashboard" replace />;
+
+// Whole-estate pages (Estate, Architecture): ARG administrators only.
+const AdminsOnly: React.FC<{ children: React.ReactElement }> = ({ children }) =>
+  useIsAdmin() ? children : <Navigate to="/dashboard" replace />;
 
 // Pages
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })));
@@ -42,6 +46,9 @@ const RemediationPage = lazy(() => import('./pages/RemediationPage').then(m => (
 const SubscriptionsPage = lazy(() => import('./pages/SubscriptionsPage').then(m => ({ default: m.SubscriptionsPage })));
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const ScansPage = lazy(() => import('./pages/ScansPage').then(m => ({ default: m.ScansPage })));
+const EstatePage = lazy(() => import('./pages/EstatePage').then(m => ({ default: m.EstatePage })));
+const ArchitecturePage = lazy(() => import('./pages/ArchitecturePage').then(m => ({ default: m.ArchitecturePage })));
+const AnalysisPage = lazy(() => import('./pages/AnalysisPage').then(m => ({ default: m.AnalysisPage })));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
 
 const App: React.FC = () => {
@@ -78,12 +85,15 @@ const App: React.FC = () => {
                   <Route path="/costs" element={<CostsPage />} />
                   <Route path="/identity" element={<OperatorsOnly><IdentityPage /></OperatorsOnly>} />
                   <Route path="/governance" element={<GovernancePage />} />
+                  <Route path="/analysis" element={<AnalysisPage />} />
                   <Route path="/drift" element={<DriftPage />} />
                   <Route path="/security" element={<SecurityPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/remediation" element={<OperatorsOnly><RemediationPage /></OperatorsOnly>} />
                   <Route path="/subscriptions" element={<SubscriptionsPage />} />
                   <Route path="/scans" element={<ScansPage />} />
+                  <Route path="/estate" element={<AdminsOnly><EstatePage /></AdminsOnly>} />
+                  <Route path="/architecture" element={<AdminsOnly><ArchitecturePage /></AdminsOnly>} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Route>
 

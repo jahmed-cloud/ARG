@@ -18,8 +18,9 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from scanners.base.naming import env_from_tags
 from scanners.base.base_scanner import (
     BaseScanner,
     ScanContext,
@@ -59,11 +60,16 @@ class MissingRequiredTagsScanner(BaseScanner):
     display_name = "Missing Required Tags"
     description = "Detects resources missing required governance tags"
     category = ScannerCategory.GOVERNANCE
-    severity = SeverityLevel.MEDIUM
+    severity = SeverityLevel.LOW
 
     REQUIRED_TAGS = DEFAULT_REQUIRED_TAGS
+    finding_types = {"missing_required_tags"}
 
     async def scan(self, context: ScanContext) -> ScanOutput:
+        # Optional (`required_tags_check`): tagging thousands of existing resources one by one is rarely the plan -
+        # the report's cost-allocation KPI and the tag policies cover it without a finding per resource.
+        if not self.config.get("required_tags_check", False):
+            return ScanOutput(metadata={"disabled_by_setting": "required_tags_check"})
         required_tags = self.config.get("required_tags", self.REQUIRED_TAGS)
         tag_filter = " or ".join(f"isnull(tags['{tag}'])" for tag in required_tags)
 
@@ -87,11 +93,14 @@ class MissingRequiredTagsScanner(BaseScanner):
         findings = []
         for resource in resources:
             existing_tags = resource.get("tags") or {}
-            missing = [t for t in required_tags if t not in existing_tags]
+            present = {k.lower() for k in existing_tags}   # Azure tag names are case-insensitive
+            missing = [t for t in required_tags if t.lower() not in present]
             if not missing:
                 continue
 
-            severity = SeverityLevel.HIGH if (len(missing) >= 3 or "owner" in missing) else SeverityLevel.MEDIUM
+            # Hygiene, not risk: one untagged resource is low on its own. The report weighs the gap by cost
+            # (share of spend that cannot be charged back) and recommends the tag policies once.
+            severity = SeverityLevel.LOW
 
             findings.append(self.make_finding(
                 finding_type="missing_required_tags",
@@ -167,7 +176,10 @@ class NamingConventionScanner(BaseScanner):
 
     Only checks resource types with well-defined CAF prefixes. Flagged
     at Low severity since naming is organization-specific and orgs may
-    intentionally deviate from CAF defaults.
+    intentionally deviate from CAF defaults. Switched off with the
+    `naming_convention_enabled` setting (Settings page / settings.json):
+    most resources cannot be renamed in place, so the check is only
+    useful while a naming standard is being enforced.
     """
 
     scanner_name = "naming_convention_scanner"
@@ -175,8 +187,11 @@ class NamingConventionScanner(BaseScanner):
     description = "Detects resources that don't follow CAF naming conventions"
     category = ScannerCategory.GOVERNANCE
     severity = SeverityLevel.LOW
+    finding_types = {"naming_convention_violation"}
 
     async def scan(self, context: ScanContext) -> ScanOutput:
+        if not self.config.get("naming_convention_enabled", True):
+            return ScanOutput(metadata={"disabled_by_setting": "naming_convention_enabled"})
         query = """
         Resources
         | where type in~ (
@@ -228,9 +243,11 @@ class NamingConventionScanner(BaseScanner):
                 location=resource.get("location"),
                 severity=SeverityLevel.LOW,
                 remediation_steps=(
-                    "Rename this resource to follow your organization's naming convention. "
-                    "Most Azure resources cannot be renamed in-place - provision a new resource "
-                    "and migrate data as part of a planned governance sprint."
+                    "Do not rename in isolation: Azure cannot rename most resources in place, so a new name means "
+                    "a new resource, a data migration and updated references. Apply the naming standard to new "
+                    "resources through IaC, and rename this one only when it is rebuilt anyway (re-platforming, "
+                    "region move, major upgrade). If the standard does not fit this resource type, adjust the "
+                    "pattern in Settings or switch the check off there."
                 ),
                 azure_cli_script=(
                     f"# Most Azure resources cannot be renamed - provision a replacement and migrate.\n"
@@ -277,26 +294,35 @@ class NamingConventionScanner(BaseScanner):
 # Missing Resource Lock Scanner
 # ---------------------------------------------------------------------------
 
+def lock_scopes(locks: List[Dict]) -> List[str]:
+    """Scope (subscription, resource group or resource ID, lower case) of each management lock."""
+    return [(lk.get("id") or "").lower().split("/providers/microsoft.authorization/locks/")[0] for lk in locks
+            if lk.get("id")]
+
+
+def covering_lock(resource_id: str, scopes: List[str]) -> Optional[str]:
+    """The lock scope that protects the resource - the resource itself, its resource group or the subscription."""
+    rid = (resource_id or "").lower()
+    return next((s for s in scopes if s and (rid == s or rid.startswith(s + "/"))), None)
+
+
 @register_scanner
 class MissingResourceLockScanner(BaseScanner):
     """
-    Flags production-tagged critical resources that should have a
-    CanNotDelete or ReadOnly lock. Resource Graph cannot directly query
-    lock existence, so this raises an advisory finding for every
-    production resource of a critical type - some may already be locked
-    and represent false positives pending manual verification.
+    Production critical resources with no CanNotDelete / ReadOnly lock on themselves, their resource group or the
+    subscription. Locks are not in Resource Graph; one ARM call lists every lock in the subscription (any scope).
     """
 
     scanner_name = "missing_resource_lock_scanner"
-    display_name = "Verify Resource Locks"
-    description = "Detects production resources that should have deletion locks"
+    display_name = "Resource Locks"
+    description = "Detects production resources without a deletion lock (own, resource group or subscription)"
     category = ScannerCategory.GOVERNANCE
     severity = SeverityLevel.HIGH
+    finding_types = {"missing_resource_lock"}
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
         Resources
-        | where tags['environment'] in~ ('production', 'prod', 'prd')
         | where type in~ (
             'microsoft.compute/virtualmachines',
             'microsoft.network/virtualnetworks',
@@ -305,6 +331,7 @@ class MissingResourceLockScanner(BaseScanner):
             'microsoft.keyvault/vaults',
             'microsoft.documentdb/databaseaccounts'
         )
+        | where isnotnull(tags)
         | project id, name, type, resourceGroup, subscriptionId, location, tags
         """
 
@@ -312,16 +339,29 @@ class MissingResourceLockScanner(BaseScanner):
             resources = await self._run_arg_query(context, query)
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
+        # tag keys are case-sensitive in KQL ('Environment' vs 'environment'): decide in Python
+        resources = [r for r in resources if env_from_tags(r.get("tags")) == "prod"]
+
+        scopes: List[str] = []
+        if getattr(context, "arm_client", None) is not None:
+            try:
+                scopes = lock_scopes(await context.arm_client.get_all(
+                    f"/subscriptions/{context.subscription_id}/providers/Microsoft.Authorization/locks", "2020-05-01"))
+            except Exception as e:
+                return ScanOutput(warnings=[f"Resource locks unavailable ({e}) - lock coverage not checked."],
+                                  resources_scanned=len(resources))
 
         findings = []
         for resource in resources:
+            if covering_lock(resource["id"], scopes):
+                continue
             findings.append(self.make_finding(
                 finding_type="missing_resource_lock",
-                title=f"Verify resource lock: {resource['name']}",
+                title=f"No delete lock: {resource['name']}",
                 description=(
-                    f"Production resource '{resource['name']}' ({resource.get('type', 'Unknown')}) "
-                    f"should have a CanNotDelete or ReadOnly lock. Verify a lock exists - this "
-                    f"finding may be a false positive if one is already applied."
+                    f"Production resource '{resource['name']}' ({resource.get('type', 'Unknown')}) has no "
+                    f"CanNotDelete or ReadOnly lock - not on the resource, its resource group "
+                    f"'{resource.get('resourceGroup')}' or the subscription - so one wrong delete removes it."
                 ),
                 resource_id=resource["id"],
                 resource_name=resource["name"],
@@ -349,7 +389,7 @@ class MissingResourceLockScanner(BaseScanner):
                     f"-ResourceName '{resource['name']}' "
                     f"-ResourceType '{resource.get('type')}' -Force"
                 ),
-                evidence={"resource_type": resource.get("type")},
+                evidence={"resource_type": resource.get("type"), "locks_in_subscription": len(scopes)},
                 estimated_monthly_savings_usd=0.0,
             ))
 

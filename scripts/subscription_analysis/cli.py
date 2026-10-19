@@ -20,7 +20,6 @@ several subscriptions share a name) and <reports-dir>/README.md indexes them.
 import argparse
 import json
 import logging
-import os
 import sys
 import threading
 from pathlib import Path
@@ -32,6 +31,7 @@ from scripts.subscription_analysis.ci import GATE_EXIT_CODE, SEVERITIES  # noqa:
 from scripts.subscription_analysis.collector import list_subscriptions, run  # noqa: E402
 from scripts.subscription_analysis.report import (  # noqa: E402
     clean_generated,
+    read_previous_findings,
     resolve_report_folder,
     write_index,
     write_report,
@@ -90,13 +90,14 @@ def make_credential(kind: str = "cli", tenant: str = None):
     return DefaultAzureCredential(additionally_allowed_tenants=["*"])
 
 
-def default_config(path: str = None, actual_cost: bool = False) -> dict:
-    """Scanner configuration for a local run: defaults, then AMORTIZED_COST from the environment (true by default),
-    then the --config file, then --actual-cost."""
+def default_config(path: str = None, reports_dir: Path = None, actual_cost: bool = False) -> dict:
+    """Scanner configuration: built-in defaults (AMORTIZED_COST, DISPLAY_CURRENCY, REQUIRED_VM_EXTENSIONS from the
+    environment), then the saved settings of reports_dir (the local portal's Settings page,
+    <reports-dir>/settings.json), then --config overrides, then --actual-cost."""
     from scanners.governance.governance_scanners import DEFAULT_REQUIRED_TAGS
+    from scripts.subscription_analysis.settings import effective
 
-    config = {"required_tags": DEFAULT_REQUIRED_TAGS, "timeout_seconds": 900,
-              "amortized_cost": os.getenv("AMORTIZED_COST", "true")}
+    config = {"required_tags": DEFAULT_REQUIRED_TAGS, "timeout_seconds": 900, **effective(reports_dir)}
     if path:
         config.update(json.loads(Path(path).read_text(encoding="utf-8")))
     if actual_cost:
@@ -107,8 +108,9 @@ def default_config(path: str = None, actual_cost: bool = False) -> dict:
 def analyse_one(credential, subscription: str, reports_dir: Path, output: Path = None, **kwargs):
     data = run(credential, subscription, **kwargs)
     target = output or resolve_report_folder(reports_dir, data.subscription)
+    previous = read_previous_findings(target)   # before the old report is removed: the "changes" section
     clean_generated(target)
-    model = write_report(data, target)
+    model = write_report(data, target, previous_findings=previous)
     return data, model, target
 
 
@@ -203,7 +205,7 @@ def main(argv=None) -> int:
 
     kwargs = dict(
         scanners=[s.strip() for s in args.scanners.split(",")] if args.scanners else None,
-        config=default_config(args.config, actual_cost=args.actual_cost),
+        config=default_config(args.config, reports_dir, actual_cost=args.actual_cost),
         include_cost=not args.skip_cost,
     )
     lock = threading.Lock()

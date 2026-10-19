@@ -15,6 +15,7 @@ import scanners.compute.compute_posture_scanners as compute
 import scanners.cost.cost_scanners  # noqa: F401
 import scanners.database.database_scanners as database
 import scanners.governance.governance_posture_scanners as governance
+import scanners.governance.governance_scanners  # noqa: F401
 import scanners.network.network_posture_scanners as network
 import scanners.security.security_posture_scanners  # noqa: F401
 import scanners.storage.storage_posture_scanners as storage
@@ -27,10 +28,15 @@ def _context() -> ScanContext:
     return ScanContext(subscription_id="sub-1", tenant_id="tenant-1", scan_job_id="job-1")
 
 
+# Scanners that are off by default are exercised with their switch on.
+ENABLED = {"defender_plan_coverage_scanner": {"defender_plan_coverage": True},
+           "defender_recommendations_scanner": {"defender_recommendations": True}}
+
+
 def _run(scanner_name: str, config=None):
     cls = ScannerRegistry.get(scanner_name)
     assert cls is not None, f"{scanner_name} is not registered"
-    return asyncio.run(cls(config=config or {}).execute(_context()))
+    return asyncio.run(cls(config=config if config is not None else ENABLED.get(scanner_name, {})).execute(_context()))
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +57,7 @@ EXPECTED = {
     "app_service_plan_utilization_scanner": {"app_service_plan_cpu_saturated", "app_service_plan_underutilized"},
     "vm_rightsizing_scanner": {"vm_rightsizing_opportunity"},
     "resource_provider_policy_scanner": {"resource_type_denied_by_policy"},
+    "resource_provider_registration_scanner": {"resource_provider_blocked_registered"},
     "app_service_mixed_environment_scanner": {"app_service_plan_mixed_environments"},
     "web_app_https_identity_scanner": {"web_app_https_not_enforced", "web_app_managed_identity_missing"},
     "web_app_configuration_scanner": {"web_app_eol_runtime", "web_app_health_check_missing", "web_app_32bit_worker"},
@@ -84,6 +91,8 @@ EXPECTED = {
     "region_price_scanner": {"cheaper_region_available"},
     "ai_spend_governance_scanner": {"ai_spend_without_gateway", "ai_account_sprawl"},
     "commitment_discount_scanner": {"commitment_discount_opportunity"},
+    "advisor_cost_scanner": {"advisor_cost_recommendation"},
+    "service_retirement_scanner": {"service_retirement"},
     "marketplace_saas_scanner": {"marketplace_saas_unsubscribed", "marketplace_saas_term_ending",
                                  "marketplace_saas_commitment", "marketplace_saas_inactive"},
 }
@@ -116,10 +125,31 @@ def test_ddos_saving_uses_list_price_without_live_client():
     assert finding.estimated_monthly_savings_usd == pytest.approx(2944.0)
 
 
-def test_latent_rdp_exposure_is_high_not_critical():
+def test_rdp_rule_reaching_no_vm_is_low():
     finding = _run("open_management_port_scanner").findings[0]
-    assert finding.severity == SeverityLevel.HIGH
+    assert finding.severity == SeverityLevel.LOW
+    assert "no exposure today" in finding.description
     assert finding.evidence["exposed_rules"] == [{"rule": "RDP", "ports": [3389], "priority": 300}]
+
+
+@pytest.mark.parametrize("power, subnets, severity", [
+    ("PowerState/running", 0, SeverityLevel.CRITICAL),
+    ("PowerState/deallocated", 0, SeverityLevel.MEDIUM),
+    ("PowerState/stopped", 0, SeverityLevel.MEDIUM),
+    ("PowerState/deallocated", 1, SeverityLevel.CRITICAL),   # on a subnet: reachable whatever this VM does
+])
+def test_rdp_rule_severity_follows_what_it_exposes(monkeypatch, power, subnets, severity):
+    cls = ScannerRegistry.get("open_management_port_scanner")
+    nsg = cls()._mock_data()[0]
+    nic = nsg["nic_ids"][0]["id"].lower()
+    nsg["subnet_count"] = subnets
+
+    async def nics(self, context, query):
+        return {nic: {"vm": "vm-1", "power": power}}
+    monkeypatch.setattr(cls, "_mock_data", lambda self: [nsg])
+    monkeypatch.setattr(cls, "_nics_with_vm", nics)
+    finding = asyncio.run(cls(config={}).execute(_context())).findings[0]
+    assert finding.severity == severity
 
 
 def test_app_service_pv2_to_pv3_saving():
@@ -218,11 +248,127 @@ def test_defender_titles_name_the_recommendation_not_a_guid():
                      "assessment": "Guest accounts with read permissions on Azure resources should be removed",
                      "severity": "high", "category": "IdentityAndAccess"}] + super()._mock_data()
 
-    findings = asyncio.run(Entities(config={}).execute(_context())).findings
+    findings = asyncio.run(Entities(config=ENABLED["defender_recommendations_scanner"]).execute(_context())).findings
     titles = {f.title for f in findings}
     assert "Defender: Guest accounts with read permissions on Azure resources should be removed (subscription)" in titles
     assert "Defender: Role-Based Access Control should be used on Azure Keyvault Services (AKV) (kv-legacy-1)" in titles
     assert not any(guid in t or "sub-1" in t for t in titles)
+
+
+@pytest.mark.parametrize("scanner_name", sorted(EXPECTED))
+def test_declared_finding_types_cover_what_the_scanner_emits(scanner_name):
+    # The Docker worker closes open findings of the declared types that a run no longer reports.
+    declared = ScannerRegistry.get(scanner_name).finding_types
+    if declared:
+        assert {f.finding_type for f in _run(scanner_name).findings} <= set(declared)
+
+
+def test_defender_plan_recommendations_are_left_out_unless_switched_on():
+    default = _run("defender_recommendations_scanner")
+    text = " ".join(f.title + f.description for f in default.findings)
+    assert "Defender for Storage plan" not in text and "Defender CSPM" not in text
+    assert "stdata1" not in {f.resource_name for f in default.findings}   # its only recommendation was a plan upsell
+    assert len(default.metadata["excluded_plan_recommendations"]) == 2
+    included = _run("defender_recommendations_scanner", {"defender_recommendations": True,
+                                                     "defender_plan_recommendations": True})
+    assert "stdata1" in {f.resource_name for f in included.findings}
+    assert not included.metadata
+
+
+def test_defender_recommendations_are_a_summary_unless_switched_on():
+    off = _run("defender_recommendations_scanner", {})
+    assert off.findings == [] and off.metadata == {"disabled_by_setting": "defender_recommendations"}
+
+
+def test_plan_recommendation_pattern():
+    from scanners.security.defender_guidance import is_plan_recommendation
+
+    for name in ("Microsoft Defender for Storage plan should be enabled with Malware Scanning and Sensitive Data "
+                 "Threat Detection", "Microsoft Defender CSPM should be enabled",
+                 "Microsoft Defender for SQL should be enabled for unprotected Azure SQL servers",
+                 "Azure Kubernetes Service clusters should have Defender profile enabled"):
+        assert is_plan_recommendation(name), name
+    for name in ("Windows Defender Exploit Guard should be enabled on machines",
+                 "Linux virtual machines should enable Azure Disk Encryption or EncryptionAtHost.",
+                 "Storage accounts should prevent shared key access"):
+        assert not is_plan_recommendation(name), name
+
+
+def test_defender_finding_is_specific_os_updates_collapse_and_encryption_has_commands():
+    vm = next(f for f in _run("defender_recommendations_scanner").findings if f.resource_name == "vm-app-1")
+    assert "Install missing OS / package updates (2: libc6, openssl)" in vm.description
+    assert "Update openssl" not in vm.description                       # one entry per machine, not per package
+    assert "az vm update -g rg-app -n vm-app-1 --set securityProfile.encryptionAtHost=true" in vm.azure_cli_script
+    assert "az vm install-patches -g rg-app -n vm-app-1" in vm.azure_cli_script
+    assert "Open Defender for Cloud" not in vm.remediation_steps         # the old generic text is gone
+    keys = {a.get("guidance_key") for a in vm.evidence["assessments"]}
+    assert keys == {"system_updates", "encryption_at_host"}
+
+
+def test_suppression_reason_only_for_plan_only_findings():
+    scanner = ScannerRegistry.get("defender_recommendations_scanner")(config={})
+    plan_only = {"assessments": [{"assessment": "Microsoft Defender CSPM should be enabled"}]}
+    mixed = {"assessments": [{"assessment": "Microsoft Defender CSPM should be enabled"},
+                             {"assessment": "Storage accounts should prevent shared key access"}]}
+    assert "excluded by setting" in scanner.suppression_reason_for(plan_only)
+    assert scanner.suppression_reason_for(mixed) is None
+
+
+def test_defender_plan_coverage_is_off_by_default_and_prices_each_plan():
+    off = _run("defender_plan_coverage_scanner", {})
+    assert off.findings == [] and off.metadata == {"disabled_by_setting": "defender_plan_coverage"}
+    finding = _run("defender_plan_coverage_scanner").findings[0]
+    plans = {p["plan"]: p for p in finding.evidence["disabled_plans"]}
+    assert plans["CloudPosture"]["monthly_usd"] == pytest.approx(37 * 5.00)   # 37 storage accounts are billable
+    assert plans["AI"]["monthly_usd"] is None                                # token-based
+    assert finding.evidence["cost_of_change"]["monthly_usd"] == pytest.approx(185.0)
+    assert "USD 185/month" in finding.title
+
+
+def test_ai_gateway_saving_is_net_of_the_gateway_cost():
+    findings = {f.resource_name: f for f in _run("ai_spend_governance_scanner").findings
+                if f.finding_type == "ai_spend_without_gateway"}
+    big = findings["ai-agents-1"]
+    gateway = big.evidence["gateway"]
+    assert gateway["monthly_usd"] == 150.0 and gateway["sku"] == "Basic v2"
+    assert gateway["allocated_usd"] == pytest.approx(150.0 * 2200 / 2350, abs=0.01)
+    assert big.estimated_monthly_savings_usd == pytest.approx(2200 * 0.15 - gateway["allocated_usd"], abs=0.01)
+    assert big.evidence["cost_of_change"]["included_in_saving"] is True
+    assert "What a gateway delivers" in big.description
+
+
+def test_ai_gateway_below_break_even_claims_no_saving():
+    cls = ScannerRegistry.get("ai_spend_governance_scanner")
+
+    class Small(cls):
+        def _mock_data(self):
+            return [dict(super()._mock_data()[2], cost_usd_30d=300.0)]   # 15 % of 300 = 45 < 150 gateway
+
+    finding = asyncio.run(Small(config={}).execute(_context())).findings[0]
+    assert finding.estimated_monthly_savings_usd == 0.0 and finding.severity == SeverityLevel.LOW
+    assert "below break-even" in finding.title and "about USD 1,000/month" in finding.description
+
+
+def test_naming_convention_check_can_be_switched_off():
+    assert _run("naming_convention_scanner", {}).findings
+    off = _run("naming_convention_scanner", {"naming_convention_enabled": False})
+    assert off.findings == [] and off.metadata == {"disabled_by_setting": "naming_convention_enabled"}
+
+
+def test_provider_registration_findings_skip_the_governance_baseline_and_core_services():
+    default = {f.finding_type for f in _run("resource_provider_registration_scanner").findings}
+    assert default == {"resource_provider_blocked_registered"}           # unused providers: opt-in
+    out = _run("resource_provider_registration_scanner", {"report_unused_providers": True})
+    by_type = {f.finding_type: f for f in out.findings}
+    unused = by_type["resource_providers_registered_unused"]
+    # not Microsoft.Security (governance baseline), not Microsoft.Web / Compute (core services)
+    assert unused.evidence["unused_registered"] == ["Microsoft.ClassicCompute"]
+    assert unused.severity.value == "info" and "# az provider unregister" in unused.azure_cli_script
+    blocked = by_type["resource_provider_blocked_registered"]
+    assert "az provider unregister --namespace Microsoft.ClassicCompute --subscription sub-1" in blocked.azure_cli_script
+    quiet = _run("resource_provider_registration_scanner", {"report_unused_providers": False,
+                                                            "blocked_resource_providers": []})
+    assert quiet.findings == []
 
 
 def test_os_scanner_respects_as_of_date():

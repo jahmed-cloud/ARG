@@ -97,8 +97,28 @@ reports/                              git-ignored: contains resource IDs, IPs an
 └── <subscription>/                   README.md, 01-... to 05-deep-dive/, raw JSON, report-full.html / .pdf
 ```
 
-In the portal: **Subscriptions** (analyse, open reports, export PDF) and **Estate** (every resource, filters,
-suggestions, CSV). An empty cell on the Estate page shows a muted `-`; hover it for the reason.
+In the portal: **Subscriptions** (analyse, open reports, export PDF), **Estate** (every resource, filters,
+suggestions, CSV), **Architecture** (tenant and per-subscription diagrams with the official Azure icons: management
+groups, Azure Policy - what is allowed and what is not - subscriptions, VNets and peerings, resource groups and
+services, and a **Network** layer with hubs, spokes, subnets, private endpoints and how exposed every PaaS service is;
+zoom, search, export SVG / PNG) and **Settings** (optional checks such as missing-tag findings, the naming
+convention, Defender for Cloud recommendations as findings and Defender plan recommendations, blocked resource
+providers, engineering hourly rate - saved to `reports/settings.json` and used by the next analysis, from the portal or
+the scripts). An empty cell on the Estate page shows a muted `-`; hover it for the reason. The Architecture page needs
+the estate inventory (`-Estate`, or *Refresh inventory* on the Estate page) for management groups, policies and VNets.
+
+The home page shows the estate telemetry (spend, VM power state and CPU, network exposure, tag coverage) once
+the estate inventory exists. Recommendations follow the target architecture with an interim step where needed, and
+every finding explains how ARG reasoned (thinking mode). For an AI review of each subscription, set *AI review*,
+the Azure OpenAI endpoint and the model deployment in **Settings** (your `az login` needs the *Cognitive Services
+OpenAI User* role on that resource). Mark confidential data with `sensitive_data_tags` (e.g. `DataClassification=Confidential`).
+
+Missing-tag findings and Defender for Cloud recommendations are off by default: the report shows tag coverage as a
+cost-allocation KPI and Defender as a summary by severity with links into Defender for Cloud (triage, exemptions and
+owners live there).
+
+Every finding in a report explains why it is needed, when it is not, the cost of implementing it (Azure run cost and
+effort) and links to Microsoft Learn - see [docs/subscription-analysis.md §5a-4](docs/subscription-analysis.md#5a-4-why-when-not-cost-of-implementation-and-references).
 
 ## 5. Reading utilisation correctly
 
@@ -152,9 +172,20 @@ Run the tests and lint (section 6), keep generated text free of emoji and em / e
 
 The Docker stack (backend, Celery worker, frontend) runs **the same scanner modules** with a service principal
 (`az login`, then `python -m scripts.connect_azure` creates and registers it - see
-[docs/connect-azure.md](docs/connect-azure.md)), so
-its findings match the local reports once its images are rebuilt from the same code (`./build-push.sh`, or
-`docker compose up -d --build`). The markdown / HTML reports and the Estate page are local-tool features.
+[docs/connect-azure.md](docs/connect-azure.md)), so its findings match the local reports once its images are rebuilt from the same code (`./build-push.sh`, or
+`docker compose up -d --build`). The Docker Findings page expands each finding with the
+same analysis as the local report (remediation, scripts, gap area, savings wave, critique, evidence), and admins get
+the same **Estate** page (every resource, filters, suggestions, CSV, markdown overview), refreshed by the worker after
+every scan or with *Refresh inventory* (about 5 minutes), and the same **Architecture** diagrams. The markdown / HTML /
+PDF subscription reports are local-tool features.
+
+The Docker UI's **Analysis** page shows the same 5-part analysis as the local report (summary, current findings,
+gap analysis, cost drivers, architectural critique, deep dives with reasoning and AI review, backlog CSV, zip
+download). The worker writes it after each subscription of a scan (`ANALYSIS_REPORT_AFTER_SCAN`, on by default).
+
+To regenerate every finding after changing settings or upgrading (for example after switching missing-tag findings
+off): **Settings** -> *Reset findings* (admins; type RESET), then start a scan. It deletes findings, their
+recommendations and remediation tasks, and the estate snapshots; subscriptions, inventory and settings stay.
 
 ### Podman on Windows
 
@@ -164,6 +195,7 @@ With Podman Desktop the Docker stack runs without Docker. Once: `python -m pip i
 ```powershell
 .\scripts\Start-PodmanStack.ps1          # builds the images on the first run, starts http://localhost:3000
 .\scripts\Start-PodmanStack.ps1 -Build   # after committing code changes (the build uses HEAD)
+.\scripts\Start-PodmanStack.ps1 -Build -WorkingTree   # try uncommitted local changes (still no reports / .env)
 .\scripts\Start-PodmanStack.ps1 -Down    # stop; the database volume is kept
 ```
 
@@ -172,14 +204,24 @@ The script works around three Windows issues: podman-compose drops the `dockerfi
 ports of rootful containers are not forwarded to Windows `localhost` (it runs the stack rootless). Sign in with
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`; connect Azure with `python -m scripts.connect_azure`.
 
-If image pulls fail with `Temporary failure in name resolution` (the WSL DNS relay fails on some VPN and Wi-Fi
-networks), give the Podman machine fixed DNS servers - yours are listed by `Get-DnsClientServerAddress`:
+If image pulls fail with `Temporary failure in name resolution`, or a scan stops with "cannot sign in to Microsoft
+Entra ID ... cannot resolve or reach login.microsoftonline.com", the Podman machine has no working DNS. On the
+corporate network the machine's own DNS traffic is blocked - to the company DNS servers and to public ones such as
+1.1.1.1 alike - so pinning server addresses works on one network and breaks on the next. Let WSL resolve names
+through Windows instead (DNS tunnelling; works on and off the VPN):
 
-1. `podman machine ssh`, then inside the machine:
-   `sudo sh -c 'printf "\n[network]\ngenerateResolvConf = false\n" >> /etc/wsl.conf'` and `exit`.
-2. `podman machine stop; podman machine start` (WSL reads `wsl.conf` at start).
-3. `podman machine ssh`, then:
-   `sudo sh -c 'rm -f /etc/resolv.conf; printf "nameserver 1.1.1.1\nnameserver 1.0.0.1\n" > /etc/resolv.conf'`.
+1. Add to `%USERPROFILE%\.wslconfig` (create the file if needed):
+
+   ```ini
+   [wsl2]
+   dnsTunneling=true
+   ```
+
+2. If you followed the earlier advice and pinned DNS servers, undo it: `podman machine ssh`, then
+   `sudo sed -i '/generateResolvConf/d' /etc/wsl.conf` and `exit`.
+3. `podman machine stop`, then `wsl --shutdown` (stops every WSL distribution, so WSL re-reads its settings), then
+   `podman machine start` and `.\scripts\Start-PodmanStack.ps1`.
+4. Check: `podman machine ssh getent hosts login.microsoftonline.com` prints an address.
 
 ## 9. Troubleshooting
 
@@ -194,5 +236,6 @@ networks), give the Podman machine fixed DNS servers - yours are listed by `Get-
 | Portal login fails after setting variables | Open a new terminal (user variables only reach new processes); names are case-sensitive |
 | Estate cost "-" | That subscription has no report yet - run 3.4 or 3.5 |
 | `podman`: `...\.ssh\known_hosts: The system cannot find the path specified` | Create it once: `New-Item -ItemType Directory -Force $HOME\.ssh; if (-not (Test-Path $HOME\.ssh\known_hosts)) { New-Item -ItemType File $HOME\.ssh\known_hosts }` |
+| Docker scan fails with "not scanned - cannot sign in to Microsoft Entra ID" | The reason follows: DNS / network (see the Podman DNS steps in section 8) or the tenant's client secret (Settings > Tenants). No scanner runs and no finding changes until sign-in works |
 | Podman containers run but `localhost:3000` refuses | They run rootful (ports not forwarded to Windows): start them with `.\scripts\Start-PodmanStack.ps1` (rootless) |
 | `podman version` shows different client and server versions | An older Podman is first on `PATH`; the script prefers Podman Desktop's (`%LOCALAPPDATA%\Programs\Podman`) |

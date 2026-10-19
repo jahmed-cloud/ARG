@@ -17,7 +17,6 @@ Security model (it is a single-user tool on your workstation):
 import asyncio
 import hmac
 import json
-import os
 import secrets
 import time
 from pathlib import Path
@@ -48,12 +47,12 @@ from scripts.subscription_analysis.report import display_names, read_summaries, 
 
 HERE = Path(__file__).resolve().parent
 COOKIE = "arg_portal_session"
+CURRENCY_COOKIE = "arg_currency"   # the Currency dropdown: 'billing' or an ISO code
 SESSION_TTL_SECONDS = 12 * 3600
 SUBSCRIPTION_CACHE_SECONDS = 600
 MAX_JSON_PREVIEW_BYTES = 2_000_000
 MIN_API_TOKEN_LENGTH = 24
 PUBLIC_PATHS = ("/login", "/static/", "/favicon.ico")
-CURRENCY_COOKIE = "arg_currency"   # the Currency dropdown: 'billing' or an ISO code
 CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
        "form-action 'self'")
@@ -165,18 +164,25 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         result = {}
         for s in read_summaries(reports_dir):
             s["pdf"] = [d for d in ("summary", "full") if (reports_dir / s["folder"] / f"report-{d}.pdf").is_file()]
+            if not s.get("per_usd"):   # reports written before summary.json carried the rate
+                try:
+                    s["per_usd"] = float(json.loads((reports_dir / s["folder"] / "05-deep-dive" / "raw" / "cost" /
+                                                     "usd_to_billing.json").read_text(encoding="utf-8")))
+                except (OSError, ValueError, TypeError):
+                    s["per_usd"] = None
             result[(s.get("subscription") or {}).get("id", "").lower()] = s
         return result
 
-    # -- currency: the Currency dropdown (cookie), default DISPLAY_CURRENCY ("billing" or "USD") ----------------
+    # -- currency: the Currency dropdown (cookie) over the display_currency setting ---------------------------
 
     def currency_choice(request: Request) -> str:
+        from scripts.subscription_analysis import settings as analysis_settings
         from scripts.subscription_analysis.currency import BILLING
 
         chosen = (request.cookies.get(CURRENCY_COOKIE) or "").strip()
         if chosen and len(chosen) <= 10:
             return chosen
-        return "USD" if os.getenv("DISPLAY_CURRENCY", "").strip().upper() == "USD" else BILLING
+        return "USD" if analysis_settings.effective(reports_dir).get("display_currency") == "USD" else BILLING
 
     def converter(request: Request) -> Any:
         """Blocking (may download the reference rates once): call from a thread."""
@@ -187,7 +193,7 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
 
     def billing_rates(folder: Optional[str] = None) -> Dict[str, float]:
         """{billing currency: units per USD} a page was written with: its subscription's, or every analysed
-        subscription's for pages across subscriptions (index, estate overview)."""
+        subscription's for pages across subscriptions (index, estate overview, diagrams)."""
         rates: Dict[str, float] = {}
         for s in summaries_by_id().values():
             if (folder is None or s.get("folder") == folder) and s.get("currency") and s.get("per_usd"):
@@ -263,6 +269,29 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
 
     # -- dashboard & API -----------------------------------------------------------
 
+    telemetry_cache: Dict[str, Any] = {"key": None, "html": None}
+
+    def telemetry_section(conv: Any = None) -> Optional[str]:
+        """Estate telemetry charts for the dashboard, re-computed only when estate.json, the tags or the currency
+        change."""
+        from scripts.subscription_analysis import settings as analysis_settings
+        from scripts.subscription_analysis.estate import ESTATE_DIR, ESTATE_FILE
+        from scripts.subscription_analysis.telemetry import estate_telemetry, in_currency
+        from scripts.subscription_analysis.telemetry_svg import telemetry_html
+
+        path = reports_dir / ESTATE_DIR / ESTATE_FILE
+        if not path.is_file():
+            return None
+        tags = analysis_settings.effective(reports_dir).get("required_tags") or []
+        key = (path.stat().st_mtime, tuple(tags), getattr(conv, "target", None))
+        if telemetry_cache["key"] != key:
+            data = estate_data()
+            t = estate_telemetry(data, tags) if data else None
+            if t is not None and conv is not None and conv.active:
+                t = in_currency(t, conv, billing_rates())
+            telemetry_cache.update(key=key, html=telemetry_html(t) if t else None)
+        return telemetry_cache["html"]
+
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         status = await asyncio.to_thread(azure.status)
@@ -272,6 +301,7 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
             "azure": status, "subscriptions": subs, "subscription_error": cache["error"],
             "summaries": summaries_by_id(), "jobs": [j.to_dict() for j in jobs.list()],
             "reports_dir": str(reports_dir), "username": auth.username, "money": conv.money,
+            "telemetry": await asyncio.to_thread(telemetry_section, conv),
         })
 
     @app.get("/api/currency")
@@ -333,6 +363,127 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         from scripts.subscription_analysis.export import PRINT_CSS
 
         return Response(PRINT_CSS, media_type="text/css")
+
+    # -- architecture diagrams -----------------------------------------------------------
+
+    def estate_data() -> Optional[Dict[str, Any]]:
+        """estate.json, built from the reports on first use (like /api/estate); None while nothing was analysed."""
+        from scripts.subscription_analysis.estate import ESTATE_DIR, ESTATE_FILE, refresh_estate
+
+        path = reports_dir / ESTATE_DIR / ESTATE_FILE
+        if not path.is_file():
+            refresh_estate(reports_dir)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if data.get("subscriptions") else None
+
+    def diagram_view(view: str) -> str:
+        return view if view in ("network", "landing") else "resources"
+
+    @app.get("/architecture", response_class=HTMLResponse)
+    async def architecture_page(request: Request, subscription: str = "", view: str = "resources"):
+        data = await asyncio.to_thread(estate_data) or {}
+        subs = sorted(data.get("subscriptions") or [], key=lambda s: (s.get("name") or "").lower())
+        collected = str((data.get("architecture") or {}).get("collected_at") or data.get("inventory_at") or "")
+        view = diagram_view(view)
+        return templates.TemplateResponse(request, "architecture.html", {
+            "username": auth.username, "subscriptions": subs,
+            "subscription": "" if view == "landing" else subscription.lower(),
+            "view": view, "collected": collected[:16].replace("T", " ")})
+
+    def landing_inputs() -> Dict[str, Any]:
+        from scripts.subscription_analysis import settings as analysis_settings
+        from scripts.subscription_analysis.estate import load_policy
+
+        return {"policy": load_policy(reports_dir),
+                "mapping": analysis_settings.effective(reports_dir).get("landing_zone_mapping") or []}
+
+    @app.get("/api/architecture.svg")
+    async def architecture_svg(request: Request, subscription: str = "", view: str = "resources"):
+        from scripts.subscription_analysis.network_diagram import architecture_svg as render
+
+        data = await asyncio.to_thread(estate_data)
+        if data is None:
+            return PlainTextResponse("No estate inventory yet - refresh it on the Estate page.", status_code=404)
+        view = diagram_view(view)
+        extra = await asyncio.to_thread(landing_inputs) if view == "landing" else {}
+        try:
+            svg = await asyncio.to_thread(render, data, "" if view == "landing" else subscription.lower(), view,
+                                          "/architecture", **extra)
+        except KeyError:
+            return PlainTextResponse("Unknown subscription", status_code=404)
+        conv = await asyncio.to_thread(converter, request)
+        if conv.active:   # cost labels are in each subscription's billing currency
+            svg = conv.text(svg, billing_rates())
+        return Response(svg, media_type="image/svg+xml")
+
+    def landing_markdown() -> Optional[str]:
+        from scripts.subscription_analysis.landing_zone import analyse, markdown
+
+        data = estate_data()
+        if data is None:
+            return None
+        inputs = landing_inputs()
+        return markdown(analyse(data, inputs["policy"], inputs["mapping"]))
+
+    @app.get("/api/landing-zone.md")
+    async def landing_zone_md():
+        text = await asyncio.to_thread(landing_markdown)
+        if text is None:
+            return PlainTextResponse("No estate inventory yet - refresh it on the Estate page.", status_code=404)
+        return PlainTextResponse(text, media_type="text/markdown; charset=utf-8",
+                                 headers={"Content-Disposition": 'attachment; filename="landing-zone.md"'})
+
+    @app.get("/api/landing-zone.html", response_class=HTMLResponse)
+    async def landing_zone_html():
+        text = await asyncio.to_thread(landing_markdown)
+        if text is None:
+            return PlainTextResponse("No estate inventory yet - refresh it on the Estate page.", status_code=404)
+        return HTMLResponse(render_markdown(text))
+
+    # -- settings ---------------------------------------------------------------------
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request, saved: int = 0):
+        from scripts.subscription_analysis import settings as analysis_settings
+
+        values = analysis_settings.effective(reports_dir)
+        return templates.TemplateResponse(request, "settings.html", {
+            "username": auth.username, "definitions": analysis_settings.SETTINGS, "values": values, "saved": saved,
+            "settings_file": str(reports_dir / analysis_settings.SETTINGS_FILE)})
+
+    @app.post("/settings")
+    async def save_settings_form(request: Request):
+        from scripts.subscription_analysis import settings as analysis_settings
+
+        form = await request.form()
+        values = {}
+        for s in analysis_settings.SETTINGS:
+            if s.kind == "bool":
+                values[s.key] = s.key in form   # unchecked boxes are not submitted
+            elif s.key in form:
+                values[s.key] = str(form[s.key])
+        await asyncio.to_thread(analysis_settings.save, reports_dir, values)
+        return RedirectResponse("/settings?saved=1", status_code=303)
+
+    @app.get("/api/settings")
+    async def api_get_settings():
+        from scripts.subscription_analysis import settings as analysis_settings
+
+        return analysis_settings.effective(reports_dir)
+
+    @app.put("/api/settings")
+    async def api_put_settings(request: Request):
+        from scripts.subscription_analysis import settings as analysis_settings
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"detail": "Expected a JSON object"}, status_code=400)
+        current = analysis_settings.load(reports_dir)
+        await asyncio.to_thread(analysis_settings.save, reports_dir, {**current, **body})
+        return analysis_settings.effective(reports_dir)
 
     # -- estate inventory ------------------------------------------------------------
 
@@ -434,6 +585,8 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         if suffix == ".pdf":
             return FileResponse(target, media_type="application/pdf", filename=f"{target.parent.name}-{target.name}",
                                 content_disposition_type="inline")
+        if suffix == ".csv":   # backlog.csv - Azure Boards import
+            return FileResponse(target, media_type="text/csv", filename=f"{target.parent.name}-{target.name}")
         if suffix == ".json":
             if raw or target.stat().st_size > MAX_JSON_PREVIEW_BYTES:
                 return FileResponse(target, media_type="application/json")

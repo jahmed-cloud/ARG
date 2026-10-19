@@ -21,6 +21,61 @@ NOT_ALLOWED_TYPES_POLICY = "6c112d4e-5bc7-47ae-a041-ea2d9dccd749"  # built-in "N
 STATUS_ORDER = ("In use", "In use, not registered", "Registered, not in use", "Platform (always registered)",
                 "Registering", "Unregistering", "Not registered")
 
+# Providers that the governance tooling itself relies on (Defender for Cloud, Azure Policy, Azure Monitor, Cost
+# Management, Advisor, Update Manager, managed identities, ...). They are registered on almost every subscription,
+# often without resources of their own, and are never candidates for unregistering.
+PLATFORM_PROVIDERS = frozenset(ns.lower() for ns in (
+    "Microsoft.ADHybridHealthService", "Microsoft.Advisor", "Microsoft.AlertsManagement", "Microsoft.Authorization",
+    "Microsoft.Billing", "Microsoft.ChangeAnalysis", "Microsoft.ChangeSafety", "Microsoft.ClassicSubscription",
+    "Microsoft.Commerce", "Microsoft.Consumption", "Microsoft.CostManagement", "Microsoft.CostManagementExports",
+    "Microsoft.Features", "Microsoft.GuestConfiguration", "Microsoft.Insights", "Microsoft.Maintenance",
+    "Microsoft.ManagedIdentity", "Microsoft.Management", "Microsoft.MarketplaceOrdering",
+    "Microsoft.OperationalInsights", "Microsoft.OperationsManagement", "Microsoft.PolicyInsights", "Microsoft.Portal",
+    "Microsoft.ResourceGraph", "Microsoft.ResourceHealth", "Microsoft.ResourceIntelligence",
+    "Microsoft.ResourceNotifications", "Microsoft.Resources", "Microsoft.Security", "Microsoft.SecurityInsights",
+    "Microsoft.SerialConsole", "Microsoft.Support",
+))
+
+# Core service providers every workload subscription is expected to accept, and providers Azure or the landing-zone
+# tooling registers by itself. Registered without resources is normal for them (a subscription with no VM today still
+# needs Microsoft.Compute for the next deployment, VM extensions and auto-shutdown); unregistering one saves nothing
+# and breaks the next deployment until someone re-registers it - never an unregister candidate.
+CORE_PROVIDERS = frozenset(ns.lower() for ns in (
+    "Microsoft.Compute", "Microsoft.Storage", "Microsoft.Network", "Microsoft.KeyVault", "Microsoft.Web",
+    "Microsoft.Sql", "Microsoft.SqlVirtualMachine", "Microsoft.ContainerService", "Microsoft.ContainerRegistry",
+    "Microsoft.ContainerInstance", "Microsoft.App", "Microsoft.DocumentDB", "Microsoft.DBforPostgreSQL",
+    "Microsoft.DBforMySQL", "Microsoft.Cache", "Microsoft.EventGrid", "Microsoft.EventHub", "Microsoft.ServiceBus",
+    "Microsoft.Logic", "Microsoft.CognitiveServices", "Microsoft.MachineLearningServices", "Microsoft.Search",
+    "Microsoft.ApiManagement", "Microsoft.AppConfiguration", "Microsoft.Automation", "Microsoft.RecoveryServices",
+    "Microsoft.DataProtection", "Microsoft.DevTestLab", "Microsoft.Monitor", "Microsoft.Dashboard",
+    "Microsoft.HybridCompute", "Microsoft.Kusto", "Microsoft.DataFactory", "Microsoft.Databricks",
+    "Microsoft.Blueprint", "Microsoft.Capacity", "Microsoft.Quota", "Microsoft.ManagedServices",
+    "Microsoft.AzureActiveDirectory", "Microsoft.Aadiam", "Microsoft.Cdn", "Microsoft.Relay",
+    "Microsoft.NotificationHubs", "Microsoft.SignalRService", "Microsoft.Devices", "Microsoft.StorageSync",
+    "Microsoft.CloudShell", "Microsoft.DevCenter", "Microsoft.DevOpsInfrastructure", "Microsoft.Communication",
+    "Microsoft.ContainerInstance", "Microsoft.KubernetesConfiguration", "Microsoft.Kubernetes",
+    "Microsoft.ExtendedLocation", "Microsoft.Purview", "Microsoft.Synapse", "Microsoft.StreamAnalytics",
+))
+BASELINE_PROVIDERS = PLATFORM_PROVIDERS | CORE_PROVIDERS
+
+# Default for the `blocked_resource_providers` setting: providers of retired classic (ASM) services. Nothing new can
+# be deployed with them, so a registration is a leftover - or a sign someone is trying.
+DEFAULT_BLOCKED_PROVIDERS = ("Microsoft.ClassicCompute", "Microsoft.ClassicNetwork", "Microsoft.ClassicStorage",
+                             "Microsoft.ClassicInfrastructureMigrate")
+
+
+def unused_registered(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Niche providers registered on request with no resources (platform and core services excluded) - informational:
+    unregistering saves nothing; a 'Not allowed resource types' policy is the control that sticks."""
+    return [r for r in rows if r["status"] == "Registered, not in use" and not r.get("baseline")]
+
+
+def blocked_registered(rows: List[Dict[str, Any]], blocked: Any) -> List[Dict[str, Any]]:
+    """Registered (or registering) providers on the block list. Registration-free providers cannot be unregistered."""
+    wanted = {str(b).strip().lower() for b in (blocked or []) if str(b).strip()}
+    return [r for r in rows if r["namespace"].lower() in wanted and r["state"].lower() in ("registered", "registering")
+            and r["registration_policy"] != "RegistrationFree"]
+
 USAGE_QUERY = "Resources | summarize n = count() by type = tolower(type)"
 ANCESTORS_QUERY = """
 resourcecontainers
@@ -98,11 +153,13 @@ def build_analysis(subscription_id: str, providers: List[Dict[str, Any]], usage:
         status = provider_status(p.get("registrationState") or "", p.get("registrationPolicy") or "", bool(types))
         rows.append({"namespace": ns, "state": p.get("registrationState") or "",
                      "registration_policy": p.get("registrationPolicy") or "", "status": status,
+                     "baseline": ns.lower() in BASELINE_PROVIDERS, "core": ns.lower() in CORE_PROVIDERS,
                      "resources": sum(types.values()), "types": dict(sorted(types.items(), key=lambda kv: -kv[1]))})
     known = {r["namespace"].lower() for r in rows}
     for ns, types in by_namespace.items():  # in use but absent from the provider list (should not happen)
         if ns not in known:
             rows.append({"namespace": ns, "state": "", "registration_policy": "", "status": "In use, not registered",
+                         "baseline": ns in BASELINE_PROVIDERS, "core": ns in CORE_PROVIDERS,
                          "resources": sum(types.values()), "types": types})
     rows.sort(key=lambda r: (STATUS_ORDER.index(r["status"]), -r["resources"], r["namespace"].lower()))
     policies = applicable_policies(subscription_id, ancestors, assignments)

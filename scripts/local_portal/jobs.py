@@ -55,7 +55,7 @@ def default_runner(credential: Any, subscription_id: str, reports_dir: Path,
     from scripts.subscription_analysis.report import write_index
 
     data, model, target = analyse_one(credential, subscription_id, reports_dir, None,
-                                      config=default_config(), progress=progress)
+                                      config=default_config(reports_dir=reports_dir), progress=progress)
     refresh_estate(reports_dir)
     write_index(reports_dir)
     return {"folder": target.name, "findings": len(data.findings)}

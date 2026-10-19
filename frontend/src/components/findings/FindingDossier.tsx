@@ -103,6 +103,7 @@ export const FindingDossier: React.FC<{ findingId: string | null; onClose: () =>
   const api = useApi();
   const { format, text: moneyText } = useMoney();
   const money = (v: number | null | undefined) => (v || v === 0 ? format(v, { decimals: 2 }) : '—');
+  const saving = (v: number | null | undefined) => (v ? format(v, { decimals: 2 }) : '—');
   const [detail, setDetail] = useState<FindingDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,8 +143,8 @@ export const FindingDossier: React.FC<{ findingId: string | null; onClose: () =>
             </p>
             <WsStrip>
               <WsMetric label="Severity" value={<span style={{ color: SEVERITY_TONE[detail.severity] }}>{detail.severity}</span>} note={detail.status.replace(/_/g, ' ')} />
-              <WsMetric label="Saving / month" value={money(detail.estimated_monthly_savings_usd)} note={detail.estimated_annual_savings_usd ? `${money(detail.estimated_annual_savings_usd)} / year` : undefined} />
-              <WsMetric label="Net of run cost" value={money(impl?.net_monthly_usd ?? null)} note={impl?.monthly_usd ? `run cost ${money(impl.monthly_usd)} / month` : undefined} />
+              <WsMetric label="Saving / month" value={saving(detail.estimated_monthly_savings_usd)} note={detail.estimated_annual_savings_usd ? `${saving(detail.estimated_annual_savings_usd)} / year` : undefined} />
+              <WsMetric label="Net of run cost" value={saving(impl?.net_monthly_usd ?? null)} note={impl?.monthly_usd ? `run cost ${money(impl.monthly_usd)} / month` : undefined} />
               <WsMetric label="Effort" value={effortLabel(impl?.hours)} note="generic estimate" />
             </WsStrip>
 

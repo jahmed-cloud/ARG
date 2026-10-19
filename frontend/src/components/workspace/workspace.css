@@ -80,6 +80,8 @@
 .ws-notice{background:#dfe5d5;color:#23372f;border-radius:4px;padding:18px 22px;margin-bottom:22px;font-size:13px;line-height:1.7}
 .ws-notice .eyebrow{color:#556b5d}
 .dossier{width:min(760px,100vw);background:#111e19;color:#ebece3;height:100%;overflow:auto;padding:28px 30px 40px;--muted:#a3b5ad;--line:#30423b;--accent:#b8d9ba;--deep:#101b17}
+.dossier a{color:var(--accent)}
+.dossier a:hover{text-decoration:underline}
 .dossier .eyebrow{font:600 10px/1.5 'Consolas',monospace;letter-spacing:.16em;color:var(--muted);margin:0 0 10px;text-transform:uppercase}
 .dossier h1{font-size:24px;font-weight:500;letter-spacing:-.03em;line-height:1.3;margin:0 0 6px}
 @media(max-width:700px){.ws-metric{padding:0 14px}.ws-strip{grid-template-columns:1fr 1fr;gap:18px 0}.ws-metric:nth-child(odd){border-left:0;padding-left:0}.ws-facts{grid-template-columns:1fr}.dossier{padding:20px 16px}.ws-grid{grid-template-columns:1fr}}

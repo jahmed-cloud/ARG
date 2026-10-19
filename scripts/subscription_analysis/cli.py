@@ -20,6 +20,7 @@ several subscriptions share a name) and <reports-dir>/README.md indexes them.
 import argparse
 import json
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -53,6 +54,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--scanners", help="Comma-separated scanner names to run (default: all)")
     p.add_argument("--config", help="JSON file with scanner configuration overrides (thresholds, required_tags, ...)")
     p.add_argument("--skip-cost", action="store_true", help="Skip Cost Management datasets")
+    p.add_argument("--actual-cost", action="store_true",
+                   help="Use actual (invoiced) cost instead of amortized cost (default: amortized; env AMORTIZED_COST)")
     p.add_argument("--pdf", nargs="?", const="summary", choices=["summary", "full"],
                    help="Also export report-<detail>.pdf via headless Edge/Chrome (default detail: summary)")
     p.add_argument("--pdf-only", action="store_true",
@@ -87,12 +90,17 @@ def make_credential(kind: str = "cli", tenant: str = None):
     return DefaultAzureCredential(additionally_allowed_tenants=["*"])
 
 
-def default_config(path: str = None) -> dict:
+def default_config(path: str = None, actual_cost: bool = False) -> dict:
+    """Scanner configuration for a local run: defaults, then AMORTIZED_COST from the environment (true by default),
+    then the --config file, then --actual-cost."""
     from scanners.governance.governance_scanners import DEFAULT_REQUIRED_TAGS
 
-    config = {"required_tags": DEFAULT_REQUIRED_TAGS, "timeout_seconds": 900}
+    config = {"required_tags": DEFAULT_REQUIRED_TAGS, "timeout_seconds": 900,
+              "amortized_cost": os.getenv("AMORTIZED_COST", "true")}
     if path:
         config.update(json.loads(Path(path).read_text(encoding="utf-8")))
+    if actual_cost:
+        config["amortized_cost"] = False
     return config
 
 
@@ -195,7 +203,7 @@ def main(argv=None) -> int:
 
     kwargs = dict(
         scanners=[s.strip() for s in args.scanners.split(",")] if args.scanners else None,
-        config=default_config(args.config),
+        config=default_config(args.config, actual_cost=args.actual_cost),
         include_cost=not args.skip_cost,
     )
     lock = threading.Lock()

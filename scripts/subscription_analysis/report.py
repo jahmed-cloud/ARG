@@ -1054,6 +1054,8 @@ def summarize(m: Model) -> Dict[str, Any]:
         "findings": len(m.findings),
         "findings_by_severity": {s: sev.get(s, 0) for s in SEVERITIES},
         "currency": m.currency,
+        "per_usd": m.fx,                      # billing-currency units per USD (Cost Management's own rate)
+        "cost_basis": m.data.cost.get("cost_basis"),
         "cost_12m": round(m.total_12m, 2),
         "cost_30d": round(m.total_30, 2),
         "savings_usd": {"wave_1": round(waves[1], 2), "wave_2": round(waves[2], 2)},

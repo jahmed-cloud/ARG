@@ -112,6 +112,8 @@ The local portal uses your `az login` session and needs no database or Docker. T
 - Private Link DNS zones with no endpoints
 
 ### Cost Optimization
+- Currency dropdown: billing currency (each subscription's invoice, at Cost Management's own rate), USD or any ECB reference-rate currency
+- Amortized (default) or actual cost, switchable in Settings, with `--actual-cost` or `AMORTIZED_COST`
 - Azure Cost Management integration
 - Per-resource monthly/annual savings estimates
 - Top 10 cost-saving opportunities dashboard

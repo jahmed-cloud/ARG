@@ -218,6 +218,7 @@ def run_scan_job(
         total_resources = 0
         findings_by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         job_warnings: list[str] = []
+        analysis = _analysis_settings(db)   # amortized_cost, required_vm_extensions, ... (Settings)
 
         for sub in subs:
             logger.info(f"Scanning subscription: {sub.subscription_id}")
@@ -234,6 +235,8 @@ def run_scan_job(
                 tenant=tenant,
                 job_id=job_id,
             )
+            from scanners.base.azure_api import cost_basis_from
+            context.cost_basis = cost_basis_from(analysis)   # amortized unless the setting is off
 
             # Attach imported Terraform state, if any, so TerraformDriftScanner
             # has something to diff against. Without this the scanner always
@@ -294,6 +297,8 @@ def run_scan_job(
                         else:
                             scanner_extra_config["required_tags"] = DEFAULT_REQUIRED_TAGS
                             scanner_extra_config["naming_patterns"] = DEFAULT_NAMING_PATTERNS
+                        scanner_extra_config["required_vm_extensions"] = analysis["required_vm_extensions"]
+                        scanner_extra_config["include_arc_machines"] = analysis["include_arc_machines"]
 
                         scanner_instance = scanner_class(config=scanner_extra_config)
                         output = await scanner_instance.execute(context)
@@ -377,6 +382,7 @@ def run_scan_job(
                         db.commit()
 
             asyncio.run(_run_all_scanners_for_subscription())
+            _record_billing_fx(db, sub, context)
 
         # Finalize scan job — but never overwrite a job the user already
         # cancelled. Without this guard, a cancel request whose Celery
@@ -440,6 +446,40 @@ def run_scan_job(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _analysis_settings(db: Session) -> dict:
+    """The admin's analysis settings over the built-in / .env defaults (governance_config.analysis_defaults)."""
+    from backend.api.routes.governance_config import effective_analysis_settings
+    from backend.models.models import GovernanceConfig
+
+    try:
+        row = db.execute(
+            select(GovernanceConfig).where(GovernanceConfig.tenant_id.is_(None)).limit(1)
+        ).scalar_one_or_none()
+    except Exception as exc:  # column missing before the migration ran: defaults
+        logger.warning("Analysis settings unavailable, using defaults: %s", exc)
+        db.rollback()
+        row = None
+    return effective_analysis_settings(getattr(row, "analysis_settings", None) if row else None)
+
+
+def _record_billing_fx(db: Session, sub: any, context: any) -> None:
+    """Store the subscription's billing currency and Cost Management's own rate (billing cost / USD cost of the
+    per-resource costs the scanners fetched) for the Currency dropdown. Nothing when no cost data was read."""
+    from backend.models.models import Subscription
+    from scripts.subscription_analysis.currency import exchange_rate
+
+    costs = [v for k, v in (getattr(context, "cache", None) or {}).items() if str(k).startswith("resource_costs:")]
+    fx = exchange_rate(costs)
+    if not fx:
+        return
+    try:
+        db.execute(update(Subscription).where(Subscription.id == sub.id).values(billing_fx=fx))
+        db.commit()
+    except Exception as exc:
+        logger.warning("Could not record the billing rate for %s: %s", sub.subscription_id, exc)
+        db.rollback()
+
 
 def _build_scan_context(subscription_id: str, tenant: any, job_id: str) -> any:
     """

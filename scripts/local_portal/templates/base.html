@@ -16,6 +16,14 @@
       <a href="/estate" {% if path.startswith('/estate') %}aria-current="page"{% endif %}>Estate</a>
       <a href="/reports/README.md" {% if path.startswith('/reports') %}aria-current="page"{% endif %}>Reports</a>
     </nav>
+    {% if path and not path.startswith('/login') %}
+    {% set chosen = request.cookies.get('arg_currency', 'billing') if request is defined else 'billing' %}
+    <label class="currency-pick" for="currency-pick">Currency
+      <select id="currency-pick" disabled>
+        <option value="{{ chosen }}" selected>{{ 'Billing currency' if chosen == 'billing' else chosen }}</option>
+      </select>
+    </label>
+    {% endif %}
     {% block user %}{% endblock %}
   </header>
   <main id="main-content" tabindex="-1" class="{% block main_class %}{% endblock %}">
@@ -26,6 +34,7 @@
     <a href="https://jahmed.cloud" target="_blank" rel="noopener">jahmed.cloud</a> ·
     <a href="https://github.com/jahmed-cloud/ARG" target="_blank" rel="noopener">github.com/jahmed-cloud/ARG</a>
   </footer>
+  {% if path and not path.startswith('/login') %}<script src="/static/currency.js"></script>{% endif %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

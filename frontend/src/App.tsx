@@ -18,6 +18,7 @@ import { CssBaseline } from '@mui/material';
 import { store } from './store/store';
 import { ARGThemeProvider } from './theme/ThemeProvider';
 import { AppLayout } from './components/common/AppLayout';
+import { CurrencyProvider } from './hooks/useCurrency';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 import { useCanOperate } from './hooks/useRoles';
 
@@ -65,7 +66,9 @@ const App: React.FC = () => {
                 <Route
                   element={
                     <ProtectedRoute>
-                      <AppLayout />
+                      <CurrencyProvider>
+                        <AppLayout />
+                      </CurrencyProvider>
                     </ProtectedRoute>
                   }
                 >

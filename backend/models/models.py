@@ -297,6 +297,9 @@ class Subscription(Base):
 
     # Tags on the subscription itself
     tags                = Column(JSONB, default=dict, nullable=False)
+    # Billing currency and Cost Management's own rate, recorded by each scan:
+    # {"currency": "EUR", "per_usd": 0.92, "basis": "...", "as_of": "..."} (scripts/subscription_analysis/currency.py)
+    billing_fx          = Column(JSONB, nullable=True)
 
     # Budget threshold (USD) for alerting
     monthly_budget_usd  = Column(Float, nullable=True)
@@ -956,5 +959,9 @@ class GovernanceConfig(Base):
     # Dict mapping lowercase resource type → regex pattern string.
     # e.g. {"microsoft.compute/virtualmachines": "^vm-[a-z0-9]+-[a-z]+-[a-z]+-\\d{3}$"}
     naming_patterns = Column(JSONB, default=dict, nullable=False)
+
+    # Analysis settings (see backend/api/routes/governance_config.py ANALYSIS_DEFAULTS): amortized_cost,
+    # display_currency, required_vm_extensions, include_arc_machines. Missing keys take the defaults.
+    analysis_settings = Column(JSONB, default=dict, nullable=False)
 
     tenant = relationship("Tenant")

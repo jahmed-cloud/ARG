@@ -39,6 +39,7 @@ import {
 } from '@mui/material';
 import { Search, MoreVert, FilterAltOff } from '@mui/icons-material';
 import { useApi, ApiError } from '../hooks/useApi';
+import { useMoney } from '../hooks/useCurrency';
 import { useSnackbar } from 'notistack';
 
 interface SubscriptionOption {
@@ -88,6 +89,7 @@ interface FindingItem {
 
 export const FindingsPage: React.FC = () => {
   const api = useApi();
+  const { format: money, text: moneyText } = useMoney();
   const { enqueueSnackbar } = useSnackbar();
 
   const [items, setItems] = useState<FindingItem[]>([]);
@@ -464,7 +466,7 @@ export const FindingsPage: React.FC = () => {
                   </TableCell>
                   <TableCell sx={{ maxWidth: 320 }}>
                     <Typography variant="body2" noWrap>
-                      {f.title}
+                      {moneyText(f.title)}
                     </Typography>
                   </TableCell>
                   <TableCell sx={{ color: alpha('#fff', 0.6) }}>{f.resource_name ?? '—'}</TableCell>
@@ -480,7 +482,7 @@ export const FindingsPage: React.FC = () => {
                     />
                   </TableCell>
                   <TableCell align="right">
-                    {f.estimated_monthly_saving ? `$${f.estimated_monthly_saving.toFixed(2)}` : '—'}
+                    {f.estimated_monthly_saving ? money(f.estimated_monthly_saving, { decimals: 2 }) : '—'}
                   </TableCell>
                   <TableCell align="right">
                     {f.status === 'open' ? (

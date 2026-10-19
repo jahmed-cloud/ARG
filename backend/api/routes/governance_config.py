@@ -1,14 +1,16 @@
 """
-Governance configuration API — required tags and naming patterns.
+Governance configuration API — required tags, naming patterns and analysis settings.
 
 GET  /governance/config          → current config (or built-in defaults if never saved)
 PUT  /governance/config          → save config
 GET  /governance/config/defaults → built-in default values, for reset
 """
+import os
 import re
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,9 +50,42 @@ NAMING_PATTERN_DESCRIPTIONS = {
 }
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    return default if value is None or not value.strip() else value.strip().lower() not in ("false", "0", "no", "off")
+
+
+def analysis_defaults() -> dict[str, Any]:
+    """Built-in analysis settings; the .env values (AMORTIZED_COST, DISPLAY_CURRENCY, REQUIRED_VM_EXTENSIONS,
+    REQUIRED_VM_EXTENSIONS_INCLUDE_ARC) are the defaults until an admin saves the settings."""
+    return {
+        "amortized_cost": _env_bool("AMORTIZED_COST", True),
+        "display_currency": "USD" if os.getenv("DISPLAY_CURRENCY", "").strip().upper() == "USD" else "billing",
+        "required_vm_extensions": os.getenv("REQUIRED_VM_EXTENSIONS", "").strip(),
+        "include_arc_machines": _env_bool("REQUIRED_VM_EXTENSIONS_INCLUDE_ARC", False),
+    }
+
+
+def effective_analysis_settings(saved: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Saved analysis settings over the defaults (unknown keys dropped)."""
+    defaults = analysis_defaults()
+    return {k: (saved or {}).get(k, v) for k, v in defaults.items()}
+
+
+class AnalysisSettings(BaseModel):
+    amortized_cost: bool = Field(True, description="Amortized cost (reservations and savings plans spread over the "
+                                                   "resources using them); off = actual, invoiced cost")
+    display_currency: Literal["billing", "USD"] = Field("billing", description="Default for the Currency dropdown")
+    required_vm_extensions: str = Field("", max_length=1000,
+                                        description="Comma-separated; '|' separates alternatives, e.g. "
+                                                    "AzureMonitorWindowsAgent|AzureMonitorLinuxAgent")
+    include_arc_machines: bool = False
+
+
 class GovernanceConfigSchema(BaseModel):
     required_tags: list[str]
     naming_patterns: dict[str, str]
+    analysis_settings: Optional[AnalysisSettings] = None  # omitted = keep what is saved
 
     @field_validator("required_tags")
     @classmethod
@@ -72,6 +107,7 @@ class GovernanceConfigResponse(BaseModel):
     required_tags: list[str]
     naming_patterns: dict[str, str]
     naming_pattern_descriptions: dict[str, str]
+    analysis_settings: AnalysisSettings
     is_default: bool  # True when no custom config has been saved yet
 
 
@@ -89,12 +125,14 @@ async def get_governance_config(
             required_tags=row.required_tags or DEFAULT_REQUIRED_TAGS,
             naming_patterns=row.naming_patterns or DEFAULT_NAMING_PATTERNS,
             naming_pattern_descriptions=NAMING_PATTERN_DESCRIPTIONS,
+            analysis_settings=AnalysisSettings(**effective_analysis_settings(row.analysis_settings)),
             is_default=False,
         )
     return GovernanceConfigResponse(
         required_tags=DEFAULT_REQUIRED_TAGS,
         naming_patterns=DEFAULT_NAMING_PATTERNS,
         naming_pattern_descriptions=NAMING_PATTERN_DESCRIPTIONS,
+        analysis_settings=AnalysisSettings(**analysis_defaults()),
         is_default=True,
     )
 
@@ -109,14 +147,18 @@ async def update_governance_config(
     row = await db.scalar(
         select(GovernanceConfig).where(GovernanceConfig.tenant_id.is_(None)).limit(1)
     )
+    analysis = body.analysis_settings.model_dump() if body.analysis_settings else None
     if row:
         row.required_tags = body.required_tags
         row.naming_patterns = body.naming_patterns
+        if analysis is not None:
+            row.analysis_settings = analysis
     else:
         row = GovernanceConfig(
             tenant_id=None,
             required_tags=body.required_tags,
             naming_patterns=body.naming_patterns,
+            analysis_settings=analysis or {},
         )
         db.add(row)
     await db.commit()
@@ -124,6 +166,7 @@ async def update_governance_config(
         required_tags=row.required_tags,
         naming_patterns=row.naming_patterns,
         naming_pattern_descriptions=NAMING_PATTERN_DESCRIPTIONS,
+        analysis_settings=AnalysisSettings(**effective_analysis_settings(row.analysis_settings)),
         is_default=False,
     )
 
@@ -137,5 +180,6 @@ async def get_governance_defaults(
         required_tags=DEFAULT_REQUIRED_TAGS,
         naming_patterns=DEFAULT_NAMING_PATTERNS,
         naming_pattern_descriptions=NAMING_PATTERN_DESCRIPTIONS,
+        analysis_settings=AnalysisSettings(**analysis_defaults()),
         is_default=True,
     )

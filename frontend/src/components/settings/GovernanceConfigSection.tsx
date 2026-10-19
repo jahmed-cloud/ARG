@@ -1,22 +1,34 @@
 /**
- * GovernanceConfigSection — admin UI for editing required tags and
- * naming convention patterns used by governance scanners.
+ * GovernanceConfigSection — admin UI for editing required tags, naming convention patterns and the analysis
+ * settings (amortized vs actual cost, default currency, required VM agent extensions) used by the scanners.
  */
 import React, { useEffect, useState } from 'react';
 import {
   Box, Card, CardContent, Typography, TextField, Button,
-  Chip, Stack, Alert, Divider, IconButton, Tooltip, alpha,
+  Chip, Stack, Alert, Divider, IconButton, Tooltip, alpha, FormControlLabel, Switch, MenuItem,
 } from '@mui/material';
 import { Add, DeleteOutline, RestartAlt, Save } from '@mui/icons-material';
 import { useApi, ApiError } from '../../hooks/useApi';
 import { useSnackbar } from 'notistack';
 
+interface AnalysisSettings {
+  amortized_cost: boolean;
+  display_currency: 'billing' | 'USD';
+  required_vm_extensions: string;
+  include_arc_machines: boolean;
+}
+
 interface GovernanceConfigData {
   required_tags: string[];
   naming_patterns: Record<string, string>;
   naming_pattern_descriptions: Record<string, string>;
+  analysis_settings: AnalysisSettings;
   is_default: boolean;
 }
+
+const DEFAULT_ANALYSIS: AnalysisSettings = {
+  amortized_cost: true, display_currency: 'billing', required_vm_extensions: '', include_arc_machines: false,
+};
 
 export const GovernanceConfigSection: React.FC = () => {
   const api = useApi();
@@ -33,12 +45,14 @@ export const GovernanceConfigSection: React.FC = () => {
   const [newResourceType, setNewResourceType] = useState('');
   const [newPattern, setNewPattern] = useState('');
   const [patternErrors, setPatternErrors] = useState<Record<string, string>>({});
+  const [analysis, setAnalysis] = useState<AnalysisSettings>(DEFAULT_ANALYSIS);
 
   useEffect(() => {
     api.get('/governance/config').then((data) => {
       setConfig(data);
       setTags(data.required_tags);
       setPatterns(data.naming_patterns);
+      setAnalysis({ ...DEFAULT_ANALYSIS, ...(data.analysis_settings ?? {}) });
     }).catch(() => {
       enqueueSnackbar('Failed to load governance config', { variant: 'error' });
     }).finally(() => setLoading(false));
@@ -86,7 +100,7 @@ export const GovernanceConfigSection: React.FC = () => {
     if (hasErrors) { enqueueSnackbar('Fix pattern errors before saving', { variant: 'warning' }); return; }
     setSaving(true);
     try {
-      await api.put('/governance/config', { required_tags: tags, naming_patterns: patterns });
+      await api.put('/governance/config', { required_tags: tags, naming_patterns: patterns, analysis_settings: analysis });
       enqueueSnackbar('Governance config saved — changes take effect on next scan', { variant: 'success' });
     } catch (e) {
       enqueueSnackbar(e instanceof ApiError ? e.message : 'Save failed', { variant: 'error' });
@@ -100,6 +114,7 @@ export const GovernanceConfigSection: React.FC = () => {
       const defaults = await api.get('/governance/config/defaults');
       setTags(defaults.required_tags);
       setPatterns(defaults.naming_patterns);
+      setAnalysis({ ...DEFAULT_ANALYSIS, ...(defaults.analysis_settings ?? {}) });
       setPatternErrors({});
       enqueueSnackbar('Reset to defaults — click Save to apply', { variant: 'info' });
     } catch {
@@ -237,6 +252,38 @@ export const GovernanceConfigSection: React.FC = () => {
             Add
           </Button>
         </Box>
+
+        <Divider sx={{ my: 2.5, borderColor: alpha('#fff', 0.08) }} />
+        <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>Analysis settings</Typography>
+        <Typography variant="caption" component="p" sx={{ color: alpha('#fff', 0.5), mb: 1.5 }}>
+          Apply from the next scan. The Currency dropdown in the top bar can still switch currency per browser.
+        </Typography>
+        <Stack spacing={1.5} sx={{ mb: 2.5, maxWidth: 640 }}>
+          <FormControlLabel
+            control={<Switch checked={analysis.amortized_cost}
+              onChange={(e) => setAnalysis({ ...analysis, amortized_cost: e.target.checked })} />}
+            label={analysis.amortized_cost
+              ? 'Amortized cost - reservations and savings plans spread over the resources that use them'
+              : 'Actual cost - what the invoice charges, purchases on the day they are bought'}
+          />
+          <TextField select size="small" label="Default currency" value={analysis.display_currency}
+            onChange={(e) => setAnalysis({ ...analysis, display_currency: e.target.value as AnalysisSettings['display_currency'] })}
+            sx={{ maxWidth: 320 }}>
+            <MenuItem value="billing">Billing currency (each subscription's invoice)</MenuItem>
+            <MenuItem value="USD">USD</MenuItem>
+          </TextField>
+          <TextField size="small" label="Required VM agent extensions"
+            value={analysis.required_vm_extensions}
+            onChange={(e) => setAnalysis({ ...analysis, required_vm_extensions: e.target.value })}
+            placeholder="AzureMonitorWindowsAgent|AzureMonitorLinuxAgent, MDE.Windows|MDE.Linux"
+            helperText="Comma-separated; | separates alternatives (extension name or type). Empty = check off."
+            inputProps={{ style: { fontFamily: 'monospace', fontSize: 12 }, maxLength: 1000 }} />
+          <FormControlLabel
+            control={<Switch checked={analysis.include_arc_machines}
+              onChange={(e) => setAnalysis({ ...analysis, include_arc_machines: e.target.checked })} />}
+            label="Also check Azure Arc-enabled servers"
+          />
+        </Stack>
 
         <Button
           variant="contained"

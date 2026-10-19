@@ -1,5 +1,5 @@
 // ARG local portal - the Currency dropdown in the top bar: fills the choices from /api/currency, remembers the
-// choice in a cookie (read by the server for reports and the dashboard, and by the estate page) and reloads the page.
+// choice in a cookie (read by the server for reports, the dashboard and diagrams) and reloads the page.
 (function () {
   "use strict";
   const select = document.getElementById("currency-pick");

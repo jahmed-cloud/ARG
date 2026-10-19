@@ -31,7 +31,9 @@ Example minimal scanner:
 """
 
 import asyncio
+import inspect
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -127,6 +129,8 @@ class ScanContext:
     subscription_id:  str
     tenant_id:        str
     scan_job_id:      str
+    # Display name, so subscription-level findings name the subscription and not only its GUID.
+    subscription_name: str = ""
 
     # Azure API clients (injected)
     resource_graph_client:    Any = None
@@ -220,11 +224,32 @@ class BaseScanner(ABC):
     requires_graph:    bool = False  # Needs Microsoft Graph API access
     requires_cost:     bool = False  # Needs Cost Management API access
     requires_defender: bool = False  # Needs Microsoft Defender data
+    # Every finding type the scanner can emit. When declared, the Docker worker resolves open findings of these
+    # types that a clean run no longer reports (and suppresses them when a setting switches the scanner off), so
+    # a check that was fixed, filtered or disabled does not linger in the UI.
+    finding_types: frozenset = frozenset()
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
         self.logger = logging.getLogger(f"arg.scanner.{self.scanner_name}")
         self._validate_class_attrs()
+
+    @classmethod
+    def emitted_finding_types(cls) -> frozenset:
+        """
+        `finding_types` when declared, else every `finding_type="..."` literal in the scanner's own source (what the
+        scanner catalog lists). Without it a fixed issue stayed open in the Docker UI for every scanner that never
+        declared its types.
+        """
+        if cls.finding_types:
+            return frozenset(cls.finding_types)
+        if "_emitted_types" not in cls.__dict__:
+            try:
+                source = inspect.getsource(cls)
+            except (OSError, TypeError):
+                source = ""
+            cls._emitted_types = frozenset(re.findall(r'finding_type\s*=\s*"([a-z0-9_]+)"', source))
+        return cls._emitted_types
 
     def _validate_class_attrs(self):
         """Fail fast if a scanner is missing required class attributes."""

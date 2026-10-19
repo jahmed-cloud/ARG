@@ -20,7 +20,7 @@ from scripts.subscription_analysis.report import (
 )
 
 
-def _analysis() -> AnalysisData:
+def _analysis(config=None) -> AnalysisData:
     load_scanners()
     data = AnalysisData(
         subscription={"id": "sub-1", "name": "sub-demo", "tenant_id": "tenant-1"},
@@ -55,7 +55,7 @@ def _analysis() -> AnalysisData:
         },
     )
     context = ScanContext(subscription_id="sub-1", tenant_id="tenant-1", scan_job_id="job")
-    asyncio.run(run_scanners(context, None, {}, data))
+    asyncio.run(run_scanners(context, None, config or {}, data))
     return data
 
 
@@ -165,3 +165,65 @@ def test_young_subscription_ramping_up_is_not_lumpy(tmp_path):
         {"Cost": 5000.0, "BillingMonth": "2026-08-01T00:00:00", "ServiceName": "VMs", "Currency": "CHF"},
     ]
     assert not write_report(data, tmp_path).lumpy
+
+
+def test_report_explains_why_cost_and_references_per_finding(tmp_path):
+    data = _analysis({"defender_recommendations": True})
+    write_report(data, tmp_path)
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "Cost of implementing waves 1 + 2 (estimate)" in readme and "SP (" in readme
+    assert "(generic estimate)" in readme
+    assert "| Cost to implement |" in readme
+    assert "Not included:** 2 Defender for Cloud plan-enablement recommendation(s)" in readme
+    security = (tmp_path / "05-deep-dive" / "security-identity" / "README.md").read_text(encoding="utf-8")
+    assert "Microsoft Defender for Storage plan should be enabled" not in security.split("are not listed:")[0]
+    assert "Subscription: sub-demo (`sub-1`)" in security
+    for heading in ("**Why it is needed**", "**When it is not needed**", "**Cost of implementation (estimate)**",
+                    "**References**"):
+        assert heading in security
+    assert "encryptionAtHost=true" in security and "15 September 2028" in security
+    gap = (tmp_path / "02-gap-analysis" / "README.md").read_text(encoding="utf-8")
+    assert "| Cost to implement | Learn more |" in gap and "](https://learn.microsoft.com/" in gap
+    register = (tmp_path / "03-cost-drivers" / "savings-register.md").read_text(encoding="utf-8")
+    assert "| Net / month |" in register
+    findings = json.loads((tmp_path / "05-deep-dive" / "raw" / "findings.json").read_text(encoding="utf-8"))
+    assert all("implementation" in f for f in findings)
+
+
+def test_resource_provider_page_lists_every_provider(tmp_path):
+    from scanners.base.providers import build_analysis
+
+    data = _analysis()
+    providers = [{"namespace": f"Microsoft.Svc{i:02d}", "registrationState": "NotRegistered",
+                  "registrationPolicy": "RegistrationRequired"} for i in range(60)]
+    providers += [{"namespace": "Microsoft.Web", "registrationState": "Registered", "registrationPolicy": "RegistrationRequired"},
+                  {"namespace": "Microsoft.Batch", "registrationState": "Registered", "registrationPolicy": "RegistrationRequired"},
+                  {"namespace": "Microsoft.Security", "registrationState": "Registered", "registrationPolicy": "RegistrationRequired"}]
+    data.resource_providers = build_analysis("sub-1", providers, {"microsoft.web/serverfarms": 1}, [], [])
+    write_report(data, tmp_path)
+    page = (tmp_path / "01-current-findings" / "resource-providers.md").read_text(encoding="utf-8")
+    assert "## All providers (63)" in page and "Microsoft.Svc59" in page
+    assert "# az provider unregister --namespace Microsoft.Batch --subscription sub-1" in page   # optional only
+    assert "--namespace Microsoft.Security" not in page                 # governance baseline is never listed
+    assert "--namespace Microsoft.Web" not in page                      # nor core services
+    section = (tmp_path / "01-current-findings" / "README.md").read_text(encoding="utf-8")
+    assert "for information (1):** Microsoft.Batch" in section and "Microsoft.Svc59" in section
+
+
+def test_defender_is_a_summary_with_portal_links_unless_imported(tmp_path):
+    data = _analysis()
+    data.defender = {"recommendations": [
+        {"recommendation": "Install missing OS / package updates", "severity": "High", "resources": 4,
+         "link": "https://portal.azure.com/#view/Microsoft_Azure_Security/x"},
+        {"recommendation": "Storage accounts should prevent shared key access", "severity": "Medium", "resources": 2,
+         "link": "https://portal.azure.com/#view/Microsoft_Azure_Security/y"}],
+        "plan_upsells_left_out": 3, "portal": "https://portal.azure.com/#view/Microsoft_Azure_Security/z",
+        "by_severity": {"High": 1, "Medium": 1}}
+    write_report(data, tmp_path)
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "**Defender for Cloud:** 2 open recommendation(s) - 1 high, 1 medium" in readme
+    assert "Not included:** 3 Defender for Cloud plan-enablement recommendation(s)" in readme
+    security = (tmp_path / "05-deep-dive" / "security-identity" / "README.md").read_text(encoding="utf-8")
+    assert "## Defender for Cloud summary" in security
+    assert "[Install missing OS / package updates](https://portal.azure.com/" in security
+    assert not any(f["title"].startswith("Defender:") for f in data.findings)

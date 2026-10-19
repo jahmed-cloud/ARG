@@ -16,9 +16,19 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from scanners.base.providers import STATUS_ORDER
+from scripts.subscription_analysis import insights
 from scripts.subscription_analysis.ai_prompt import PROMPT_FILE, build_prompt
 from scripts.subscription_analysis.collector import AnalysisData, to_jsonable
+from scripts.subscription_analysis.currency import localise_amounts
 from scripts.subscription_analysis.estate import ESTATE_DIR, HYGIENE_TYPES, config_of, os_of, size_of, state_of
+from scripts.subscription_analysis import reasoning, thinking
+from scripts.subscription_analysis.guidance import (
+    cost_summary,
+    effort_label,
+    implementation_analysis,
+    story_points,
+    total_effort_label,
+)
 from scripts.subscription_analysis.knowledge import (
     AREAS,
     CRITIQUES,
@@ -91,8 +101,10 @@ def write(path: Path, content: str) -> None:
 class Model:
     """Pre-computed aggregates shared by all report sections."""
 
-    def __init__(self, data: AnalysisData):
+    def __init__(self, data: AnalysisData, previous_findings: Optional[List[Dict[str, Any]]] = None):
         self.data = data
+        self.previous_findings = previous_findings
+        self.history: List[Dict[str, Any]] = []   # earlier analyses of this subscription (history.json)
         self.sub = data.subscription
         self.currency = data.cost.get("currency") or "USD"
         self.fx = data.cost.get("usd_to_billing")
@@ -104,6 +116,74 @@ class Model:
             f["ref"] = f"F-{i:03d}"
         self._monthly()
         self._last30()
+        self._implementation()
+
+    # implementation analysis ---------------------------------------------
+
+    def _implementation(self) -> None:
+        """Why / when not / cost of implementation / references for every finding (guidance.py)."""
+        rate = (self.data.settings or {}).get("engineering_hourly_rate_usd")
+        per_resource = self.data.cost.get("last30_by_resource") or {}
+        for f in self.findings:
+            entry = per_resource.get((f.get("resource_id") or "").lower()) or {}
+            usd = entry.get("cost_usd")
+            if usd is None and entry.get("cost") is not None and self.fx:
+                usd = entry["cost"] / self.fx
+            f["implementation"] = implementation_analysis(f, resource_monthly_usd=usd, hourly_rate_usd=rate)
+        by_resource: Dict[str, List[str]] = defaultdict(list)
+        for f in self.findings:
+            if f.get("resource_id"):
+                by_resource[f["resource_id"].lower()].append(f["title"])
+        for f in self.findings:
+            related = [t for t in by_resource.get((f.get("resource_id") or "").lower(), []) if t != f["title"]]
+            f["reasoning"] = reasoning.reason(f, related, f["implementation"])
+
+    def implementation_totals(self, findings: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        items = [f["implementation"] for f in (self.findings if findings is None else findings)]
+        hours = [i["hours"] for i in items if i.get("hours")]
+        extra = [i["monthly_usd"] for i in items if i.get("monthly_usd")]
+        one_off = [i["one_off_usd"] for i in items if i.get("one_off_usd")]
+        return {"monthly_usd": round(sum(extra), 2), "with_run_cost": len(extra),
+                "usage_based": sum(1 for i in items if i.get("monthly_usd") is None),
+                "hours": [round(sum(h[0] for h in hours), 1), round(sum(h[1] for h in hours), 1)],
+                "one_off_usd": [sum(o[0] for o in one_off), sum(o[1] for o in one_off)] if one_off else None}
+
+    def usd_label(self, usd: Optional[float]) -> str:
+        """Like savings_label, but 0 is a real value ('0') and None means usage-based."""
+        if usd is None:
+            return "usage-based"
+        return "0" if not usd else self.savings_label(usd)
+
+    def subscription_label(self) -> str:
+        return f"{self.sub.get('name') or self.sub['id']} (`{self.sub['id']}`)"
+
+    # architect views (insights.py) ----------------------------------------
+
+    @property
+    def actionable(self) -> List[Dict[str, Any]]:
+        return [f for f in self.findings if not insights.is_hygiene(f)]
+
+    @property
+    def hygiene(self) -> List[Dict[str, Any]]:
+        return [f for f in self.findings if insights.is_hygiene(f)]
+
+    def systemic(self) -> List[Dict[str, Any]]:
+        return insights.systemic_issues(self.findings, self.data.resources)
+
+    def allocation(self) -> Optional[Dict[str, Any]]:
+        tags = (self.data.settings or {}).get("required_tags") or []
+        return insights.allocation(self.data.resources, self.data.cost.get("last30_by_resource") or {}, tags) \
+            if tags else None
+
+    def environments(self) -> Dict[str, float]:
+        return insights.environment_split(self.data.resources, self.data.cost.get("last30_by_resource") or {},
+                                          self.sub.get("name") or "")
+
+    def coverage(self) -> Dict[str, Any]:
+        return insights.cost_coverage(self.top_resources, self.findings, self.total_30)
+
+    def delta(self) -> Optional[Dict[str, Any]]:
+        return insights.changes(self.previous_findings, self.findings)
 
     # cost --------------------------------------------------------------
 
@@ -260,6 +340,13 @@ class Model:
             return f"{money(billing, self.currency)} (USD {usd:,.0f})"
         return money(usd, "USD")
 
+    def localise(self, text: str) -> str:
+        """A page in the subscription's billing currency at its amortized 30-day rate - unless the display_currency
+        setting asks for USD (then the billing amount and its USD equivalent both stay)."""
+        if (self.data.settings or {}).get("display_currency") == "USD":
+            return text
+        return localise_amounts(text, self.fx, self.currency)
+
     # inventory -----------------------------------------------------------
 
     def resource_count_by_rg(self) -> Counter:
@@ -278,7 +365,6 @@ class Model:
 
 def render_readme(m: Model) -> str:
     sub, cur = m.sub, m.currency
-    sev_counts = Counter(f["severity"] for f in m.findings)
     waves = m.savings_by_wave()
     top_services = sorted(m.service_30.items(), key=lambda kv: -kv[1])[:3]
     risks = [f for f in m.findings if f["severity"] in ("critical", "high") and f["area"] != AREAS[4]][:8]
@@ -319,12 +405,130 @@ def render_readme(m: Model) -> str:
         lines.append(f"- **Budget{'s' if len(amounts) > 1 else ''}:** {label} - "
                      f"{'the largest ' if len(amounts) > 1 else ''}exceeded in {over} of {len(m.month_keys)} months"
                      + (" (actual, invoiced cost - what budgets track)." if m.months_actual else "."))
-    lines.append(f"- **Findings:** {len(m.findings)} - " + ", ".join(
-        f"{sev_counts.get(s, 0)} {s}" for s in SEVERITIES if sev_counts.get(s)) + ".")
+    actionable, hygiene = m.actionable, m.hygiene
+    systemic_actionable = [x for x in m.systemic() if not x["hygiene"]]
+    act_sev = Counter(f["severity"] for f in actionable)
+    merged = m.data.correlation or {}
+    lines.append(f"- **Findings:** {len(actionable)} actionable - " + (", ".join(
+        f"{act_sev.get(s, 0)} {s}" for s in SEVERITIES if act_sev.get(s)) or "none")
+        + (f" ({sum(x['count'] for x in systemic_actionable)} of them in {len(systemic_actionable)} systemic "
+           f"issue(s) - one guardrail each, see [Systemic issues](#systemic-issues---fix-once-not-per-resource))"
+           if systemic_actionable else "")
+        + (f"; plus {len(hygiene)} tag / naming hygiene items, summarised below as cost allocation"
+           if hygiene else "")
+        + (f"; {merged.get('defender_recommendations_merged', 0) + merged.get('advisor_items_merged', 0)} "
+           f"Defender / Advisor items merged into the matching ARG findings"
+           if merged.get("defender_recommendations_merged") or merged.get("advisor_items_merged") else "") + ".")
+    delta = m.delta()
+    if delta is not None:
+        lines.append(f"- **Since the previous analysis:** {len(delta['new'])} new, {len(delta['resolved'])} resolved"
+                     + (f", {len(delta['worse'])} rated worse" if delta["worse"] else "")
+                     + " - see [Changes](#changes-since-the-previous-analysis).")
+    if m.total_30 and m.fx:
+        saving_billing = m.to_billing(waves[1] + waves[2]) or 0
+        lines.append(f"- **Savings identified:** {m.savings_label(waves[1] + waves[2])} per month, "
+                     f"{pct(saving_billing, m.total_30)} of the last 30 days' spend (waves 1 + 2).")
+    coverage = m.coverage()
+    if coverage["rows"]:
+        lines.append(f"- **Where the money is:** the {len(coverage['rows'])} costliest resources carry "
+                     f"{coverage['top_share']:.0%} of the spend; "
+                     + (f"**{coverage['uncovered_share']:.0%} ({money(coverage['uncovered_cost'], cur)}) sits in "
+                        f"resources no finding addresses** - they need a design review, see "
+                        f"[the table below](#where-the-money-is)." if coverage["uncovered_cost"] else
+                        "every one of them has at least one recommendation."))
+    alloc = m.allocation()
+    if alloc:
+        worst = next(iter(alloc["missing_by_tag"].items()), None)
+        lines.append(f"- **Cost allocation:** {alloc['share']:.0%} of the spend is on resources carrying every "
+                     f"required tag ({', '.join(alloc['required_tags'])})"
+                     + (f"; the most-missed tag is '{worst[0]}' on {money(worst[1], cur)} of spend" if worst and worst[1]
+                        else "") + "."
+                     + (f" The required tags may not be the company standard - the tags used most here are "
+                        f"{', '.join(alloc['tags_in_use'])}; set the standard in Settings (`required_tags`)."
+                        if alloc["share"] < 0.05 and alloc["tags_in_use"] else ""))
+    envs = {k: v for k, v in m.environments().items() if v}
+    if len(envs) > 1 or (envs and "Unknown" not in envs):
+        lines.append("- **By environment:** " + ", ".join(f"{k} {money(v, cur)} ({pct(v, m.total_30)})"
+                                                         for k, v in envs.items()) + ".")
+    resilience = insights.resilience(m.data.reliability or [], m.data.resources, sub.get("name") or "")
+    zone = sum(g["production"] for g in resilience if g["sub_category"] == "ZoneResiliency")
+    backup = sum(g["production"] for g in resilience if g["sub_category"] in ("DataProtectionAndRecovery",
+                                                                               "RegionalResiliency"))
+    if zone or backup:
+        lines.append(f"- **Resilience (production):** {zone} zone-redundancy gap(s) and {backup} backup / "
+                     f"geo-redundancy gap(s) reported by Azure Advisor - see "
+                     f"[resilience posture](./01-current-findings/README.md#8-resilience-posture-azure-advisor).")
+    calendar = insights.retirement_calendar(m.findings)
+    if calendar:
+        overdue = sum(1 for r in calendar if r["days_left"] is not None and r["days_left"] < 0)
+        soon = sum(1 for r in calendar if r["days_left"] is not None and 0 <= r["days_left"] <= 90)
+        lines.append(f"- **Retirements:** {len(calendar)} dated retirement / end-of-support item(s) - "
+                     f"{overdue} overdue, {soon} within 90 days (see [calendar](#retirement-calendar)).")
+    planned = [f for f in m.findings if f["wave"] in (WAVE_NO_REGRET, WAVE_OPTIMISE) and not insights.is_hygiene(f)]
+    structural = [f for f in m.findings if f["wave"] == WAVE_STRUCTURAL]
+    if planned:
+        totals = m.implementation_totals(planned)
+        lines.append(
+            "- **Cost of implementing waves 1 + 2 (estimate):** "
+            + (f"{m.savings_label(totals['monthly_usd'])} per month of additional Azure run cost "
+               f"({totals['with_run_cost']} finding(s), e.g. private endpoints, gateways)"
+               if totals["monthly_usd"] else "no additional Azure run cost for the estimated items")
+            + (f", {totals['usage_based']} with usage-based cost" if totals["usage_based"] else "")
+            + f"; effort about {total_effort_label(f['implementation'].get('hours') for f in planned)}"
+            + (f" (≈ USD {totals['one_off_usd'][0]:,}-{totals['one_off_usd'][1]:,} one-off)"
+               if totals["one_off_usd"] else "")
+            + ". Per finding: why it is needed, when it is not, cost and references in the "
+              "[deep dives](./05-deep-dive/README.md).")
+    lines += _spend_to_fix_lines(m)
+    ai = m.data.thinking or {}
+    if ai.get("status") == "ok":
+        challenged = sum(1 for f in m.findings if (f.get("ai_review") or {}).get("agree") is False)
+        lines.append(f"- **AI review ({ai.get('model')}):** {ai.get('summary')} {len(ai.get('themes') or [])} "
+                     f"theme(s); {challenged} recommendation(s) challenged - "
+                     f"[thinking mode](./05-deep-dive/thinking.md).")
+    elif ai.get("status") == "error":
+        lines.append(f"- **AI review did not run:** {ai.get('reason')} - the built-in reasoning is in every "
+                     f"finding.")
+    if structural:
+        effort = total_effort_label((f.get("implementation") or {}).get("hours") for f in structural)
+        lines.append(f"- **Wave 3 (structural, {len(structural)} findings)** is project work of its own"
+                     + (f" - about {effort} if all were done" if effort else "")
+                     + "; plan it per decision in the "
+                       "[architectural critique](./04-architectural-critique/README.md).")
+    defender = m.data.defender or {}
+    if defender.get("recommendations") and not _defender_imported(m):
+        sev = defender.get("by_severity") or {}
+        top = defender["recommendations"][:3]
+        lines.append(f"- **Defender for Cloud:** {len(defender['recommendations'])} open recommendation(s) - "
+                     + ", ".join(f"{sev[s]} {s.lower()}" for s in ("High", "Medium", "Low") if sev.get(s))
+                     + "; top: " + "; ".join(f"{t['recommendation'].rstrip('.')} ({t['resources']})" for t in top)
+                     + f". Work through them in [Defender for Cloud]({defender.get('portal')}) (exemptions, owners, due "
+                       f"dates live there) - summary in the "
+                       f"[security deep dive](./05-deep-dive/security-identity/README.md#defender-for-cloud-summary).")
+    excluded = _excluded_defender_plans(m) or ([None] * int(defender.get("plan_upsells_left_out") or 0))
+    if excluded:
+        example = next((e for e in excluded if e), "Microsoft Defender CSPM should be enabled")
+        lines.append(f"- **Not included:** {len(excluded)} Defender for Cloud plan-enablement recommendation(s) "
+                     f"(paid-plan upsells such as \"{example}\") - plan choice is a central cost decision; "
+                     f"switch them on with the `defender_plan_recommendations` setting.")
     lines += ["", "**Why it costs this much (last 30 days, by service):**", "",
               md_table(["#", "Service", f"{cur}", "Share"],
                        [[i, s, money(c, "", 2), pct(c, m.total_30)] for i, (s, c) in enumerate(top_services, 1)],
                        ["---:", "---", "---:", "---:"]), ""]
+    if coverage["rows"]:
+        lines += ["### Where the money is", "",
+                  "The costliest resources and what addresses them. A resource with no recommendation is not "
+                  "necessarily efficient - ARG has no analyser for it; review its sizing, tier and retention with "
+                  "the owner.", "",
+                  md_table(["#", "Resource", "Main meter", f"30 d {cur}", "Share", "Addressed by"], [
+                      [i, _short_resource(r["resource_id"]), r["meter"], money(r["cost"], "", 0),
+                       pct(r["cost"], m.total_30),
+                       (", ".join(f"[{ref}](./05-deep-dive/{_folder_of(m, ref)}/README.md#{ref.lower()})"
+                                  for ref in r["findings"][:4])
+                        + (f" (saving {m.savings_label(r['saving_usd'])})" if r["saving_usd"] else ""))
+                       if r["findings"] else "**No recommendation - design review**"]
+                      for i, r in enumerate(coverage["rows"], 1)],
+                      ["---:", "---", "---", "---:", "---:", "---"]), ""]
     lines += ["**Headline savings (estimated, per month):**", "",
               md_table(["Wave", "Per month", "Per year"], [
                   [WAVE_NAMES[w], m.savings_label(waves.get(w)), m.savings_label((waves.get(w) or 0) * 12)]
@@ -339,6 +543,7 @@ def render_readme(m: Model) -> str:
         lines += ["**Top risks (security, operations, resilience):**", ""]
         lines += [f"- {SEV_LABEL[f['severity']]} - **{f['title']}** ({f['ref']})" for f in risks]
         lines.append("")
+    lines += _systemic_lines(m) + _quick_win_lines(m) + _calendar_lines(m, calendar) + _delta_lines(m, delta)
     lines += [
         "## Report Structure", "",
         md_table(["Folder", "Content"], [
@@ -349,18 +554,152 @@ def render_readme(m: Model) -> str:
             ["[04-architectural-critique](./04-architectural-critique/README.md)",
              "Why the design looks like this, critique per decision, target architecture, roadmap"],
             ["[05-deep-dive](./05-deep-dive/README.md)", "Per-area technical detail and raw JSON evidence"],
+            [f"[{BACKLOG_FILE}](./{BACKLOG_FILE})", "Azure Boards import (Boards → Queries → Import work items): one "
+                                                    "task per systemic issue and per actionable finding, with why, "
+                                                    "cost, steps, references and a done-when"],
         ]), "",
         "## Prioritised Action List", "",
     ]
-    actions = sorted(m.findings, key=lambda f: (f["wave"], sev_rank(f["severity"]),
-                                                -(f.get("estimated_monthly_savings_usd") or 0)))[:12]
-    lines.append(md_table(["Ref", "Wave", "Severity", "Action", "Impact"],
-                          [[f["ref"], f["wave"], SEV_LABEL[f["severity"]], f["title"], m.impact_label(f)]
+    actions = sorted(m.actionable, key=lambda f: (f["wave"], sev_rank(f["severity"]),
+                                                  -(f.get("estimated_monthly_savings_usd") or 0)))[:12]
+    lines.append(md_table(["Ref", "Wave", "Severity", "Action", "Impact", "Cost to implement"],
+                          [[f"[{f['ref']}](./05-deep-dive/{f['folder']}/README.md#{f['ref'].lower()})", f["wave"],
+                            SEV_LABEL[f["severity"]], f["title"], m.impact_label(f),
+                            cost_summary(f["implementation"])]
                            for f in actions]))
     lines += ["", "> Generated by `python -m scripts.subscription_analysis`. Evidence for every finding is in "
                   "[05-deep-dive/raw](./05-deep-dive/raw). Estimates are marked as such in the finding text.",
               "", f"_{BRAND_CREDIT}._"]
     return "\n".join(lines)
+
+
+def _short_resource(resource_id: str) -> str:
+    """'…/providers/microsoft.kusto/clusters/adx1' -> 'adx1 (kusto/clusters, rg)'."""
+    parts = (resource_id or "").split("/")
+    lowered = [p.lower() for p in parts]
+    if "providers" not in lowered:
+        return resource_id or "-"
+    i = lowered.index("providers")
+    rtype = "/".join(lowered[i + 1:i + 3]).replace("microsoft.", "")
+    rg = parts[lowered.index("resourcegroups") + 1] if "resourcegroups" in lowered else ""
+    return f"`{parts[-1]}` ({rtype}" + (f", {rg})" if rg else ")")
+
+
+def _folder_of(m: Model, ref: str) -> str:
+    return next((f["folder"] for f in m.findings if f.get("ref") == ref), "")
+
+
+def _ref_link(m: Model, f: Dict[str, Any], prefix: str = "./") -> str:
+    return f"[{f['ref']}]({prefix}05-deep-dive/{f['folder']}/README.md#{f['ref'].lower()})"
+
+
+def _systemic_lines(m: Model) -> List[str]:
+    systemic = m.systemic()
+    if not systemic:
+        return []
+    rows = []
+    for s in systemic:
+        refs = s["refs"]
+        span = f"{refs[0]} … {refs[-1]}" if len(refs) > 1 else refs[0]
+        rows.append([f"**{s['label']}**" + (" (hygiene)" if s["hygiene"] else ""), s["count"],
+                     f"{s['share']:.0%} of {s['population']}", SEV_LABEL[s["severity"]],
+                     "<br>".join(s["guardrails"]) or "Fix in the IaC module / landing-zone template", span])
+    return ["## Systemic issues - fix once, not per resource", "",
+            "The same gap on many resources is a platform default, not an individual mistake. Fix the template "
+            "(IaC module, landing-zone policy) and let Azure Policy keep it fixed: assign the guardrail at the "
+            "management group in **Audit** first, remediate the existing resources (Modify / DeployIfNotExists "
+            "policies do it with a remediation task), then switch to **Deny** for new ones.", "",
+            md_table(["Issue", "Resources", "Share", "Severity", "Guardrail (built-in Azure Policy)", "Findings"], rows,
+                     ["---", "---:", "---:", "---", "---", "---"]), ""]
+
+
+def _quick_win_lines(m: Model) -> List[str]:
+    wins = insights.quick_wins(m.findings)
+    if not wins:
+        return []
+    return ["## Quick wins - an hour or less each, no extra run cost", "",
+            md_table(["Ref", "Severity", "Action", "Impact", "Effort"], [
+                [_ref_link(m, f), SEV_LABEL[f["severity"]], f["title"], m.impact_label(f),
+                 cost_summary(f["implementation"])] for f in wins]), ""]
+
+
+def _calendar_lines(m: Model, calendar: List[Dict[str, Any]]) -> List[str]:
+    rows = [r for r in calendar if r["days_left"] is None or r["days_left"] <= 365][:20]
+    later = [r for r in calendar if r["days_left"] is not None and r["days_left"] > 365]
+    if not rows and not later:
+        return []
+
+    def when(r: Dict[str, Any]) -> str:
+        if r["days_left"] is None:
+            return "date not announced"
+        return "**overdue**" if r["days_left"] < 0 else f"{r['days_left']} days"
+
+    def affected(r: Dict[str, Any]) -> str:
+        names = [n for n in r["resources"] if n]
+        return f"{len(names)}: " + ", ".join(names[:3]) + (", …" if len(names) > 3 else "") if len(names) > 1 \
+            else (names[0] if names else "-")
+
+    def refs(r: Dict[str, Any]) -> str:
+        return r["refs"][0] if len(r["refs"]) == 1 else f"{r['refs'][0]} … ({len(r['refs'])})" if r["refs"] else ""
+
+    out = ["## Retirement calendar", "",
+           "Retirements and end-of-support that affect this subscription, soonest first: overdue and the next 12 "
+           "months (Azure Advisor's dated retirements and ARG's own end-of-support checks; undated Advisor upgrade "
+           "advice is left out).", ""]
+    if rows:
+        out += [md_table(["Date", "In", "What retires", "Resources", "Findings", "Cost implication"], [
+            [r["date"] or "-", when(r), r["what"], affected(r), refs(r), r["cost"] or ""] for r in rows],
+            ["---", "---", "---", "---", "---", "---"], drop_empty=True), ""]
+    if later:
+        out += ["Later: " + "; ".join(f"{r['date']} {r['what']} ({len(r['resources'])})" for r in later[:8])
+                + (" …" if len(later) > 8 else "") + ".", ""]
+    return out
+
+
+def _delta_lines(m: Model, delta: Optional[Dict[str, Any]]) -> List[str]:
+    if delta is None:
+        return []
+    out = ["## Changes since the previous analysis", ""]
+    if m.history:
+        waves = m.savings_by_wave()
+        act = Counter(f["severity"] for f in m.actionable)
+        runs = m.history[-5:] + [{"date": f"{m.data.generated_at:%Y-%m-%d %H:%M} (this run)",
+                                  "actionable": len(m.actionable), "critical": act.get("critical", 0),
+                                  "high": act.get("high", 0), "cost_30d": m.total_30,
+                                  "savings_usd": waves[1] + waves[2]}]
+        out += [md_table(["Analysis", "Actionable", "Critical / High", f"Last 30 d {m.currency}", "Savings / month"], [
+            [r.get("date"), r.get("actionable", "-"), f"{r.get('critical', 0)} / {r.get('high', 0)}",
+             money(r.get("cost_30d")), m.savings_label(r.get("savings_usd"))] for r in runs],
+            ["---", "---:", "---:", "---:", "---:"]), ""]
+    if not (delta["new"] or delta["resolved"] or delta["worse"]):
+        return out + ["No finding appeared, disappeared or changed severity.", ""]
+
+    def table(items: List[Dict[str, Any]], resolved: bool = False) -> str:
+        return md_table(["Ref" if not resolved else "Was", "Severity", "Finding", "Saving / month"], [
+            [f.get("ref") or "-", SEV_LABEL.get(f["severity"], f["severity"]), f["title"],
+             m.savings_label(f.get("estimated_monthly_savings_usd"))] for f in items[:15]])
+
+    if delta["new"]:
+        out += [f"**New ({len(delta['new'])})**", "", table(delta["new"]), ""]
+    if delta["resolved"]:
+        out += [f"**Resolved or no longer reported ({len(delta['resolved'])})**", "", table(delta["resolved"], True), ""]
+    if delta["worse"]:
+        out += [f"**Rated worse ({len(delta['worse'])})**", "", table(delta["worse"]), ""]
+    return out
+
+
+def _defender_imported(m: Model) -> bool:
+    """True when the Defender recommendations scanner ran (setting on), i.e. they are findings too."""
+    run = next((r for r in m.data.scanner_runs if r.get("scanner") == "defender_recommendations_scanner"), None)
+    return bool(run) and run.get("status") == "completed"
+
+
+def _excluded_defender_plans(m: Model) -> List[str]:
+    """Defender plan-enablement recommendations the run left out (defender_plan_recommendations off)."""
+    for run in m.data.scanner_runs:
+        if run.get("scanner") == "defender_recommendations_scanner":
+            return list((run.get("metadata") or {}).get("excluded_plan_recommendations") or [])
+    return []
 
 
 def render_current_findings(m: Model) -> Tuple[str, str]:
@@ -406,7 +745,25 @@ def render_current_findings(m: Model) -> Tuple[str, str]:
     lines += ["", "## 6. Findings Snapshot per Area", ""]
     lines.append(_area_matrix(m))
     lines += _resource_providers(m)
+    lines += _resilience_lines(m)
     return "\n".join(lines), _inventory(m)
+
+
+def _resilience_lines(m: Model) -> List[str]:
+    groups = insights.resilience(m.data.reliability or [], m.data.resources, m.sub.get("name") or "")
+    if not groups:
+        return []
+    return ["", "## 8. Resilience Posture (Azure Advisor)", "",
+            "Open Azure Advisor reliability recommendations, production first (environment from tags, names and the "
+            "subscription naming convention). Items ARG already reports as findings are not repeated. Zone "
+            "redundancy and backup gaps on production data stores are the ones to decide on: each is a recovery-time "
+            "/ data-loss exposure with a cost to close (ZRS / zone-redundant tiers cost more than LRS).", "",
+            md_table(["Area", "Recommendation", "Production", "All resources", "Examples (production first)"], [
+                [g["sub_category"], g["problem"], g["production"], g["resources"], ", ".join(g["examples"])]
+                for g in groups[:25]], ["---", "---", "---:", "---:", "---"]),
+            "", "Reference: [Advisor reliability recommendations]"
+                "(https://learn.microsoft.com/azure/advisor/advisor-reference-reliability-recommendations) · "
+                "[Availability zones](https://learn.microsoft.com/azure/reliability/availability-zones-overview)", ""]
 
 
 def _resource_providers(m: Model) -> List[str]:
@@ -416,28 +773,34 @@ def _resource_providers(m: Model) -> List[str]:
     if not rows:
         return []
     counts = rp.get("counts") or {}
+    unused = [r for r in rows if r["status"] == "Registered, not in use" and not r.get("baseline")]
+    blocked = {r["namespace"] for f in m.findings if f["finding_type"] == "resource_provider_blocked_registered"
+               for r in (f.get("evidence") or {}).get("blocked_registered") or []}
     lines = ["", "## 7. Resource Providers", "",
              "A resource provider must be **registered** before the subscription accepts its resources; a **not "
-             "registered** provider cannot be used until an Owner / Contributor registers it (the portal and many "
-             "tools register providers on first use). Registered but unused providers are normal and not a finding. "
-             "Raw data: [resource-providers.json](../05-deep-dive/raw/inventory/resource-providers.json).", "",
+             "registered** provider cannot be used until an Owner / Contributor registers it. Core services "
+             "(Compute, Storage, Network, Key Vault, Web, ...) and the governance baseline (Defender, Policy, "
+             "Monitor, Cost Management) are expected to be registered even without resources and are never "
+             "unregister candidates. Niche providers registered but unused are shown for information only - "
+             "unregistering saves nothing; restrict services with an 'Allowed / Not allowed resource types' policy. "
+             "Every provider of the subscription: "
+             "[resource-providers.md](./resource-providers.md); raw data: "
+             "[resource-providers.json](../05-deep-dive/raw/inventory/resource-providers.json).", "",
              md_table(["Status", "Providers"], [[s, counts[s]] for s in STATUS_ORDER if counts.get(s)],
                       ["---", "---:"]), ""]
+    if blocked:
+        lines += [f"**Blocked but registered ({len(blocked)}):** " + ", ".join(sorted(blocked, key=str.lower))
+                  + " - see the finding in the gap analysis.", ""]
+    if unused:
+        lines += [f"**Niche providers registered but unused - for information ({len(unused)}):** "
+                  + ", ".join(r["namespace"] for r in unused) + ".", ""]
     shown = [r for r in rows if r["status"] != "Not registered"]
     lines += [f"### Registered and in-use providers ({len(shown)})", "",
-              md_table(["Provider", "Status", "Registration", "Resources", "Resource types in use"], [
-                  [r["namespace"], r["status"], "on request" if r["registration_policy"] == "RegistrationRequired"
-                   else ("automatic" if r["registration_policy"] == "RegistrationFree" else "-"),
-                   r["resources"] or "0",
-                   ", ".join(f"{t.split('/', 1)[1] if '/' in t else t} ({n})" for t, n in list(r["types"].items())[:6])
-                   + (f" (+{len(r['types']) - 6} more)" if len(r["types"]) > 6 else "")]
-                  for r in shown], ["---", "---", "---", "---:", "---"], drop_empty=True), ""]
+              _provider_table(shown), ""]
     not_registered = [r["namespace"] for r in rows if r["status"] == "Not registered"]
     if not_registered:
         lines += [f"**Not registered ({len(not_registered)}):** the subscription does not accept these providers' "
-                  f"resources yet - " + ", ".join(sorted(not_registered, key=str.lower)[:40])
-                  + (f" and {len(not_registered) - 40} more (see the raw data)." if len(not_registered) > 40 else "."),
-                  ""]
+                  f"resources - " + ", ".join(sorted(not_registered, key=str.lower)) + ".", ""]
     policies = rp.get("policies") or []
     lines += ["### Resource-type policies", ""]
     if policies:
@@ -454,6 +817,51 @@ def _resource_providers(m: Model) -> List[str]:
                   "(directly or through its management groups): every registered provider's resource types may be "
                   "deployed.", ""]
     return lines
+
+
+def _provider_table(rows: List[Dict[str, Any]]) -> str:
+    def note(r: Dict[str, Any]) -> str:
+        if r.get("baseline"):
+            return "governance baseline"
+        if r["status"] == "Registered, not in use":
+            return "unregister candidate"
+        return ""
+
+    return md_table(["Provider", "Status", "Registration", "Resources", "Resource types in use", "Note"], [
+        [r["namespace"], r["status"], "on request" if r["registration_policy"] == "RegistrationRequired"
+         else ("automatic" if r["registration_policy"] == "RegistrationFree" else "-"),
+         r["resources"] or "0",
+         ", ".join(f"{t.split('/', 1)[1] if '/' in t else t} ({n})" for t, n in list(r["types"].items())[:6])
+         + (f" (+{len(r['types']) - 6} more)" if len(r["types"]) > 6 else ""), note(r)]
+        for r in rows], ["---", "---", "---", "---:", "---", "---"], drop_empty=True)
+
+
+def render_resource_providers_page(m: Model) -> Optional[str]:
+    """Every provider of the subscription - registered, platform, not registered - in one table."""
+    rows = (m.data.resource_providers or {}).get("providers") or []
+    if not rows:
+        return None
+    unused = [r for r in rows if r["status"] == "Registered, not in use" and not r.get("baseline")]
+    lines = ["# Resource Providers", "", "[← Back to Current Findings](./README.md#7-resource-providers)", "",
+             f"Subscription: {m.subscription_label()} - {len(rows)} providers. Raw data: "
+             "[resource-providers.json](../05-deep-dive/raw/inventory/resource-providers.json).", "",
+             "| Status | Meaning |", "|---|---|",
+             "| In use | Registered and at least one resource exists |",
+             "| Registered, not in use | Registered, no resources yet. Normal for core services (Compute, Storage, "
+             "Network, ...) and the governance baseline; for niche providers, information only |",
+             "| Platform (always registered) | Registration-free; Azure registers it automatically |",
+             "| Not registered | The subscription cannot create these resources until someone registers it |", ""]
+    if unused:
+        lines += [f"## Niche providers registered but unused ({len(unused)})", "",
+                  "For information. A registration costs nothing and unregistering saves nothing; it only stops the "
+                  "service being deployed until someone registers it again (the portal does that automatically). "
+                  "For services the company does not allow, a 'Not allowed resource types' policy at the management "
+                  "group is the control that sticks. Only if a provider was registered by a one-off test that nobody "
+                  "will use again:", "",
+                  "```bash"] + [f"# az provider unregister --namespace {r['namespace']} --subscription {m.sub['id']}"
+                                for r in unused] + ["```", ""]
+    lines += [f"## All providers ({len(rows)})", "", _provider_table(rows), ""]
+    return "\n".join(lines)
 
 
 def _span(months: List[str]) -> str:
@@ -546,22 +954,53 @@ def _inventory(m: Model) -> str:
     return "\n".join(lines)
 
 
+def _first_step(text: Optional[str]) -> str:
+    """First actionable line of the remediation (skips 'Recommendation name:' headings)."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return next((line for line in lines if not line.endswith(":")), lines[0] if lines else "")
+
+
+def _learn_more(f: Dict[str, Any]) -> str:
+    refs = (f.get("implementation") or {}).get("references") or []
+    return f"[{refs[0]['title']}]({refs[0]['url']})" if refs else ""
+
+
 def render_gap_analysis(m: Model) -> str:
     lines = ["# 02 - Gap Analysis", "", "[← Back to summary](../README.md)", "",
+             f"Subscription: {m.subscription_label()}", "",
              "Severity: **Critical** = exploitable exposure or major waste, act now; **High** = material risk/cost, "
              "within 30 days; **Medium** = best-practice gap, within the quarter; **Low** = hygiene.", "",
-             "## Summary Matrix", "", _area_matrix(m), ""]
+             "**Cost to implement** = additional Azure run cost per month (USD list price) and effort in story points "
+             "(1 SP = 4h; a generic estimate of the size of the change, not measured hours); the deep dive of each "
+             "finding explains why it is needed, when it is not, and how the cost was estimated.",
+             "", "## Summary Matrix", "", _area_matrix(m), ""]
+    # Gaps on many resources are one row each (with the guardrail); the deep dive lists every resource.
+    collapsed = {s["finding_type"]: s for s in m.systemic() if s["count"] >= insights.SYSTEMIC_MIN_COUNT}
     for area in AREAS:
         items = [f for f in m.findings if f["area"] == area]
         if not items:
             continue
         lines += [f"## {area}", ""]
-        lines.append(md_table(["Ref", "Severity", "Gap", "Resource", "Recommendation"], [
-            [f["ref"], SEV_LABEL[f["severity"]], f"**{f['title']}** - {f['description']}",
-             short_id(f.get("resource_id"), m.sub["id"]),
-             (f.get("remediation_steps") or "").split("\n")[0]]
-            for f in items
-        ]))
+        rows, shown = [], set()
+        for f in items:
+            s = collapsed.get(f["finding_type"])
+            if s is None:
+                rows.append([f"[{f['ref']}](../05-deep-dive/{f['folder']}/README.md#{f['ref'].lower()})",
+                             SEV_LABEL[f["severity"]], f"**{f['title']}** - {f['description']}",
+                             short_id(f.get("resource_id"), m.sub["id"]), _first_step(f.get("remediation_steps")),
+                             cost_summary(f["implementation"]), _learn_more(f)])
+            elif f["finding_type"] not in shown:
+                shown.add(f["finding_type"])
+                rows.append([f"{s['refs'][0]} … {s['refs'][-1]}", SEV_LABEL[s["severity"]],
+                             f"**{s['label']} - {s['count']} resources ({s['share']:.0%} of {s['population']})** - "
+                             f"systemic; every resource is listed in the "
+                             f"[deep dive](../05-deep-dive/{s['folder']}/README.md)",
+                             f"{s['count']} resources",
+                             "Guardrail: " + "; ".join(s["guardrails"]) if s["guardrails"]
+                             else "Fix the IaC module / template default",
+                             cost_summary(f["implementation"]) + " per resource", _learn_more(f)])
+        lines.append(md_table(["Ref", "Severity", "Gap", "Resource", "Recommendation", "Cost to implement",
+                               "Learn more"], rows, drop_empty=True))
         lines.append("")
     return "\n".join(lines)
 
@@ -669,12 +1108,17 @@ def render_savings_register(m: Model) -> str:
         other = sorted((f for f in items if not f.get("estimated_monthly_savings_usd") and f not in hygiene),
                        key=lambda f: (sev_rank(f["severity"]), f["title"]))
         if saving:
+            net_total = sum(f["implementation"].get("net_monthly_usd") or 0 for f in saving)
             lines += [f"### With an estimated saving ({len(saving)})", "",
-                      md_table(["Ref", "Action", "Resource", "Severity", "Monthly saving"], [
+                      "Net = saving minus the additional run cost of the change (where the change adds one; the AI "
+                      "gateway saving is already net of the gateway).", "",
+                      md_table(["Ref", "Action", "Resource", "Severity", "Monthly saving", "Cost to implement",
+                                "Net / month"], [
                           [f["ref"], f["title"], short_id(f.get("resource_id"), m.sub["id"]), SEV_LABEL[f["severity"]],
-                           m.savings_label(f.get("estimated_monthly_savings_usd"))] for f in saving
+                           m.savings_label(f.get("estimated_monthly_savings_usd")), cost_summary(f["implementation"]),
+                           m.savings_label(f["implementation"].get("net_monthly_usd"))] for f in saving
                       ] + [["", f"**Total {WAVE_NAMES[wave].split(' - ')[0].lower()}**", "", "",
-                            f"**{m.savings_label(waves[wave])}**"]]), ""]
+                            f"**{m.savings_label(waves[wave])}**", "", f"**{m.savings_label(net_total)}**"]]), ""]
             scripted = [f for f in saving if f.get("azure_cli_script")][:15]
             if scripted:
                 lines += ["```bash"]
@@ -683,9 +1127,9 @@ def render_savings_register(m: Model) -> str:
                 lines += ["```", ""]
         if other:
             lines += [f"### Other actions ({len(other)}) - risk and operations, no direct saving", "",
-                      md_table(["Ref", "Action", "Resource", "Severity", "Area"], [
+                      md_table(["Ref", "Action", "Resource", "Severity", "Area", "Cost to implement"], [
                           [f["ref"], f["title"], short_id(f.get("resource_id"), m.sub["id"]), SEV_LABEL[f["severity"]],
-                           f.get("area")] for f in other
+                           f.get("area"), cost_summary(f["implementation"])] for f in other
                       ]), ""]
         if hygiene:
             counts = Counter(f["finding_type"] for f in hygiene)
@@ -862,6 +1306,83 @@ def _spend_section(m: Model, folder: str, limit: int = 15) -> List[str]:
                      ["---", "---", "---:", "---"]), ""]
 
 
+def _why_lines(impl: Dict[str, Any]) -> List[str]:
+    """'Why it is needed' and 'When it is not needed' - per recommendation for multi-item Defender findings."""
+    items = impl.get("items") or []
+    out: List[str] = []
+    if len(items) > 1:
+        out += ["", "**Why it is needed**", ""] + [f"- **{i['label'].rstrip('.')}** - {i['why']}" for i in items]
+        out += ["", "**When it is not needed**", ""] + [f"- **{i['label'].rstrip('.')}** - {i['skip_when']}"
+                                                         for i in items if i.get("skip_when")]
+        return out
+    if impl.get("why"):
+        out += ["", "**Why it is needed**", "", impl["why"]]
+    if impl.get("skip_when"):
+        out += ["", "**When it is not needed**", "", impl["skip_when"]]
+    return out
+
+
+def _cost_lines(m: Model, f: Dict[str, Any], impl: Dict[str, Any]) -> List[str]:
+    if not impl or impl.get("source") == "generic":
+        return []
+    items = impl.get("items") or []
+    rows = []
+    if len(items) > 1:
+        rows += [f"- **{i['label'].rstrip('.')}** - {i['run_cost']} Effort: {i['effort']} "
+                 f"{effort_label(i['hours'])}" for i in items]
+        rows.append(f"- Together: {cost_summary(impl)}.")
+    else:
+        rows.append(f"- Azure run cost: {impl.get('run_cost')}")
+        if impl.get("effort"):
+            estimate = effort_label(impl.get("hours"))
+            rows.append(f"- Effort: {impl['effort']}" + (f" About {estimate}" if estimate else "")
+                        + (f" (≈ USD {impl['one_off_usd'][0]:,}-{impl['one_off_usd'][1]:,})"
+                           if impl.get("one_off_usd") else "") + ".")
+    if impl.get("saving_usd"):
+        rows.append(f"- Net effect: {m.savings_label(impl.get('net_monthly_usd'))} per month "
+                    + ("(saving already net of the change's cost)" if impl.get("cost_included_in_saving")
+                       else f"(saving {m.savings_label(impl['saving_usd'])} minus run cost "
+                            f"{m.usd_label(impl.get('monthly_usd'))})"))
+    if impl.get("monthly_usd"):
+        rows.append(f"- Prices are USD list prices of {impl.get('prices_as_of')} (Azure Retail Prices API); "
+                    f"enterprise agreements and other regions differ.")
+    return ["", "**Cost of implementation (estimate)**", ""] + rows
+
+
+TARGET_LABELS = {"private_endpoint": "private endpoint + private DNS, public access off",
+                 "disable_public": "public access off (data nobody reads, or boot diagnostics moved to managed)",
+                 "trusted_services": "trusted Microsoft services only", "service_endpoint": "service endpoints",
+                 "ip_rules": "IP rules", "keep_public": "public by design, hardened"}
+
+
+def _spend_to_fix_lines(m: Model) -> List[str]:
+    """Does the report ask to buy something? Every recommendation that adds run cost, and the target architecture
+    for the open endpoints (with the free interim step where the target needs prerequisites)."""
+    paying = [f for f in m.findings if (f["implementation"].get("monthly_usd") or 0) > 0]
+    decided = [(f, (f.get("evidence") or {}).get("access_decision")) for f in m.findings]
+    decided = [(f, d) for f, d in decided if d]
+    out = []
+    if paying:
+        total = sum(f["implementation"]["monthly_usd"] for f in paying)
+        top = sorted(paying, key=lambda f: -f["implementation"]["monthly_usd"])[:4]
+        out.append(f"- **Recommendations that add run cost:** {len(paying)}, about USD {total:,.0f}/month together - "
+                   + "; ".join(f"[{f['ref']}](./05-deep-dive/{f['folder']}/README.md#{f['ref'].lower()}) "
+                               f"{f['title'].split(':')[0]} (+USD {f['implementation']['monthly_usd']:,.2f})"
+                               for f in top)
+                   + ". Each shows the options considered and why the target is the right one.")
+    if decided:
+        targets = Counter(d["option"] for _, d in decided)
+        interim = sum(1 for _, d in decided if d.get("interim"))
+        pe_cost = sum(d["monthly_usd"] for _, d in decided if d["option"] == "private_endpoint")
+        out.append(f"- **Open endpoints - target architecture ({len(decided)}):** "
+                   + ", ".join(f"{n} {TARGET_LABELS.get(k, k)}" for k, n in targets.most_common())
+                   + (f". Private endpoints add about USD {pe_cost:,.0f}/month together" if pe_cost else "")
+                   + (f"; {interim} of them have a free interim step (service endpoint / IP rules) to close the "
+                      f"internet exposure today while the prerequisites are put in place" if interim else "")
+                   + ". Data nobody reads gets no network path at all rather than a private endpoint.")
+    return out
+
+
 def render_deep_dives(m: Model) -> Dict[str, str]:
     pages: Dict[str, str] = {}
     index_rows = []
@@ -870,31 +1391,61 @@ def render_deep_dives(m: Model) -> Dict[str, str]:
         sev = Counter(f["severity"] for f in items)
         index_rows.append([f"[{folder}](./{folder}/README.md)", title, len(items),
                            ", ".join(f"{sev[s]} {s}" for s in SEVERITIES if sev.get(s)) or "-"])
-        lines = [f"# Deep Dive - {title}", "", "[← Deep-dive index](../README.md)", ""]
+        lines = [f"# Deep Dive - {title}", "", "[← Deep-dive index](../README.md)", "",
+                 f"Subscription: {m.subscription_label()}", ""]
         lines += _spend_section(m, folder)
+        defender = m.data.defender or {}
+        if folder == "security-identity" and defender.get("recommendations"):
+            lines += ["## Defender for Cloud summary", "",
+                      ("Defender recommendations are also imported as findings below (`defender_recommendations` is "
+                       "on)." if _defender_imported(m) else
+                       "Not repeated as findings: triage them in Defender for Cloud, where exemptions, owners and due "
+                       "dates are tracked. Switch `defender_recommendations` on to import them as findings."),
+                      f" [Open Defender for Cloud recommendations]({defender.get('portal')}).", "",
+                      md_table(["Severity", "Recommendation", "Resources"], [
+                          [r["severity"], f"[{r['recommendation']}]({r['link']})", r["resources"]]
+                          for r in defender["recommendations"][:30]], ["---", "---", "---:"]), ""]
+            if len(defender["recommendations"]) > 30:
+                lines += [f"… and {len(defender['recommendations']) - 30} more in Defender for Cloud.", ""]
+        excluded = _excluded_defender_plans(m) if folder == "security-identity" else []
+        if excluded:
+            lines += [f"> {len(excluded)} Defender for Cloud plan-enablement recommendation(s) are not listed: "
+                      + "; ".join(excluded) + ". They ask to buy a paid plan rather than fix a configuration; plan "
+                      "choice is a central cost decision (switch them on with the `defender_plan_recommendations` "
+                      "setting).", ""]
         if not items:
             lines.append("No findings in this area.")
             pages[folder] = "\n".join(lines)
             continue
-        if len(lines) > 4:
+        if len(lines) > 6:
             lines += ["## Findings", ""]
-        lines.append(md_table(["Ref", "Severity", "Finding", "Resource", f"30 d {m.currency}", "Impact"], [
+        lines.append(md_table(["Ref", "Severity", "Finding", "Resource", f"30 d {m.currency}", "Impact",
+                               "Cost to implement"], [
             [f"[{f['ref']}](#{f['ref'].lower()})", SEV_LABEL[f["severity"]], f["title"],
-             short_id(f.get("resource_id"), m.sub["id"]), m.cost30(f.get("resource_id")), m.impact_label(f)]
+             short_id(f.get("resource_id"), m.sub["id"]), m.cost30(f.get("resource_id")), m.impact_label(f),
+             cost_summary(f["implementation"])]
             for f in items
-        ], ["---", "---", "---", "---", "---:", "---"], drop_empty=True))
+        ], ["---", "---", "---", "---", "---:", "---", "---"], drop_empty=True))
         lines.append("")
         for f in items:
             lines += [f"## {f['ref']}", "", f"**{f['title']}** - {SEV_LABEL[f['severity']]} · `{f['finding_type']}` · "
                       f"scanner `{f['scanner']}`", "", f.get("description") or "", "",
+                      f"- Subscription: {m.subscription_label()}",
                       f"- Resource: `{f.get('resource_id')}`"]
             for label, key in (("CAF", "caf_control"), ("CIS", "cis_control"), ("NIST", "nist_control")):
                 if f.get(key):
                     lines.append(f"- {label}: {f[key]}")
+            impl = f.get("implementation") or {}
+            lines += _why_lines(impl)
+            lines += _cost_lines(m, f, impl)
+            lines += reasoning.markdown(f.get("reasoning") or {})
+            lines += thinking.finding_markdown(f.get("ai_review"))
             if f.get("remediation_steps"):
                 lines += ["", "**Remediation**", "", f["remediation_steps"]]
             if f.get("azure_cli_script"):
                 lines += ["", "```bash", f["azure_cli_script"], "```"]
+            if impl.get("references"):
+                lines += ["", "**References**", ""] + [f"- [{r['title']}]({r['url']})" for r in impl["references"]]
             if f.get("evidence"):
                 evidence = json.dumps(f["evidence"], indent=2, default=str)
                 if len(evidence) > 3000:
@@ -931,20 +1482,143 @@ def render_deep_dives(m: Model) -> Dict[str, str]:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def write_report(data: AnalysisData, output: Path) -> Model:
-    m = Model(data)
+BACKLOG_FILE = "backlog.csv"
+HISTORY_FILE = "history.json"
+HISTORY_KEEP = 24
+BOARDS_PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4, "info": 4}
+
+
+def read_previous_findings(folder: Path) -> Optional[List[Dict[str, Any]]]:
+    """Findings of the report currently in the folder (None when there is none), read before it is replaced."""
+    path = Path(folder) / "05-deep-dive" / "raw" / "findings.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+
+
+def _html(text: Any) -> str:
+    import html as html_lib
+
+    return html_lib.escape(str(text or "")).replace("\n", "<br>")
+
+
+def backlog_rows(m: Model) -> List[Dict[str, Any]]:
+    """
+    Azure Boards CSV import rows: one work item per systemic issue (guardrail + all affected resources) and one per
+    remaining actionable finding. Hygiene items are covered by their systemic row or the allocation KPI.
+    """
+    sub_name = m.sub.get("name") or m.sub["id"]
+    systemic = m.systemic()
+    systemic_types = {s["finding_type"] for s in systemic}
+    rows = []
+    for s in systemic:
+        items = [f for f in m.findings if f["finding_type"] == s["finding_type"]]
+        impl = items[0].get("implementation") or {}
+        description = (f"<p>{s['count']} resources ({s['share']:.0%} of {s['population']}) in subscription "
+                       f"{_html(sub_name)} have the same gap: {_html(s['label'])}.</p>"
+                       f"<p><b>Why</b><br>{_html(impl.get('why'))}</p>"
+                       + (f"<p><b>Guardrail</b><br>{'<br>'.join(_html(g) for g in s['guardrails'])}</p>"
+                          if s["guardrails"] else "<p><b>Fix</b><br>Change the IaC module / template default.</p>")
+                       + f"<p><b>Resources</b><br>{'<br>'.join(_html(f.get('resource_id')) for f in items[:200])}</p>"
+                       + "".join(f"<p><a href=\"{r['url']}\">{_html(r['title'])}</a></p>"
+                                 for r in impl.get("references") or [])
+                       + f"<p><b>Done when</b><br>The policy is assigned and ARG reports none of "
+                         f"{s['refs'][0]} … {s['refs'][-1]} on the next analysis.</p>")
+        rows.append({"Work Item Type": "Task",
+                     "Title": f"[ARG] Guardrail: {s['label']} ({s['count']} resources, {sub_name})"[:255],
+                     "Description": description, "Priority": BOARDS_PRIORITY.get(s["severity"], 3),
+                     "Tags": f"ARG; {sub_name}; systemic; {s['finding_type']}",
+                     "Remaining Work": 8})
+    for f in m.actionable:
+        if f["finding_type"] in systemic_types:
+            continue
+        impl = f.get("implementation") or {}
+        points = story_points(impl.get("hours"))   # Remaining Work: the hours the story-point scale stands for
+        description = (f"<p>{_html(f.get('description'))}</p>"
+                       f"<p><b>Resource</b><br>{_html(f.get('resource_id'))}<br>Subscription {_html(sub_name)} "
+                       f"({m.sub['id']})</p>"
+                       + (f"<p><b>Why it is needed</b><br>{_html(impl.get('why'))}</p>" if impl.get("why") else "")
+                       + (f"<p><b>When it is not needed</b><br>{_html(impl.get('skip_when'))}</p>"
+                          if impl.get("skip_when") else "")
+                       + f"<p><b>Cost</b><br>{_html(cost_summary(impl))}"
+                       + (f"; saving {m.savings_label(f.get('estimated_monthly_savings_usd'))} per month"
+                          if f.get("estimated_monthly_savings_usd") else "") + "</p>"
+                       + (f"<p><b>Remediation</b><br>{_html(f.get('remediation_steps'))}</p>"
+                          if f.get("remediation_steps") else "")
+                       + (f"<pre>{_html(f.get('azure_cli_script')).replace('<br>', chr(10))}</pre>"
+                          if f.get("azure_cli_script") else "")
+                       + "".join(f"<p><a href=\"{r['url']}\">{_html(r['title'])}</a></p>"
+                                 for r in impl.get("references") or [])
+                       + f"<p><b>Done when</b><br>ARG no longer reports {f['finding_type']} on this resource.</p>")
+        rows.append({"Work Item Type": "Task", "Title": f"[ARG {f['ref']}] {f['title']}"[:255],
+                     "Description": description, "Priority": BOARDS_PRIORITY.get(f["severity"], 3),
+                     "Tags": f"ARG; {sub_name}; {f.get('area')}; wave {f['wave']}; {f['finding_type']}",
+                     "Remaining Work": points["hours"] if points else ""})
+    return rows
+
+
+def write_backlog(m: Model, path: Path) -> None:
+    import csv
+
+    rows = backlog_rows(m)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Work Item Type", "Title", "Description", "Priority", "Tags",
+                                                    "Remaining Work"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def append_history(m: Model, path: Path) -> List[Dict[str, Any]]:
+    """One line per analysis (kept outside the generated files, so re-runs build a trend)."""
+    try:
+        history = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+    except ValueError:
+        history = []
+    waves = m.savings_by_wave()
+    act_sev = Counter(f["severity"] for f in m.actionable)
+    history.append({"date": m.data.generated_at.strftime("%Y-%m-%d %H:%M"), "resources": len(m.data.resources),
+                    "actionable": len(m.actionable), "hygiene": len(m.hygiene),
+                    "critical": act_sev.get("critical", 0), "high": act_sev.get("high", 0),
+                    "cost_30d": round(m.total_30, 2), "currency": m.currency,
+                    "savings_usd": round(waves[1] + waves[2], 2)})
+    history = history[-HISTORY_KEEP:]
+    write(path, json.dumps(history, indent=2))
+    return history
+
+
+def write_report(data: AnalysisData, output: Path,
+                 previous_findings: Optional[List[Dict[str, Any]]] = None) -> Model:
+    m = Model(data, previous_findings)
+    try:
+        m.history = json.loads((output / HISTORY_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        m.history = []
     output.mkdir(parents=True, exist_ok=True)
-    write(output / "README.md", render_readme(m))
+
+    def page(path: Path, content: str) -> None:
+        """A report page with every amount in the subscription's billing currency (setting display_currency)."""
+        write(path, m.localise(content))
+
+    page(output / "README.md", render_readme(m))
     current, inventory = render_current_findings(m)
-    write(output / "01-current-findings" / "README.md", current)
-    write(output / "01-current-findings" / "resource-inventory.md", inventory)
-    write(output / "02-gap-analysis" / "README.md", render_gap_analysis(m))
+    page(output / "01-current-findings" / "README.md", current)
+    page(output / "01-current-findings" / "resource-inventory.md", inventory)
+    providers_page = render_resource_providers_page(m)
+    if providers_page:
+        page(output / "01-current-findings" / "resource-providers.md", providers_page)
+    page(output / "02-gap-analysis" / "README.md", render_gap_analysis(m))
     cost, register = render_cost_drivers(m)
-    write(output / "03-cost-drivers" / "README.md", cost)
-    write(output / "03-cost-drivers" / "savings-register.md", register)
-    write(output / "04-architectural-critique" / "README.md", render_critique(m))
-    for folder, page in render_deep_dives(m).items():
-        write(output / "05-deep-dive" / ("README.md" if folder == "__index__" else f"{folder}/README.md"), page)
+    page(output / "03-cost-drivers" / "README.md", cost)
+    page(output / "03-cost-drivers" / "savings-register.md", register)
+    page(output / "04-architectural-critique" / "README.md", render_critique(m))
+    for folder, text in render_deep_dives(m).items():
+        page(output / "05-deep-dive" / ("README.md" if folder == "__index__" else f"{folder}/README.md"), text)
+    if (m.data.thinking or {}).get("status") in ("ok", "error"):
+        page(output / "05-deep-dive" / "thinking.md", thinking.markdown(m.data.thinking, m.findings))
 
     raw = output / "05-deep-dive" / "raw"
 
@@ -966,6 +1640,8 @@ def write_report(data: AnalysisData, output: Path) -> Model:
                            "report_generated": datetime.now(timezone.utc).isoformat()})
     write(output / SUMMARY_FILE, json.dumps(to_jsonable(summarize(m)), indent=2, default=str))
     write(output / PROMPT_FILE, build_prompt(to_jsonable(summarize(m)), m.findings))
+    write_backlog(m, output / BACKLOG_FILE)
+    append_history(m, output / HISTORY_FILE)
     return m
 
 
@@ -976,8 +1652,8 @@ def write_report(data: AnalysisData, output: Path) -> Model:
 SUMMARY_FILE = "summary.json"
 BRAND_CREDIT = ("Built with Azure Resource Guardian (ARG) · Author: Junaid Ahmed · [jahmed.cloud](https://jahmed.cloud) · "
                 "[github.com/jahmed-cloud/ARG](https://github.com/jahmed-cloud/ARG)")
-GENERATED_ENTRIES = ("README.md", SUMMARY_FILE, PROMPT_FILE, "01-current-findings", "02-gap-analysis", "03-cost-drivers",
-                     "04-architectural-critique", "05-deep-dive",
+GENERATED_ENTRIES = ("README.md", SUMMARY_FILE, PROMPT_FILE, "backlog.csv", "01-current-findings", "02-gap-analysis",
+                     "03-cost-drivers", "04-architectural-critique", "05-deep-dive",
                      "report-summary.html", "report-summary.pdf", "report-full.html", "report-full.pdf")
 
 
@@ -1054,8 +1730,7 @@ def summarize(m: Model) -> Dict[str, Any]:
         "findings": len(m.findings),
         "findings_by_severity": {s: sev.get(s, 0) for s in SEVERITIES},
         "currency": m.currency,
-        "per_usd": m.fx,                      # billing-currency units per USD (Cost Management's own rate)
-        "cost_basis": m.data.cost.get("cost_basis"),
+        "per_usd": m.fx,   # billing currency per USD at the subscription's amortized 30-day cost (Currency dropdown)
         "cost_12m": round(m.total_12m, 2),
         "cost_30d": round(m.total_30, 2),
         "savings_usd": {"wave_1": round(waves[1], 2), "wave_2": round(waves[2], 2)},

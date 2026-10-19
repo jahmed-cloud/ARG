@@ -15,6 +15,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
+import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -27,7 +28,9 @@ from scanners.base.azure_api import (
     gather_limited,
     get_resource_costs,
     get_retail_price,
+    missing_resources,
     price_at_actual_cost,
+    top_level_id,
     vm_prices_by_region,
 )
 from scanners.base.base_scanner import (
@@ -37,7 +40,8 @@ from scanners.base.base_scanner import (
     SeverityLevel,
     register_scanner,
 )
-from scanners.base.posture_scanner import PostureScanner
+from scanners.base.guidance import PRICE
+from scanners.base.posture_scanner import ADVISOR_ACTIVE_FILTER, PostureScanner
 from scanners.base.providers import get_allowed_locations
 from scanners.compute.compute_posture_scanners import APP_SERVICE_HOURLY_USD, _meter_name
 
@@ -110,25 +114,60 @@ class IdleIoTHubScanner(PostureScanner):
         }]
 
 
+AI_GATEWAY_SKUS = {  # setting ai_gateway_sku -> (Retail Prices skuName, meterName, fallback USD / month)
+    "Basic v2": ("Basic v2", "Basic v2 Unit", PRICE["apim_basic_v2"]),
+    "Standard v2": ("Standard v2", "Standard v2 Unit", PRICE["apim_standard_v2"]),
+    "Developer": ("Developer", "Developer Unit", PRICE["apim_developer"]),
+}
+
+
 @register_scanner
 class AISpendGovernanceScanner(PostureScanner):
     """
     Pay-as-you-go model spend is the fastest-growing line in many
     subscriptions. Without an AI gateway (APIM) there are no per-app token
-    limits, no caching and no attribution. Savings are an estimate
-    (default 15% of spend from caching + model routing).
+    limits, no caching and no attribution.
+
+    The gateway is not free: one API Management unit (Basic v2 by default,
+    `ai_gateway_sku`) is priced from the Retail Prices API and shared across
+    the subscription's AI accounts by spend. The saving shown is the net of
+    an assumed gross reduction (`ai_gateway_saving_ratio`, 15 % from caching,
+    token limits and routing) minus that gateway cost; below break-even the
+    finding stays, at Low severity with no saving, because the gateway's
+    value is then governance (limits, attribution), not money.
     """
 
     scanner_name = "ai_spend_governance_scanner"
     display_name = "AI Spend Governance"
-    description = "Detects material Azure OpenAI / Foundry spend with no AI gateway, and AI account sprawl"
+    description = "Detects material Azure OpenAI / Foundry spend with no AI gateway (net of the gateway's cost), and AI account sprawl"
     category = ScannerCategory.COST
     severity = SeverityLevel.HIGH
+    finding_types = {"ai_spend_without_gateway", "ai_account_sprawl"}
 
     MIN_MONTHLY_USD = 100.0
     HIGH_MONTHLY_USD = 1000.0
     ESTIMATED_SAVING_RATIO = 0.15
     MAX_ACCOUNTS = 2
+
+    async def gateway_monthly_usd(self, context: ScanContext, sku: str, region: str) -> float:
+        sku_name, meter, fallback = AI_GATEWAY_SKUS.get(sku, AI_GATEWAY_SKUS["Basic v2"])
+        hourly = await get_retail_price(
+            context, f"serviceName eq 'API Management' and armRegionName eq '{region}' and skuName eq '{sku_name}' "
+                     f"and meterName eq '{meter}'")
+        return round(hourly * HOURS_BILLED_PER_MONTH, 2) if hourly else fallback
+
+    async def _platform_gateways(self, context: ScanContext) -> List[Dict[str, Any]]:
+        """API Management instances anywhere in the tenant (the landing zone's shared AI gateway lives in a platform
+        subscription): reusing one is the target, at about no extra cost."""
+        from scanners.base.azure_api import query_resource_graph
+
+        try:
+            rows = await query_resource_graph(
+                context, "Resources | where type =~ 'microsoft.apimanagement/service' "
+                         "| project name, subscriptionId, resourceGroup, sku = tostring(sku.name)", tenant_scope=True)
+        except Exception:
+            return []
+        return rows or []
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         query = """
@@ -161,34 +200,90 @@ class AISpendGovernanceScanner(PostureScanner):
             await gather_limited(accounts, _enrich, self.setting("arm_concurrency", DEFAULT_ARM_CONCURRENCY))
 
         min_usd = float(self.setting("ai_min_monthly_usd", self.MIN_MONTHLY_USD))
+        ratio = float(self.setting("ai_gateway_saving_ratio", self.ESTIMATED_SAVING_RATIO))
+        sku = str(self.setting("ai_gateway_sku", "Basic v2"))
         findings = []
         total_usd = sum(a.get("cost_usd_30d") or 0.0 for a in accounts)
-        for acc in accounts:
-            usd = acc.get("cost_usd_30d") or 0.0
-            if gateways or usd < min_usd:
-                continue
+        eligible = [] if gateways else [a for a in accounts if (a.get("cost_usd_30d") or 0.0) >= min_usd]
+        eligible_usd = sum(a["cost_usd_30d"] for a in eligible)
+        platform = await self._platform_gateways(context) if eligible else []
+        gateway_usd = (await self.gateway_monthly_usd(context, sku, eligible[0].get("location") or "westeurope")
+                       if eligible else 0.0)       # a dedicated gateway's list price
+        effective_usd = 0.0 if platform else gateway_usd   # reusing the platform gateway adds about nothing
+        net_total = eligible_usd * ratio - effective_usd
+        break_even = gateway_usd / ratio if ratio else None
+        for acc in eligible:
+            usd = acc["cost_usd_30d"]
             deployments = acc.get("deployments") or []
             tpm = sum(d.get("capacity") or 0 for d in deployments)
+            gateway_share = round(effective_usd * usd / eligible_usd, 2)
+            gross = round(usd * ratio, 2)
+            net = round(gross - gateway_share, 2)
+            pays_off = net_total > 0 or bool(platform)
+            reuse = ", ".join(f"{g.get('name')} ({g.get('sku')})" for g in platform[:3])
             findings.append(self.resource_finding(
                 acc,
                 finding_type="ai_spend_without_gateway",
-                title=f"USD {usd:,.0f}/30d AI spend without gateway: {acc['name']}",
-                description=(f"{acc.get('kind')} account '{acc['name']}' cost ~USD {usd:,.0f} in 30 days "
-                             f"({len(deployments)} deployment(s), {tpm:,}K TPM provisioned) and there is no API "
-                             f"Management AI gateway in the subscription: no per-app token limits, no semantic "
-                             f"caching and no usage attribution. Saving shown is an estimate "
-                             f"({self.ESTIMATED_SAVING_RATIO:.0%} from caching and model routing)."),
+                title=(f"USD {usd:,.0f}/30d AI spend not routed through the platform gateway: {acc['name']}"
+                       if platform else f"USD {usd:,.0f}/30d AI spend without gateway: {acc['name']}" if pays_off else
+                       f"AI spend without gateway, below break-even (USD {usd:,.0f}/30d): {acc['name']}"),
+                description=(
+                    f"{acc.get('kind')} account '{acc['name']}' cost ~USD {usd:,.0f} in 30 days "
+                    f"({len(deployments)} deployment(s), {tpm:,}K TPM provisioned) and the subscription has no API "
+                    f"Management AI gateway. What a gateway delivers: token consumption per app / team (chargeback), "
+                    f"token-per-minute limits so one caller cannot exhaust the quota or the budget, managed-identity "
+                    f"access to the models instead of keys in apps, load balancing and failover across deployments, "
+                    f"and optionally a semantic cache for repeated prompts. "
+                    + (f"Target: route it through the tenant's existing API Management ({reuse}) - the landing-zone "
+                       f"pattern of one shared AI gateway in the platform subscription, about no extra cost. "
+                       if platform else "")
+                    + (f"A dedicated gateway would cost API Management {sku} about USD {gateway_usd:,.2f}/month "
+                       f"instead. " if platform else
+                       f"What it costs: API Management {sku} about USD {gateway_usd:,.2f}/month, of which USD "
+                       f"{gateway_share:,.2f} is allocated to this account by spend (USD 0 extra if a shared platform "
+                       f"APIM can be reused). ")
+                    + f"Assuming a {ratio:.0%} reduction (USD {gross:,.2f}), the net saving is "
+                    + (f"about USD {net:,.2f}/month." if pays_off else
+                       f"negative at this volume: the gateway pays for itself only from about USD {break_even:,.0f}/month "
+                       f"of AI spend in the subscription (now USD {eligible_usd:,.0f}). Introduce it for governance "
+                       f"reasons, or reuse a shared gateway.")),
                 resource_type="microsoft.cognitiveservices/accounts",
-                severity=SeverityLevel.HIGH if usd >= self.HIGH_MONTHLY_USD else SeverityLevel.MEDIUM,
+                severity=(SeverityLevel.HIGH if usd >= self.HIGH_MONTHLY_USD else SeverityLevel.MEDIUM) if pays_off
+                else SeverityLevel.LOW,
                 remediation_steps=(
-                    "1. Front model endpoints with APIM (llm-token-limit, llm-emit-token-metric, semantic cache).\n"
-                    "2. Route simple calls to smaller models; reserve flagship models for hard steps.\n"
-                    "3. Enable diagnostic logs on the account and a monthly AI budget per project."
+                    "1. Look for a shared platform API Management instance first (incremental cost ~0); otherwise "
+                    f"create one {sku} unit for all AI accounts of the workload (Developer tier, about USD "
+                    f"{PRICE['apim_developer']:,.0f}/month, is for non-production only - it has no SLA).\n"
+                    "2. Import the model endpoints as APIs; authenticate to them with APIM's managed identity and "
+                    "disable key access on the accounts.\n"
+                    "3. Policies: llm-token-limit per subscription key (app), llm-emit-token-metric with app / user "
+                    "dimensions for chargeback, a backend pool with circuit breaker for failover.\n"
+                    "4. Semantic cache only where prompts repeat (FAQ bots, classification): it needs Azure Managed "
+                    f"Redis (from about USD {PRICE['managed_redis_b1']:,.0f}/month) and an embeddings deployment.\n"
+                    "5. Independent of the gateway: route simple calls to smaller models and set a monthly AI budget "
+                    "per project."
                 ),
-                azure_cli_script=f"az cognitiveservices account deployment list -g {acc.get('resourceGroup')} -n {acc['name']} -o table",
+                azure_cli_script=(
+                    "# Is there a gateway to reuse anywhere in the tenant?\n"
+                    "az graph query -q \"Resources | where type =~ 'microsoft.apimanagement/service' "
+                    "| project name, subscriptionId, resourceGroup, sku = sku.name\" -o table\n"
+                    f"az cognitiveservices account deployment list -g {acc.get('resourceGroup')} -n {acc['name']} -o table\n"
+                    "# Only if none can be reused:\n"
+                    f"az apim create -g {acc.get('resourceGroup')} -n <apim-name> --publisher-name <team> "
+                    f"--publisher-email <team-mail> --sku-name {sku.replace(' v2', 'V2')} --sku-capacity 1"),
                 evidence={"cost_30d": acc.get("cost_30d"), "currency": acc.get("currency"), "cost_usd_30d": usd,
-                          "deployments": deployments, "provisioned_tpm_k": tpm},
-                estimated_monthly_savings_usd=round(usd * self.ESTIMATED_SAVING_RATIO, 2),
+                          "deployments": deployments, "provisioned_tpm_k": tpm,
+                          "gateway": {"sku": sku, "monthly_usd": gateway_usd, "allocated_usd": gateway_share,
+                                      "assumed_reduction": ratio, "gross_saving_usd": gross, "net_saving_usd": net,
+                                      "break_even_ai_spend_usd": round(break_even, 2) if break_even else None,
+                                      "subscription_ai_spend_usd": round(eligible_usd, 2)},
+                          "platform_gateways": platform[:5],
+                          "cost_of_change": ({"monthly_usd": 0.0, "basis": f"reuse of the tenant's API Management "
+                                                                           f"({reuse})"} if platform else
+                                             {"monthly_usd": gateway_share, "included_in_saving": True,
+                                              "basis": f"API Management {sku} (USD {gateway_usd:,.2f}/month list) "
+                                                       f"shared by spend across {len(eligible)} AI account(s)"})},
+                estimated_monthly_savings_usd=max(0.0, net),
                 caf_control="Cost Optimization",
             ))
 
@@ -221,11 +316,14 @@ class AISpendGovernanceScanner(PostureScanner):
 
 @register_scanner
 class CommitmentDiscountScanner(PostureScanner):
-    """Advisor reservation / savings-plan recommendations, de-duplicated per recommendation (best term kept)."""
+    """
+    Open Advisor reservation / savings-plan recommendations (completed, resolved and dismissed ones are left out),
+    one per commitment - recommendation, SKU and region - keeping the best term / look-back variant.
+    """
 
     scanner_name = "commitment_discount_scanner"
     display_name = "Commitment Discount Opportunities"
-    description = "Imports Azure Advisor reserved-instance and savings-plan recommendations"
+    description = "Imports open Azure Advisor reserved-instance and savings-plan recommendations"
     category = ScannerCategory.COST
     severity = SeverityLevel.MEDIUM
 
@@ -235,22 +333,24 @@ class CommitmentDiscountScanner(PostureScanner):
         | where type =~ 'microsoft.advisor/recommendations'
         | where subscriptionId == '{context.subscription_id}'
         | where tostring(properties.category) =~ 'Cost'
+        {ADVISOR_ACTIVE_FILTER}
         | extend solution = tostring(properties.shortDescription.solution)
         | where solution contains 'reserved' or solution contains 'savings plan' or solution contains 'reservation'
         | project solution, impact = tostring(properties.impact),
                   annual = todouble(properties.extendedProperties.annualSavingsAmount),
                   currency = tostring(properties.extendedProperties.savingsCurrency),
                   term = tostring(properties.extendedProperties.term),
-                  sku = tostring(properties.extendedProperties.displaySKU)
+                  sku = tostring(properties.extendedProperties.displaySKU),
+                  region = tostring(properties.extendedProperties.region)
         """
         try:
             rows = await self.arg(context, query)
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
-        best: Dict[str, Dict[str, Any]] = {}
+        best: Dict[Any, Dict[str, Any]] = {}
         for r in rows:
-            key = r.get("solution") or "commitment"
+            key = (r.get("solution") or "commitment", r.get("sku") or "", r.get("region") or "")
             if key not in best or (r.get("annual") or 0) > (best[key].get("annual") or 0):
                 best[key] = r
         if not best:
@@ -262,7 +362,8 @@ class CommitmentDiscountScanner(PostureScanner):
             finding_type="commitment_discount_opportunity",
             title=f"{len(best)} commitment-discount opportunit{'y' if len(best) == 1 else 'ies'} (Advisor)",
             description=("Azure Advisor recommends: " + "; ".join(
-                f"{k} - {r.get('annual') or 0:,.0f} {r.get('currency') or ''}/yr" for k, r in best.items())
+                f"{k[0]}{f' ({k[1]}' + (f', {k[2]}' if k[2] else '') + ')' if k[1] else ''} - "
+                f"{r.get('annual') or 0:,.0f} {r.get('currency') or ''}/yr" for k, r in best.items())
                 + ". Commit only after rightsizing and clean-up, otherwise the reservation locks in waste."),
             remediation_steps="Rightsize first, then purchase reservations / savings plan for the steady-state baseline.",
             evidence={"recommendations": list(best.values())},
@@ -280,6 +381,200 @@ class CommitmentDiscountScanner(PostureScanner):
             {"solution": "Consider purchasing a savings plan to unlock lower prices",
              "impact": "High", "annual": 1647.0, "currency": "USD", "term": "P1Y", "sku": ""},
         ]
+
+
+COMMITMENT_SOLUTION = ("solution contains 'reserved' or solution contains 'savings plan' "
+                       "or solution contains 'reservation'")
+
+
+def _json_field(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+@register_scanner
+class AdvisorCostScanner(PostureScanner):
+    """
+    Open Azure Advisor cost recommendations other than commitments (those are commitment_discount_scanner's), one
+    finding per resource with Advisor's own saving: Data Explorer table cache policies, VM / App Service plan
+    right-sizing, idle resources, Basic logs, ... - often where most of the money is (Data Explorer, Cosmos DB,
+    Log Analytics) and ARG has no native analyser. The saving is capped at the resource's own 30-day cost; native
+    ARG findings on the same resource take precedence (the report drops the Advisor duplicate).
+    """
+
+    scanner_name = "advisor_cost_scanner"
+    display_name = "Advisor Cost Recommendations"
+    description = "Imports open Azure Advisor cost recommendations (other than commitments) with Advisor's saving"
+    category = ScannerCategory.COST
+    severity = SeverityLevel.MEDIUM
+    finding_types = {"advisor_cost_recommendation"}
+
+    MAX_DETAILS = 25
+
+    async def scan(self, context: ScanContext) -> ScanOutput:
+        query = f"""
+        advisorresources
+        | where type =~ 'microsoft.advisor/recommendations'
+        | where subscriptionId == '{context.subscription_id}'
+        | where tostring(properties.category) =~ 'Cost'
+        {ADVISOR_ACTIVE_FILTER}
+        | extend solution = tostring(properties.shortDescription.solution)
+        | where not({COMMITMENT_SOLUTION})
+        | project resource_id = tostring(properties.resourceMetadata.resourceId),
+                  problem = tostring(properties.shortDescription.problem), solution,
+                  sub_category = tostring(properties.extendedProperties.recommendationSubCategory),
+                  impact = tostring(properties.impact),
+                  impacted_type = tolower(tostring(properties.impactedField)),
+                  impacted_name = tostring(properties.impactedValue),
+                  annual = todouble(properties.extendedProperties.annualSavingsAmount),
+                  currency = tostring(properties.extendedProperties.savingsCurrency),
+                  message = tostring(properties.extendedProperties.recommendationMessage),
+                  current_sku = tostring(properties.extendedProperties.currentSku),
+                  target_sku = tostring(properties.extendedProperties.targetSku),
+                  database = tostring(properties.extendedProperties.databaseName),
+                  detail = tostring(properties.extendedProperties.recommendations)
+        """
+        try:
+            rows = await self.arg(context, query)
+        except Exception as e:
+            return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
+        gone = await missing_resources(context, [r.get("resource_id") for r in rows])
+        rows = [r for r in rows if top_level_id(r.get("resource_id")) not in gone]
+
+        by_resource: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            rid = r.get("resource_id") or f"/subscriptions/{context.subscription_id}"
+            res = by_resource.setdefault(rid.lower(), {"resource_id": rid, "name": r.get("impacted_name"),
+                                                       "type": r.get("impacted_type"), "items": {}})
+            item = res["items"].setdefault(r.get("problem") or "Advisor cost recommendation", {
+                "problem": r.get("problem"), "solution": r.get("solution"), "sub_category": r.get("sub_category"),
+                "impact": r.get("impact"), "annual_usd": 0.0, "other_currency": None, "count": 0, "details": []})
+            item["count"] += 1
+            annual = r.get("annual") or 0.0
+            if (r.get("currency") or "USD").upper() == "USD":
+                item["annual_usd"] += annual
+            elif annual:
+                item["other_currency"] = r.get("currency")
+            detail = _json_field(r.get("detail"))
+            if isinstance(detail, dict) and detail.get("tableName"):   # Data Explorer cache policy, per table
+                text = detail.get("recommendationDescription") or ""
+                item["details"].append({"database": r.get("database"), "table": detail.get("tableName"),
+                                        "recommended": detail.get("recommendedCachePolicy"),
+                                        "current": _between(text, "from ", " to "),
+                                        "annual_usd": annual, "link": detail.get("updateCacheDataExplorerLink")})
+            elif r.get("message"):
+                item["details"].append({"message": r.get("message"), "current_sku": r.get("current_sku") or None,
+                                        "target_sku": r.get("target_sku") or None, "annual_usd": annual})
+
+        costs = await get_resource_costs(context) if self.is_live(context) and by_resource else {}
+        findings = []
+        for res in by_resource.values():
+            items = sorted(res["items"].values(), key=lambda i: -i["annual_usd"])
+            for i in items:
+                i["details"] = sorted(i["details"], key=lambda d: -(d.get("annual_usd") or 0))[:self.MAX_DETAILS]
+            advisor_monthly = sum(i["annual_usd"] for i in items) / 12
+            entry = cost_for(costs, res["resource_id"]) or {} if costs else {}
+            cost_usd = entry.get("cost_usd") if entry else None
+            monthly = min(advisor_monthly, cost_usd) if cost_usd is not None else advisor_monthly
+            capped = cost_usd is not None and advisor_monthly > cost_usd
+            name = res["name"] or res["resource_id"].rsplit("/", 1)[-1]
+            first = items[0]
+            more = f" (+{len(items) - 1} more)" if len(items) > 1 else ""
+            count = f" ({first['count']} tables)" if first["details"] and first["details"][0].get("table") else ""
+            severity = (SeverityLevel.HIGH if monthly >= 1000 else SeverityLevel.MEDIUM if monthly >= 100
+                        else SeverityLevel.LOW)
+            findings.append(self._finding(context, res, name, items, round(monthly, 2), capped, cost_usd,
+                                          title=(f"Advisor: {first['problem']}{count}{more} - up to USD "
+                                                 f"{monthly:,.0f}/month ({name})" if monthly else
+                                                 f"Advisor: {first['problem']}{count}{more} ({name})"),
+                                          severity=severity))
+        return ScanOutput(findings=findings, resources_scanned=len(rows))
+
+    def _finding(self, context: ScanContext, res: Dict[str, Any], name: str, items: List[Dict[str, Any]],
+                 monthly: float, capped: bool, cost_usd: Optional[float], *, title: str, severity: SeverityLevel):
+        def describe(i: Dict[str, Any]) -> str:
+            text = f"{i['problem']} - Advisor estimates USD {i['annual_usd']:,.0f}/year"
+            if i["other_currency"]:
+                text += f" (plus amounts in {i['other_currency']})"
+            return text + (f" across {i['count']} recommendations" if i["count"] > 1 else "")
+
+        steps = []
+        for i in items:
+            steps.append(f"{i['solution'] or i['problem']}:")
+            for d in i["details"]:
+                if d.get("table"):
+                    steps.append(f"- {d['database']}.{d['table']}: hot cache {d.get('current') or '?'} → "
+                                 f"{d.get('recommended')} (USD {d.get('annual_usd') or 0:,.0f}/year)"
+                                 + (f" - {d['link']}" if d.get("link") else ""))
+                elif d.get("message"):
+                    steps.append(f"- {d['message']} (USD {d.get('annual_usd') or 0:,.0f}/year)")
+        if any(d.get("table") for i in items for d in i["details"]):
+            steps.append("Data Explorer: confirm with the data owners that queries older than the new hot period can "
+                         "run from cold storage (slower), apply the cache policies, then enable optimized autoscale - "
+                         "the saving materialises only when the cluster shrinks to the smaller hot cache.")
+        cli = None
+        tables = [d for i in items for d in i["details"] if d.get("table") and d.get("recommended")]
+        if tables:
+            cli = ("// Kusto management commands - run them in the Data Explorer web UI against each database\n"
+                   + "\n".join(f"// database {d['database']}\n.alter table {d['table']} policy caching hot = "
+                               f"{_kusto_timespan(d['recommended'])}" for d in tables[:self.MAX_DETAILS]))
+        rid = res["resource_id"]
+        parts = rid.split("/")
+        lowered = [p.lower() for p in parts]
+        rg = parts[lowered.index("resourcegroups") + 1] if "resourcegroups" in lowered else "(subscription)"
+        provider_idx = lowered.index("providers") if "providers" in lowered else -1
+        rtype = "/".join(lowered[provider_idx + 1:provider_idx + 3]) if provider_idx > 0 else (res["type"] or "")
+        return self.make_finding(
+            finding_type="advisor_cost_recommendation", title=title,
+            description=("Open Azure Advisor cost recommendation(s) on '" + name + "': " + "; ".join(map(describe, items))
+                         + "." + (f" Capped at the resource's own 30-day cost (USD {cost_usd:,.2f})." if capped else "")),
+            resource_id=rid, resource_name=name, resource_type=rtype, resource_group=rg,
+            subscription_id=context.subscription_id, severity=severity,
+            remediation_steps="\n".join(steps), azure_cli_script=cli,
+            evidence={"advisor": items, "advisor_monthly_usd": round(sum(i["annual_usd"] for i in items) / 12, 2),
+                      "capped_at_cost_usd_30d": cost_usd if capped else None},
+            estimated_monthly_savings_usd=monthly, caf_control="Cost Optimization",
+        )
+
+    def _mock_data(self) -> List[Dict[str, Any]]:
+        adx = "/subscriptions/sub-1/resourcegroups/rg-data/providers/microsoft.kusto/clusters/adx-prod-1"
+        table = ('{"tableName":"Telemetry","recommendedCachePolicy":"4 Day(s)","updateCacheDataExplorerLink":'
+                 '"https://dataexplorer.azure.com/clusters/adx-prod-1.westeurope/databases/db1?query=.alter",'
+                 '"recommendationDescription":"Reduce the cache period for table: Telemetry (in database: db1) '
+                 'from 100 days to 4 days."}')
+        return [
+            {"resource_id": adx, "problem": "Reduce Data Explorer table cache policy to optimize costs",
+             "solution": "Reduce Data Explorer table cache policy to optimize costs", "sub_category": "Other",
+             "impact": "Medium", "impacted_type": "microsoft.kusto/clusters", "impacted_name": "adx-prod-1",
+             "annual": 4800.0, "currency": "USD", "database": "db1", "detail": table},
+            {"resource_id": adx, "problem": "Reduce Data Explorer table cache policy to optimize costs",
+             "solution": "Reduce Data Explorer table cache policy to optimize costs", "sub_category": "Other",
+             "impact": "Medium", "impacted_type": "microsoft.kusto/clusters", "impacted_name": "adx-prod-1",
+             "annual": 1200.0, "currency": "USD", "database": "db1",
+             "detail": table.replace("Telemetry", "Events").replace("100 days", "30 days")},
+        ]
+
+
+def _between(text: str, start: str, end: str) -> Optional[str]:
+    i = text.find(start)
+    j = text.find(end, i + len(start)) if i >= 0 else -1
+    return text[i + len(start):j].strip() if i >= 0 and j > i else None
+
+
+def _kusto_timespan(policy: str) -> str:
+    """'4 Day(s)' -> '4d' (Kusto timespan literal); anything else is passed through."""
+    parts = (policy or "").split()
+    if len(parts) == 2 and parts[0].isdigit():
+        unit = parts[1].lower()
+        if unit.startswith("day"):
+            return f"{parts[0]}d"
+        if unit.startswith("hour"):
+            return f"{parts[0]}h"
+    return policy
 
 
 def _parse_date(value: Any) -> Optional[date]:

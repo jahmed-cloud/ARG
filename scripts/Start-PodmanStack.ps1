@@ -16,7 +16,12 @@
 
 .PARAMETER Build
     Rebuild the images even if they exist, and recreate the containers. Use after committing code changes:
-    the build uses the committed code (HEAD), not uncommitted edits.
+    the build uses the committed code (HEAD), not uncommitted edits - unless -WorkingTree is given.
+
+.PARAMETER WorkingTree
+    Build from the working copy instead of HEAD: every tracked file as it is on disk plus new files that
+    .gitignore does not exclude (so still no reports, virtual environments or .env). For trying local,
+    uncommitted changes in the stack.
 
 .PARAMETER Down
     Stop and remove the stack's containers. The database volume is kept.
@@ -31,6 +36,9 @@
     .\scripts\Start-PodmanStack.ps1 -Build     # after pulling or committing code changes
 
 .EXAMPLE
+    .\scripts\Start-PodmanStack.ps1 -Build -WorkingTree   # uncommitted local changes, nothing pushed
+
+.EXAMPLE
     .\scripts\Start-PodmanStack.ps1 -Down
 
 .OUTPUTS
@@ -40,6 +48,9 @@
 param(
     [Parameter()]
     [switch] $Build,
+
+    [Parameter()]
+    [switch] $WorkingTree,
 
     [Parameter()]
     [switch] $Down,
@@ -85,17 +96,36 @@ $toBuild = @($images | Where-Object {
 })
 
 if ($toBuild) {
-    if (git -C $repositoryRoot status --porcelain --untracked-files=no) {
-        Write-Warning 'Uncommitted changes are not part of the build: it uses the committed code (HEAD).'
-    }
     $context = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "$project-podman-build"
     $archive = "$context.zip"
     Remove-Item -Path $context, $archive -Recurse -Force -ErrorAction SilentlyContinue
-    git -C $repositoryRoot archive --format=zip "--output=$archive" HEAD
-    if ($LASTEXITCODE -ne 0) {
-        throw 'git archive failed'
+    if ($WorkingTree) {
+        # Tracked files as they are on disk plus new, not ignored files - the same set git would commit.
+        $files = @(git -C $repositoryRoot -c core.quotepath=off ls-files --cached --others --exclude-standard)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git ls-files failed'
+        }
+        foreach ($relative in $files) {
+            $source = Join-Path -Path $repositoryRoot -ChildPath $relative
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                continue   # deleted but not yet committed
+            }
+            $target = Join-Path -Path $context -ChildPath $relative
+            $null = New-Item -ItemType Directory -Path (Split-Path -Path $target -Parent) -Force
+            Copy-Item -LiteralPath $source -Destination $target
+        }
+        Write-Host "Building from the working tree ($($files.Count) files, uncommitted changes included)."
     }
-    Expand-Archive -Path $archive -DestinationPath $context
+    else {
+        if (git -C $repositoryRoot status --porcelain --untracked-files=no) {
+            Write-Warning 'Uncommitted changes are not part of the build: it uses the committed code (HEAD). Add -WorkingTree to include them.'
+        }
+        git -C $repositoryRoot archive --format=zip "--output=$archive" HEAD
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git archive failed'
+        }
+        Expand-Archive -Path $archive -DestinationPath $context
+    }
     Push-Location -Path $context
     try {
         foreach ($image in $toBuild) {
@@ -103,7 +133,7 @@ if ($toBuild) {
             # docker format keeps the Dockerfiles' HEALTHCHECK (the default OCI format drops it)
             & podman build --format docker -f $image.Dockerfile @tags @($image.BuildArguments) .
             if ($LASTEXITCODE -ne 0) {
-                throw "podman build $($image.Dockerfile) failed. 'Temporary failure in name resolution': see local-run.md, section 8."
+                throw "podman build $($image.Dockerfile) failed - see the build output above. If it shows 'Temporary failure in name resolution', see local-run.md, section 8."
             }
         }
     }

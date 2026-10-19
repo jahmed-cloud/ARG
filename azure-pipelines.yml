@@ -1,0 +1,117 @@
+# ARG - Azure DevOps validation pipeline
+# =========================================
+# Validates every push and pull request: Python unit tests and lint, the frontend
+# production build, and a container smoke test of the full Docker stack.
+# Nothing is deployed and no Azure credentials are used - all tests run offline.
+#
+# Set up once: Pipelines - New pipeline - Azure Repos Git - <ARG repo> -
+# Existing Azure Pipelines YAML file - /azure-pipelines.yml. For pull-request
+# validation add a Build validation branch policy on main pointing at this pipeline.
+
+trigger:
+  branches:
+    include:
+      - '*'
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20.x'
+  PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
+  npm_config_cache: $(Pipeline.Workspace)/.npm
+
+stages:
+  - stage: Validate
+    displayName: Validate
+    jobs:
+      - job: secrets
+        displayName: Secret scan (gitleaks, full history)
+        variables:
+          GITLEAKS_VERSION: '8.30.1'
+        steps:
+          - checkout: self
+            fetchDepth: 0
+          - script: |
+              curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+              ./gitleaks git --redact --no-banner --exit-code 1 .
+            displayName: gitleaks (honours .gitleaksignore)
+
+      - job: python
+        displayName: Python tests and lint
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+          - task: Cache@2
+            displayName: Cache pip
+            inputs:
+              key: 'pip | "$(Agent.OS)" | backend/requirements.txt | backend/requirements-dev.txt | requirements-local.txt'
+              path: $(PIP_CACHE_DIR)
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r backend/requirements.txt -r backend/requirements-dev.txt -r requirements-local.txt
+            displayName: Install dependencies
+          - script: python -m pip check
+            displayName: Dependency consistency (pip check)
+          - script: ruff check --select F,E9 backend scanners scripts tests workers
+            displayName: Lint (ruff - errors and unused code)
+          - script: python -m pytest tests -q --junitxml=$(Common.TestResultsDirectory)/pytest.xml
+            displayName: Unit tests (offline)
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: $(Common.TestResultsDirectory)/pytest.xml
+              testRunTitle: ARG unit tests
+
+      - job: frontend
+        displayName: Frontend build
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(NODE_VERSION)
+          - task: Cache@2
+            displayName: Cache npm
+            inputs:
+              key: 'npm | "$(Agent.OS)" | frontend/package-lock.json'
+              path: $(npm_config_cache)
+          - script: npm ci --no-audit --no-fund
+            workingDirectory: frontend
+            displayName: npm ci
+          - script: npm run build
+            workingDirectory: frontend
+            displayName: Type-check and build (tsc + vite)
+
+      - job: containers
+        displayName: Container smoke test
+        timeoutInMinutes: 40
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+          - script: python -m scripts.configure_env
+            displayName: Generate a throw-away .env
+          - script: docker compose -f docker-compose.yml -f docker-compose.prod.yml config -q
+            displayName: Validate compose files
+          - script: docker compose up -d --build --wait --wait-timeout 240
+            displayName: Build and start the stack
+          - script: |
+              set -e
+              curl --fail http://localhost:8000/api/v1/health
+              curl --fail http://localhost:3000/api/v1/health
+              docker compose exec -T backend alembic current
+              docker compose exec -T worker celery -A workers.scan_worker inspect ping --timeout=15
+            displayName: Health checks (API, nginx proxy, migrations, worker)
+          - script: docker compose logs --no-color
+            displayName: Container logs (on failure)
+            condition: failed()
+          - script: docker compose down -v
+            displayName: Tear down
+            condition: always()

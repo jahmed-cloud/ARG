@@ -4,7 +4,7 @@ The currency amounts are shown in.
 Default: each subscription's billing currency (CHF, EUR, ...) at the rate Cost Management itself applies. ARG
 computes savings and implementation costs in USD (Azure Retail Prices and Cost Management's CostUSD); Cost Management
 returns every cost in both the billing currency and USD, so the rate the invoice uses is billing cost / USD cost over
-the last 30 days of cost (collector: cost["usd_to_billing"]; exchange_rate() for each subscription in the Docker stack).
+the last 30 days of amortized cost (collector: cost["usd_to_billing"]; exchange_rate() for the Docker estate).
 
 Any other currency the viewer picks in the Currency dropdown: USD amounts are converted with the European Central
 Bank's euro reference rates (reference_rates(); public, no key, published every working day), billing-currency

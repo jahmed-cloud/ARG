@@ -188,6 +188,46 @@ def test_estate_page_and_api(client, tmp_path):
     assert client.get("/static/estate.js").status_code == 200
 
 
+def test_architecture_page_and_diagrams(client, tmp_path):
+    assert client.get("/architecture", follow_redirects=False).status_code == 303
+    assert client.get("/api/architecture.svg").status_code == 401
+    _login(client)
+    assert client.get("/api/architecture.svg").status_code == 404          # nothing analysed yet
+    from scripts.subscription_analysis.estate import refresh_estate
+
+    fake_runner(None, SUB["id"], tmp_path, lambda *a: None)
+    refresh_estate(tmp_path)                                                # what the analysis job does after a run
+    page = client.get("/architecture")
+    assert page.status_code == 200 and "/static/architecture.js" in page.text and "<script>" not in page.text
+    assert "onchange" not in page.text and "sub-demo" in page.text          # CSP: no inline handlers
+    tenant = client.get("/api/architecture.svg")
+    assert tenant.status_code == 200 and tenant.headers["content-type"].startswith("image/svg+xml")
+    assert f'href="/architecture?subscription={SUB["id"]}"' in tenant.text
+    sub = client.get(f"/api/architecture.svg?subscription={SUB['id']}")
+    assert sub.status_code == 200 and "What is allowed" in sub.text and 'href="/architecture"' in sub.text
+    assert client.get("/api/architecture.svg?subscription=nope").status_code == 404
+    assert client.get("/static/architecture.js").status_code == 200
+
+
+def test_network_view_and_dashboard_telemetry(client, tmp_path):
+    from test_network import SUB_B, network_estate
+
+    from scripts.subscription_analysis.estate import ESTATE_DIR, ESTATE_FILE
+
+    (tmp_path / ESTATE_DIR).mkdir(exist_ok=True)
+    (tmp_path / ESTATE_DIR / ESTATE_FILE).write_text(json.dumps(network_estate()), encoding="utf-8")
+    _login(client)
+    svg = client.get(f"/api/architecture.svg?view=network&subscription={SUB_B}")
+    assert svg.status_code == 200 and "snet-app" in svg.text
+    tenant = client.get("/api/architecture.svg?view=network")
+    assert f'href="/architecture?view=network&amp;subscription={SUB_B}"' in tenant.text
+    page = client.get(f"/architecture?view=network&subscription={SUB_B}")
+    assert page.status_code == 200 and 'aria-current="page">Network</a>' in page.text
+    assert 'name="view" value="network"' in page.text
+    home = client.get("/")
+    assert "Estate telemetry" in home.text and "Stopped, not deallocated: vm-2" in home.text
+
+
 def test_estate_refresh_uses_the_az_login_session(client, tmp_path, monkeypatch):
     import scripts.subscription_analysis.estate as estate
 
@@ -438,3 +478,25 @@ def test_ai_prompt_api_is_kept_but_not_shown_in_the_ui(api_client):
     assert "Export PDF (summary)" in page and 'aria-current="page"' in page
     assert "ai-chat" not in page and "ai-prompt" not in page
     assert "ai-chat" not in api_client.get("/").text
+
+
+def test_settings_page_saves_and_feeds_the_next_analysis(client, tmp_path):
+    _login(client)
+    page = client.get("/settings")
+    assert page.status_code == 200 and "Naming convention check" in page.text
+    assert "Defender plan-enablement recommendations" in page.text
+    r = client.post("/settings", data={"blocked_resource_providers": "Microsoft.ClassicCompute\nMicrosoft.Batch",
+                                       "engineering_hourly_rate_usd": "110", "ai_gateway_sku": "Standard v2"},
+                    headers=ORIGIN, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/settings?saved=1"
+    saved = client.get("/api/settings").json()
+    assert saved["naming_convention_enabled"] is False          # unchecked box
+    assert saved["report_unused_providers"] is False
+    assert saved["blocked_resource_providers"] == ["Microsoft.Batch", "Microsoft.ClassicCompute"]
+    assert saved["engineering_hourly_rate_usd"] == 110.0 and saved["ai_gateway_sku"] == "Standard v2"
+    assert client.put("/api/settings", json={"naming_convention_enabled": True},
+                      headers=ORIGIN).json()["naming_convention_enabled"] is True
+
+    from scripts.subscription_analysis.cli import default_config
+
+    assert default_config(reports_dir=tmp_path)["engineering_hourly_rate_usd"] == 110.0

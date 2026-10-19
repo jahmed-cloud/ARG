@@ -26,6 +26,7 @@ from scanners.base.base_scanner import (
     SeverityLevel,
     register_scanner,
 )
+from scanners.base import access_need
 from scanners.base.posture_scanner import PostureScanner
 
 PORTAL_GENERATED_RULE = re.compile(r"^(ClientIPAddress_|ClientIp-|query-editor-|AllowClient)", re.I)
@@ -107,6 +108,9 @@ class SqlFirewallScanner(PostureScanner):
             rg, name = srv.get("resourceGroup"), srv["name"]
 
             if buckets["allow_azure"]:
+                fix = await access_need.assess(self, context, "sql", srv,
+                                               ip_rules=len(buckets["individual"]) + len(buckets["wide"]))
+                decision = fix["decision"]
                 findings.append(self.resource_finding(
                     srv,
                     finding_type="sql_firewall_allow_all_azure_services",
@@ -114,19 +118,18 @@ class SqlFirewallScanner(PostureScanner):
                     description=(
                         f"SQL server '{name}' has the 0.0.0.0 rule ('Allow Azure services and resources to "
                         f"access this server'), which admits connections from any Azure-hosted service in any "
-                        f"tenant. Authentication becomes the only barrier."
+                        f"tenant. Authentication becomes the only barrier. Replacement: {decision['title'].lower()} - "
+                        f"{decision['why']}"
                     ),
                     resource_type="microsoft.sql/servers",
-                    severity=SeverityLevel.CRITICAL,
-                    remediation_steps=(
-                        "1. Give the calling apps private endpoints / VNet integration (or at least their outbound IPs).\n"
-                        "2. Delete the AllowAllWindowsAzureIps rule.\n"
-                        "3. Disable public network access once private connectivity works."
-                    ),
-                    azure_cli_script=f"az sql server firewall-rule delete -g {rg} -s {name} -n AllowAllWindowsAzureIps",
+                    severity=SeverityLevel.HIGH,
+                    remediation_steps=(fix["remediation_steps"] + "\n"
+                                       "Then delete the AllowAllWindowsAzureIps rule."),
+                    azure_cli_script=(fix["azure_cli_script"] + "\n# then remove the 0.0.0.0 rule:\n"
+                                      f"az sql server firewall-rule delete -g {rg} -s {name} -n AllowAllWindowsAzureIps"),
                     powershell_script=(f"Remove-AzSqlServerFirewallRule -ResourceGroupName '{rg}' -ServerName '{name}' "
                                        f"-FirewallRuleName 'AllowAllWindowsAzureIps'"),
-                    evidence={"rules": buckets["allow_azure"]},
+                    evidence={"rules": buckets["allow_azure"], **fix["evidence"]},
                     cis_control="4.1.2",
                     nist_control="SC-7",
                     estimated_monthly_savings_usd=0.0,
@@ -601,6 +604,9 @@ class CosmosDbScanner(PostureScanner):
         | project id, name, type, resourceGroup, subscriptionId, location, tags,
                   public_access = tostring(properties.publicNetworkAccess),
                   pe_count = array_length(properties.privateEndpointConnections),
+                  ip_rules = array_length(properties.ipRules),
+                  vnet_filter = tobool(properties.isVirtualNetworkFilterEnabled),
+                  vnet_rules = array_length(properties.virtualNetworkRules),
                   free_tier = tobool(properties.enableFreeTier)
         """
         try:
@@ -621,14 +627,21 @@ class CosmosDbScanner(PostureScanner):
         findings = []
         for acc in accounts:
             rg, name = acc.get("resourceGroup"), acc["name"]
-            if (acc.get("public_access") or "Enabled").lower() != "disabled" and not acc.get("pe_count"):
+            open_to_all = ((acc.get("public_access") or "Enabled").lower() != "disabled" and not acc.get("pe_count")
+                           and not acc.get("ip_rules") and not (acc.get("vnet_filter") and acc.get("vnet_rules")))
+            if open_to_all:
+                fix = await access_need.assess(self, context, "cosmos", acc, data_operations_30d=acc.get("requests_30d"),
+                                               requests_label="requests")
+                decision = fix["decision"]
                 findings.append(self.resource_finding(
-                    acc, finding_type="cosmos_public_network_access", title=f"Public Cosmos DB account: {name}",
-                    description=f"Cosmos DB account '{name}' accepts traffic from public networks and has no private endpoint.",
-                    resource_type="microsoft.documentdb/databaseaccounts",
-                    remediation_steps="Add a private endpoint and disable public network access (or restrict with IP/VNet rules).",
-                    azure_cli_script=f"az cosmosdb update -g {rg} -n {name} --public-network-access Disabled",
-                    evidence={"public_network_access": acc.get("public_access")}, estimated_monthly_savings_usd=0.0,
+                    acc, finding_type="cosmos_public_network_access",
+                    title=f"Public Cosmos DB account: {name} - {decision['title'].lower()}",
+                    description=(f"Cosmos DB account '{name}' accepts traffic from all networks (no IP or VNet rules, "
+                                 f"no private endpoint; {decision['usage']}). {decision['why']}"),
+                    resource_type="microsoft.documentdb/databaseaccounts", severity=fix["severity"],
+                    remediation_steps=fix["remediation_steps"], azure_cli_script=fix["azure_cli_script"],
+                    evidence={"public_network_access": acc.get("public_access"), **fix["evidence"]},
+                    estimated_monthly_savings_usd=0.0,
                 ))
             if acc.get("requests_30d") == 0:
                 findings.append(self.resource_finding(

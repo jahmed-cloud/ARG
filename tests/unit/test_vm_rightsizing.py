@@ -173,4 +173,9 @@ def test_estate_lists_validated_suggestions_first():
         {"type": "vm_rightsizing_opportunity", "title": "Right-size vm1: Standard_D4s_v5 to Standard_D2s_v5 (~USD 84/month)",
          "savingsUsd": 83.95, "resourceName": "vm1", "resourceId": rid, "subscriptionId": "s"}])
     assert lines[0] == "### Validated right-sizing suggestions (1)"
-    assert "| vm1 | Standard_D4s_v5 to Standard_D2s_v5 (~USD 84/month) | 84 | sub-a |" in "\n".join(lines)
+    # no rate known for the subscription: the saving stays in USD and says so
+    assert "| vm1 | Standard_D4s_v5 to Standard_D2s_v5 (~USD 84/month) | 84 USD | sub-a |" in "\n".join(lines)
+    chf = _validated_rightsizing([{"id": rid, "subscription": "sub-a"}], [
+        {"type": "vm_rightsizing_opportunity", "title": "x", "savingsUsd": 100.0, "resourceName": "vm1",
+         "resourceId": rid, "subscriptionId": "s"}], {"s": {"currency": "CHF", "perUsd": 0.81}})
+    assert "| 81 CHF |" in "\n".join(chf)

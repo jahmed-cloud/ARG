@@ -297,9 +297,6 @@ class Subscription(Base):
 
     # Tags on the subscription itself
     tags                = Column(JSONB, default=dict, nullable=False)
-    # Billing currency and Cost Management's own rate, recorded by each scan:
-    # {"currency": "EUR", "per_usd": 0.92, "basis": "...", "as_of": "..."} (scripts/subscription_analysis/currency.py)
-    billing_fx          = Column(JSONB, nullable=True)
 
     # Budget threshold (USD) for alerting
     monthly_budget_usd  = Column(Float, nullable=True)
@@ -369,6 +366,66 @@ class ScoreSnapshot(Base):
 
     total_findings_open = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Estate snapshots — the cross-subscription inventory behind the admin Estate page
+# ---------------------------------------------------------------------------
+
+class EstateSnapshot(Base):
+    """
+    One estate inventory run (workers/scan_worker.py refresh_estate, backend/services/estate.py): every resource
+    across the active subscriptions from Resource Graph, VM sizes, 30-day usage metrics and cost, joined with the
+    open findings. `data` holds the compact estate.json format the local portal uses
+    (scripts/subscription_analysis/estate.compact), `overview_markdown` the same overview as the local
+    _estate/README.md. At most one run is `running` at a time (partial unique index); only the newest few are kept.
+    """
+    __tablename__ = "estate_snapshots"
+
+    id                 = Column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    status             = Column(String(20), nullable=False, default="running")  # running / completed / failed
+    triggered_by       = Column(String(100), nullable=False)  # "manual" or "scan:<scan job id>"
+    requested_by       = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    started_at         = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at       = Column(DateTime(timezone=True), nullable=True)
+    error_message      = Column(Text, nullable=True)
+    subscriptions_count = Column(Integer, nullable=True)
+    resources_count    = Column(Integer, nullable=True)
+    suggestions_count  = Column(Integer, nullable=True)
+    data               = Column(JSONB, nullable=True)
+    overview_markdown  = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_estate_snapshots_status_started", "status", "started_at"),
+        Index("uq_estate_snapshots_one_running", "status", unique=True,
+              postgresql_where=text("status = 'running'")),
+    )
+
+
+class AnalysisReport(Base):
+    """
+    The 5-part subscription analysis written by the worker after a scan (scripts/subscription_analysis/
+    cloud_report.py): README, 01 current findings, 02 gap analysis, 03 cost drivers, 04 architectural critique,
+    05 deep dives (built-in reasoning, optional AI review), backlog.csv. `files` maps each relative path to its
+    markdown / csv text - the same files the local tool writes to reports/<subscription>/. The newest few per
+    subscription are kept.
+    """
+    __tablename__ = "analysis_reports"
+
+    id              = Column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    subscription_id = Column(UUID(as_uuid=False), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
+    scan_job_id     = Column(UUID(as_uuid=False), ForeignKey("scan_jobs.id", ondelete="SET NULL"), nullable=True)
+    status          = Column(String(20), nullable=False, default="completed")  # completed / failed
+    generated_at    = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    findings_count  = Column(Integer, nullable=True)
+    summary         = Column(JSONB, nullable=True)
+    thinking        = Column(JSONB, nullable=True)
+    files           = Column(JSONB, nullable=True)
+    error_message   = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_analysis_reports_subscription_generated", "subscription_id", "generated_at"),
+    )
 
 
 class ScanJob(Base):
@@ -960,8 +1017,8 @@ class GovernanceConfig(Base):
     # e.g. {"microsoft.compute/virtualmachines": "^vm-[a-z0-9]+-[a-z]+-[a-z]+-\\d{3}$"}
     naming_patterns = Column(JSONB, default=dict, nullable=False)
 
-    # Analysis settings (see backend/api/routes/governance_config.py ANALYSIS_DEFAULTS): amortized_cost,
-    # display_currency, required_vm_extensions, include_arc_machines. Missing keys take the defaults.
-    analysis_settings = Column(JSONB, default=dict, nullable=False)
+    # Analysis settings (scripts/subscription_analysis/settings.py): optional checks on/off, blocked
+    # resource providers, engineering hourly rate. Only saved keys; defaults apply to the rest.
+    scanner_settings = Column(JSONB, default=dict, nullable=False, server_default="{}")
 
     tenant = relationship("Tenant")

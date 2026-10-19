@@ -2,6 +2,34 @@
 
 This reflects what's actually planned, based on known gaps in the current build - not aspirational marketing copy. Items are roughly ordered by priority within each section, not by date (this is a side project, not a funded roadmap with deadlines).
 
+## Architect review (2026-10-06) - next
+
+From reviewing real production reports. Done in this round: actionable vs
+hygiene, cost-weighted tag allocation, systemic issues with Azure Policy guardrails, "where the money is" coverage,
+quick wins, Advisor cost recommendations (Data Explorer cache policy, right-sizing), service retirement calendar,
+resilience posture, Defender / Advisor de-duplication, changes since the previous run, Azure Boards backlog CSV,
+completed / dismissed Advisor items excluded. Still open, by value:
+
+- **Analysers where the money is.** Data Explorer (SKU vs hot-cache size, optimized autoscale off, follower /
+  streaming settings), Cosmos DB (RU utilisation, autoscale, serverless fit), Log Analytics (commitment tiers,
+  Basic / Auxiliary tables, retention), Azure Cache for Redis and API Management capacity. In one reviewed subscription five
+  Data Explorer clusters carry ~71 % of the spend; only Advisor's cache recommendations cover them today.
+- **Commitment coverage and utilisation.** Share of eligible compute / database spend covered by reservations and
+  savings plans, and the utilisation of the ones owned (Cost Management PricingModel and reservation utilisation
+  APIs) - the FinOps KPI after cost allocation.
+- **Cost anomalies and unit cost.** Month-over-month jumps per service / resource group, Cost Management anomaly
+  alerts, cost per workload and environment over time (from `history.json` and the tag allocation).
+- **Exceptions register.** Accept a risk with owner, reason and expiry (local and Docker), so accepted items leave
+  the counts and come back when they expire; feed it into the backlog export.
+- **Guardrails as code.** Generate the Bicep / Terraform policy assignments for the systemic issues of a subscription
+  or management group, Audit first, with remediation tasks.
+- **Azure Boards sync.** Create / update work items through the Azure DevOps REST API (idempotent per finding key)
+  instead of a CSV import.
+- **DR posture per workload.** Backup policy, geo-redundancy and paired-region readiness per workload tag, with an
+  RPO / RTO statement the owner confirms.
+- **Control mapping.** Microsoft cloud security benchmark / CIS pass-fail per control from Defender regulatory
+  compliance, next to ARG's findings.
+
 ## Near-term
 
 - **Estate history and trend.** The estate inventory (`reports/_estate/`) is a snapshot: keep dated copies and show new / removed resources, usage and cost trend between refreshes.
@@ -27,7 +55,7 @@ This reflects what's actually planned, based on known gaps in the current build 
 - **Scheduled report delivery.** `workers/report_worker.py` for periodic report generation (e.g. weekly governance summary emailed to stakeholders) isn't implemented - reports are currently on-demand only.
 - **Webhook delivery on scan completion.** The webhook *registration* API exists (`backend/api/routes/webhooks.py`), but nothing actually fires a webhook when a scan finishes. Today it's a configured-but-inert feature.
 - **One-click automated remediation.** Currently `FEATURE_AUTO_REMEDIATION=false` by default and intentionally - the Remediation page generates scripts/checklists for a human to review and run, it doesn't execute anything against Azure itself. Turning this on safely needs a real approval workflow, not just a flag flip.
-- **Microsoft Defender for Cloud integration (deeper).** Defender plan coverage, secure score and unhealthy High-severity assessments are now imported through Resource Graph (`securityresources`). Still missing: regulatory-compliance standards, attack paths, and de-duplication between Defender recommendations and ARG's own findings on the same resource.
+- **Microsoft Defender for Cloud integration (deeper).** Defender plan coverage, secure score and unhealthy High-severity assessments are now imported through Resource Graph (`securityresources`). Defender recommendations that a ARG finding already covers are merged into it (`scripts/subscription_analysis/correlate.py`). Still missing: regulatory-compliance standards and attack paths.
 - **Per-permission Graph consent UI.** Show exactly which of `User.Read.All` / `AuditLog.Read.All` / `Reports.Read.All` / `RoleManagement.Read.Directory` / `Application.Read.All` Azure AD actually granted, rather than a single boolean.
 - **Multi-tenant Service Principal validation.** A "Test Connection" button when registering a tenant, so a typo'd Tenant ID or bad credential is caught at registration time instead of surfacing as a cryptic auth error on the next scan.
 

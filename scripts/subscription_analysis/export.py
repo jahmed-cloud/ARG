@@ -10,7 +10,7 @@ extra Python dependency is needed; Edge ships with Windows.
 Two levels of detail:
 - summary: README, current findings (without the resource inventory), gap
   analysis, cost drivers, savings register, architectural critique, deep-dive index;
-- full:    everything, including the resource inventory and every deep-dive page.
+- full:    everything, including the resource inventory, the full resource-provider list and every deep-dive page.
 
 Output: <report>/report-<detail>.html and <report>/report-<detail>.pdf.
 """
@@ -35,7 +35,7 @@ SUMMARY_PAGES = [
     "04-architectural-critique/README.md",
     "05-deep-dive/README.md",
 ]
-FULL_EXTRA = ["01-current-findings/resource-inventory.md"]
+FULL_EXTRA = ["01-current-findings/resource-inventory.md", "01-current-findings/resource-providers.md"]
 MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
 AUTHOR_CREDIT = "Author: Junaid Ahmed · jahmed.cloud · github.com/jahmed-cloud/ARG"
 
@@ -108,7 +108,7 @@ def report_pages(report_dir: Path, detail: str = "summary") -> List[str]:
         raise ValueError(f"detail must be one of {DETAILS}")
     pages = list(SUMMARY_PAGES)
     if detail == "full":
-        pages.insert(2, FULL_EXTRA[0])
+        pages[2:2] = FULL_EXTRA
         pages += sorted(p.relative_to(report_dir).as_posix()
                         for p in (report_dir / "05-deep-dive").glob("*/README.md"))
     return [p for p in pages if (report_dir / p).is_file()]

@@ -45,7 +45,7 @@ from scanners.base.base_scanner import (
     register_scanner,
 )
 from scanners.base.naming import env_from_name, env_from_tags, is_nva_image
-from scanners.base.posture_scanner import PostureScanner
+from scanners.base.posture_scanner import PostureScanner, is_stopped
 
 
 def _as_date(value: Any) -> date:
@@ -124,15 +124,19 @@ class UnsupportedOSImageScanner(PostureScanner):
             if not hit:
                 continue
             label, eos = hit
+            stopped = is_stopped(vm.get("power_state"))
             findings.append(self.resource_finding(
                 vm,
                 finding_type="vm_unsupported_os",
-                title=f"End-of-support OS ({label}): {vm['name']}",
+                title=f"End-of-support OS ({label}): {vm['name']}" + (" (VM deallocated)" if stopped else ""),
                 description=(
                     f"VM '{vm['name']}' ({vm.get('vm_size')}) runs {vm.get('offer')}/{vm.get('sku')} - "
                     f"{label} reached end of support on {eos.isoformat()} and no longer receives "
-                    f"security updates. Power state: {vm.get('power_state') or 'unknown'}."
+                    f"security updates. Power state: {vm.get('power_state') or 'unknown'}"
+                    + (" - not running today, so no live exposure; it comes back unpatched the moment it starts. "
+                       "A deallocated end-of-support VM is usually a decommission candidate." if stopped else ".")
                 ),
+                severity=SeverityLevel.HIGH if stopped else SeverityLevel.CRITICAL,
                 resource_type="microsoft.compute/virtualmachines",
                 remediation_steps=(
                     "1. Decide whether the VM is still needed; decommission if not.\n"
@@ -326,6 +330,15 @@ class AppServicePlanGenerationScanner(PostureScanner):
 
             premium = (plan.get("sku_tier") or "").lower().startswith("premium")
             if premium and capacity == 1 and (plan.get("sites") or 0) > 0 and not plan.get("zone_redundant"):
+                # a second instance doubles the plan's cost: only production needs it
+                from scanners.base.access_need import production_of
+
+                production = production_of(plan, context)
+                if production is False:
+                    continue
+                hourly = await app_service_hourly_usd(context, sku, linux, region)
+                extra = round(hourly * HOURS_PER_MONTH, 2) if hourly else None
+                cost_note = f" A second instance costs about USD {extra:,.0f}/month." if extra else ""
                 findings.append(self.resource_finding(
                     plan,
                     finding_type="app_service_plan_single_instance",
@@ -333,12 +346,24 @@ class AppServicePlanGenerationScanner(PostureScanner):
                     description=(
                         f"App Service plan '{plan['name']}' ({sku}) hosts {plan.get('sites')} app(s) on one "
                         f"instance without zone redundancy - platform upgrades and instance failures cause "
-                        f"downtime for every app on it."
+                        f"downtime for every app on it.{cost_note}"
+                        + ("" if production else " The environment is not known from tags or names: confirm it is "
+                                                 "production before paying for a second instance.")
                     ),
                     resource_type="microsoft.web/serverfarms",
-                    remediation_steps="Run production plans with at least 2 instances (3 for zone redundancy) and autoscale.",
+                    severity=SeverityLevel.MEDIUM if production else SeverityLevel.LOW,
+                    remediation_steps=(
+                        "1. Confirm the apps need an availability SLA (production, customer-facing).\n"
+                        "2. Scale to 2 instances (3 across zones for zone redundancy) with autoscale rules that "
+                        "scale in at night if the load allows.\n"
+                        "3. Not needed when the apps tolerate a few minutes of downtime during platform upgrades "
+                        "(internal tools, batch jobs)."
+                    ),
                     azure_cli_script=f"az appservice plan update -g {plan.get('resourceGroup')} -n {plan['name']} --number-of-workers 2",
-                    evidence={"instances": capacity, "sites": plan.get("sites"), "zone_redundant": False},
+                    evidence={"instances": capacity, "sites": plan.get("sites"), "zone_redundant": False,
+                              "production": production,
+                              **({"cost_of_change": {"monthly_usd": extra, "basis": f"one more {sku} instance"}}
+                                 if extra else {})},
                     estimated_monthly_savings_usd=0.0,
                 ))
 

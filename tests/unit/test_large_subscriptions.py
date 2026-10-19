@@ -47,9 +47,16 @@ def test_query_resource_graph_follows_skip_tokens():
 def test_legacy_scanner_is_no_longer_capped_at_1000():
     client = PagedGraphClient(_untagged(1500))
     ctx = ScanContext(subscription_id="s", tenant_id="t", scan_job_id="j", resource_graph_client=client)
-    scanner = ScannerRegistry.get("missing_required_tags_scanner")(config={"required_tags": ["owner"]})
+    scanner = ScannerRegistry.get("missing_required_tags_scanner")(config={"required_tags": ["owner"], "required_tags_check": True})
     output = asyncio.run(scanner.execute(ctx))
     assert output.finding_count == 1500
+
+
+def test_missing_tag_findings_are_off_unless_switched_on():
+    client = PagedGraphClient(_untagged(10))
+    ctx = ScanContext(subscription_id="s", tenant_id="t", scan_job_id="j", resource_graph_client=client)
+    output = asyncio.run(ScannerRegistry.get("missing_required_tags_scanner")(config={}).execute(ctx))
+    assert output.finding_count == 0 and output.metadata == {"disabled_by_setting": "required_tags_check"}
 
 
 class FakeArm:

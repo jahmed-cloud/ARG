@@ -10,9 +10,14 @@ Scanners in this module:
 6. ServiceHealthAlertScanner       - No Service Health activity-log alert for the subscription
 7. EmptyResourceGroupScanner       - Resource groups with no resources
 8. BudgetScanner                   - Missing budget, or budget exceeded month after month
+9. ResourceProviderPolicyScanner   - Resource types in use that an allow / deny resource-type policy does not permit
+10. ResourceProviderRegistrationScanner - Blocked providers that are registered; registered providers nobody uses
+11. ServiceRetirementScanner       - Azure feature / API / SKU / runtime retirements that affect a resource (Advisor),
+                                     with the retirement date and the days left
 """
 
 import json
+import re
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -20,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-from scanners.base.azure_api import ACTUAL_COST, run_cost_query
+from scanners.base.azure_api import ACTUAL_COST, missing_resources, run_cost_query, top_level_id
 from scanners.base.base_scanner import (
     ScanContext,
     ScanOutput,
@@ -28,9 +33,15 @@ from scanners.base.base_scanner import (
     SeverityLevel,
     register_scanner,
 )
-from scanners.base.naming import env_from_name, env_from_tags
-from scanners.base.posture_scanner import PostureScanner
-from scanners.base.providers import build_analysis, get_provider_analysis
+from scanners.base.naming import ENV_TAG_KEYS, env_from_name, env_from_subscription, env_from_tags
+from scanners.base.posture_scanner import ADVISOR_ACTIVE_FILTER, PostureScanner
+from scanners.base.providers import (
+    DEFAULT_BLOCKED_PROVIDERS,
+    blocked_registered,
+    build_analysis,
+    get_provider_analysis,
+    unused_registered,
+)
 
 STANDARD_TAG_KEYS = ["environment", "owner", "costcenter", "cost-center", "application", "projectname",
                      "resourceowner", "billingcontact", "technicalcontact", "securitycontact", "managedby"]
@@ -81,10 +92,10 @@ class EnvironmentTagMismatchScanner(PostureScanner):
                       "microsoft.web/serverfarms", "microsoft.storage/storageaccounts", "microsoft.keyvault/vaults")
 
     async def scan(self, context: ScanContext) -> ScanOutput:
+        # tag keys are case-sensitive in KQL ('Env', 'ENVIRONMENT'): env_from_tags decides, case-insensitively
         query = """
         Resources
-        | where isnotnull(tags) and (isnotnull(tags['environment']) or isnotnull(tags['Environment'])
-                or isnotnull(tags['env']) or isnotnull(tags['environmen']))
+        | where isnotnull(tags)
         | project id, name, type = tolower(type), resourceGroup, subscriptionId, location, tags
         """
         try:
@@ -92,15 +103,27 @@ class EnvironmentTagMismatchScanner(PostureScanner):
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
+        subscription_env = env_from_subscription(getattr(context, "subscription_name", "") or "")
         findings = []
         for r in resources:
             by_tag = env_from_tags(r.get("tags"))
             by_name = env_from_name((r.get("name") or "").split("/")[-1])
             if not by_tag or not by_name or by_tag == by_name:
                 continue
-            tag_value = next((v for k, v in (r.get("tags") or {}).items()
-                              if k.lower() in ("environment", "env", "environmen")), None)
+            tag_value = next((v for k, v in (r.get("tags") or {}).items() if k.lower() in ENV_TAG_KEYS), None)
             critical = r.get("type") in self.CRITICAL_TYPES and by_tag == "prod"
+            # The resource group and subscription are named by a different process than the resource: when both
+            # agree with the tag, the tag is right and the name is the outlier (legacy naming), not the other way.
+            context_envs = [e for e in (env_from_name(r.get("resourceGroup") or ""), subscription_env) if e]
+            tag_confirmed = bool(context_envs) and all(e == by_tag for e in context_envs)
+            if tag_confirmed:
+                fix = ("The tag is right - the resource group and subscription say the same. Keep the tag; rename at "
+                       "the next rebuild (names cannot change in place)"
+                       + ("; until then a CanNotDelete lock stops someone deleting it as 'just dev'." if by_tag == "prod"
+                          else "."))
+            else:
+                fix = ("Confirm the real environment with the owner; fix the tag, and plan a rename (re-creation via "
+                       "IaC) for production resources carrying non-prod names.")
             findings.append(self.resource_finding(
                 r,
                 finding_type="environment_tag_name_mismatch",
@@ -114,10 +137,11 @@ class EnvironmentTagMismatchScanner(PostureScanner):
                        "A non-production resource named as production distorts cost and risk reporting.")
                 ),
                 severity=SeverityLevel.HIGH if critical else SeverityLevel.MEDIUM,
-                remediation_steps=("Confirm the real environment with the owner; fix the tag, and plan a rename "
-                                   "(re-creation via IaC) for production resources carrying non-prod names."),
-                azure_cli_script=f'az tag update --resource-id "{r["id"]}" --operation Merge --tags environment=<correct-value>',
-                evidence={"environment_tag": tag_value, "implied_by_name": by_name},
+                remediation_steps=fix,
+                azure_cli_script=None if tag_confirmed else
+                f'az tag update --resource-id "{r["id"]}" --operation Merge --tags environment=<correct-value>',
+                evidence={"environment_tag": tag_value, "implied_by_name": by_name,
+                          "resource_group_and_subscription": context_envs, "tag_confirmed": tag_confirmed},
                 estimated_monthly_savings_usd=0.0,
             ))
         return ScanOutput(findings=findings, resources_scanned=len(resources))
@@ -669,9 +693,8 @@ class BudgetScanner(PostureScanner):
 class ResourceProviderPolicyScanner(PostureScanner):
     """
     Resource types in use that an applicable "Allowed resource types" / "Not allowed resource types" assignment
-    denies - usually resources created before the policy, which now sit outside the governance model. Registered
-    but unused providers are shown in the report's provider section, not raised as findings (Azure registers many
-    on its own).
+    denies - usually resources created before the policy, which now sit outside the governance model. Registration
+    hygiene (blocked or unused providers) is ResourceProviderRegistrationScanner's job.
 
     Emits finding_type="resource_type_denied_by_policy".
     """
@@ -722,3 +745,266 @@ class ResourceProviderPolicyScanner(PostureScanner):
             [{"name": "VM creation not allowed (prod)", "scope": "/providers/microsoft.management/managementgroups/mg-prod",
               "def": "/providers/microsoft.authorization/policydefinitions/6c112d4e-5bc7-47ae-a041-ea2d9dccd749",
               "enforcement": "Default", "denied": ["Microsoft.Compute/virtualMachines"]}])]
+
+
+# ---------------------------------------------------------------------------
+# 10. Resource provider registration hygiene
+# ---------------------------------------------------------------------------
+
+@register_scanner
+class ResourceProviderRegistrationScanner(PostureScanner):
+    """
+    A registered resource provider is permission for the subscription to host that service. Microsoft's guidance is
+    to register a provider only when it is about to be used, so that nothing can be deployed with the others.
+
+    - resource_provider_blocked_registered: a provider on the `blocked_resource_providers` list (default: the retired
+      classic providers) is registered.
+    - resource_providers_registered_unused (opt-in, `report_unused_providers`): niche providers registered with no
+      resources - core services and the governance baseline excluded; informational, since unregistering saves
+      nothing and a resource-type policy is the control that sticks.
+    """
+
+    scanner_name = "resource_provider_registration_scanner"
+    display_name = "Resource Provider Registration"
+    description = "Detects blocked resource providers that are registered, and registered providers nobody uses"
+    category = ScannerCategory.GOVERNANCE
+    severity = SeverityLevel.LOW
+    finding_types = {"resource_provider_blocked_registered", "resource_providers_registered_unused"}
+
+    async def scan(self, context: ScanContext) -> ScanOutput:
+        if self.is_live(context) and context.resource_graph_client is not None:
+            try:
+                analysis = await get_provider_analysis(context)
+            except Exception as e:
+                return ScanOutput(warnings=[f"Resource provider analysis unavailable: {e}"])
+        else:
+            analysis = self._mock_data()[0]
+        rows = (analysis or {}).get("providers") or []
+        sub = context.subscription_id
+        findings = []
+
+        blocked = blocked_registered(rows, self.setting("blocked_resource_providers", list(DEFAULT_BLOCKED_PROVIDERS)))
+        if blocked:
+            in_use = [r for r in blocked if r["resources"]]
+            findings.append(self.subscription_finding(
+                context,
+                finding_type="resource_provider_blocked_registered",
+                title=f"{len(blocked)} blocked resource provider(s) registered: "
+                      + ", ".join(r["namespace"] for r in blocked[:3]) + ("…" if len(blocked) > 3 else ""),
+                description=("Resource providers on the block list are registered, so the subscription accepts their "
+                             "resources: " + ", ".join(f"{r['namespace']} ({r['resources']} resources)" for r in blocked)
+                             + "." + (" Resources exist - they must be migrated or removed before the provider can "
+                                      "be unregistered." if in_use else "")),
+                severity=SeverityLevel.MEDIUM if in_use else SeverityLevel.LOW,
+                remediation_steps=("1. Confirm nobody needs the provider (no resources, no pipeline that deploys it).\n"
+                                   "2. Unregister it.\n"
+                                   "3. Prevent re-registration with a 'Not allowed resource types' assignment at the "
+                                   "management group. The block list is the `blocked_resource_providers` setting."),
+                azure_cli_script="\n".join(f"az provider unregister --namespace {r['namespace']} --subscription {sub}"
+                                           for r in blocked),
+                evidence={"blocked_registered": [{k: r[k] for k in ("namespace", "state", "resources", "types")}
+                                                 for r in blocked],
+                          "cost_of_change": {"monthly_usd": 0.0, "basis": "registration changes are free"}},
+            ))
+
+        unused = unused_registered(rows) if self.setting("report_unused_providers", False) else []
+        if unused:
+            names = [r["namespace"] for r in unused]
+            findings.append(self.subscription_finding(
+                context,
+                finding_type="resource_providers_registered_unused",
+                title=f"{len(unused)} niche resource provider(s) registered but not used",
+                description=("Registered with no resources in the subscription: " + ", ".join(names)
+                             + ". Core services (Compute, Storage, Network, Key Vault, Web, ...) and the governance "
+                               "baseline (Defender, Policy, Monitor, Cost Management) are excluded - they are expected "
+                               "to be registered. For information: a registration costs nothing and unregistering "
+                               "saves nothing; it only stops that service being deployed until someone registers it "
+                               "again (the portal does it automatically for anyone with rights)."),
+                severity=SeverityLevel.INFO,
+                remediation_steps=("1. If the company does not allow one of these services, block it where it sticks: "
+                                   "a 'Not allowed resource types' (or 'Allowed resource types') policy at the "
+                                   "management group.\n"
+                                   "2. Optional, only for providers registered by a one-off test that nobody will "
+                                   "use: unregister them (commands below) - reversible, and Azure refuses while "
+                                   "resources of the provider exist.\n"
+                                   "3. Never unregister core service providers - the next deployment fails until "
+                                   "they are registered again."),
+                azure_cli_script=("# Optional - only providers nobody will deploy:\n"
+                                  + "\n".join(f"# az provider unregister --namespace {n} --subscription {sub}"
+                                              for n in names)),
+                evidence={"unused_registered": names,
+                          "cost_of_change": {"monthly_usd": 0.0, "basis": "registration changes are free"}},
+            ))
+        return ScanOutput(findings=findings, resources_scanned=len(rows))
+
+    def _mock_data(self) -> List[Dict[str, Any]]:
+        def provider(ns: str, state: str = "Registered", policy: str = "RegistrationRequired") -> Dict[str, str]:
+            return {"namespace": ns, "registrationState": state, "registrationPolicy": policy}
+
+        return [build_analysis(
+            "sub-1",
+            [provider("Microsoft.Compute"), provider("Microsoft.Web"), provider("Microsoft.Security"),
+             provider("Microsoft.ClassicCompute"), provider("Microsoft.Resources", policy="RegistrationFree"),
+             provider("Microsoft.Sql", state="NotRegistered")],
+            {"microsoft.compute/virtualmachines": 2}, [], [])]
+
+
+# ---------------------------------------------------------------------------
+# 11. Service retirements (Azure Advisor)
+# ---------------------------------------------------------------------------
+
+def _days_left(value: str, today: date) -> Optional[int]:
+    try:
+        return (date.fromisoformat(str(value)[:10]) - today).days
+    except ValueError:
+        return None
+
+
+@register_scanner
+class ServiceRetirementScanner(PostureScanner):
+    """
+    Features, API versions, SKUs, VM series and runtimes Azure is retiring that a resource still uses, from Advisor's
+    open "ServiceUpgradeAndRetirement" recommendations (completed / dismissed ones are left out). One finding per
+    resource, dated: overdue or within `retirement_urgent_days` (90) is High, within a year Medium, later Low.
+    """
+
+    scanner_name = "service_retirement_scanner"
+    display_name = "Service Retirements"
+    description = "Detects Azure retirements (features, API versions, SKUs, runtimes) that affect a resource, with dates"
+    category = ScannerCategory.GOVERNANCE
+    severity = SeverityLevel.MEDIUM
+    finding_types = {"service_retirement"}
+
+    URGENT_DAYS = 90
+
+    async def scan(self, context: ScanContext) -> ScanOutput:
+        query = f"""
+        advisorresources
+        | where type =~ 'microsoft.advisor/recommendations'
+        | where subscriptionId == '{context.subscription_id}'
+        | where tostring(properties.extendedProperties.recommendationSubCategory) == 'ServiceUpgradeAndRetirement'
+        {ADVISOR_ACTIVE_FILTER}
+        | project resource_id = tostring(properties.resourceMetadata.resourceId),
+                  problem = tostring(properties.shortDescription.problem),
+                  solution = tostring(properties.shortDescription.solution),
+                  impact = tostring(properties.impact),
+                  impacted_type = tolower(tostring(properties.impactedField)),
+                  impacted_name = tostring(properties.impactedValue),
+                  retirement_date = tostring(properties.extendedProperties.retirementDate),
+                  feature = trim(' ', tostring(properties.extendedProperties.retirementFeatureName)),
+                  cost_implication = tostring(properties.extendedProperties.recommendationCostImplication),
+                  changes = tostring(properties.extendedProperties.descriptionOfChanges),
+                  api_version = tostring(properties.extendedProperties.apiVersion),
+                  last_call = tostring(properties.extendedProperties.lastCall)
+        """
+        try:
+            rows = await self.arg(context, query)
+        except Exception as e:
+            return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
+        gone = await missing_resources(context, [r.get("resource_id") for r in rows])
+        rows = [r for r in rows if top_level_id(r.get("resource_id")) not in gone]
+
+        today = date.fromisoformat(self.setting("as_of", date.today().isoformat()))
+        urgent = int(self.setting("retirement_urgent_days", self.URGENT_DAYS))
+        # Advisor files general upgrade advice under the same sub-category ("Migrate workload to VMSS Flex",
+        # "Convert Standard to Premium disk") - without a retirement date it is not a retirement.
+        if not self.setting("retirement_include_undated", False):
+            undated = sum(1 for r in rows if not (r.get("retirement_date") or "").strip())
+            rows = [r for r in rows if (r.get("retirement_date") or "").strip()]
+        else:
+            undated = 0
+        by_resource: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            rid = r.get("resource_id") or f"/subscriptions/{context.subscription_id}"
+            items = by_resource.setdefault(rid.lower(), [])
+            if any(i["problem"] == r.get("problem") for i in items):
+                continue
+            try:
+                changes = json.loads(r.get("changes") or "[]")
+            except ValueError:
+                changes = [r.get("changes")] if r.get("changes") else []
+            items.append({
+                "problem": r.get("problem") or "Retirement", "solution": r.get("solution") or "",
+                "feature": r.get("feature") or "", "retirement_date": (r.get("retirement_date") or "")[:10] or None,
+                "days_left": _days_left(r.get("retirement_date") or "", today),
+                "impact": r.get("impact") or "", "cost_implication": r.get("cost_implication") or None,
+                "changes": [str(c) for c in changes if c] if isinstance(changes, list) else [str(changes)],
+                "api_version": r.get("api_version") or None, "last_call": (r.get("last_call") or "")[:10] or None,
+                "impacted_type": r.get("impacted_type") or "", "impacted_name": r.get("impacted_name") or "",
+                "resource_id": rid,
+            })
+
+        findings = []
+        for items in by_resource.values():
+            rid = items[0]["resource_id"]
+            items.sort(key=lambda i: (i["days_left"] is None, i["days_left"] if i["days_left"] is not None else 0))
+            first = items[0]
+            days = first["days_left"]
+            if days is None:
+                severity, when = SeverityLevel.LOW, "Retirement announced (no date)"
+            elif days < 0:
+                severity, when = SeverityLevel.HIGH, f"Past retirement date {first['retirement_date']}"
+            else:
+                severity = (SeverityLevel.HIGH if days <= urgent else
+                            SeverityLevel.MEDIUM if days <= 365 else SeverityLevel.LOW)
+                when = f"Retires {first['retirement_date']} ({days} days)"
+            name = first["impacted_name"] or rid.rsplit("/", 1)[-1]
+            slot = re.search(r"/sites/([^/]+)/slots/([^/]+)$", rid, re.IGNORECASE)
+            if slot:   # Advisor names a slot by the slot alone ('dev', 'stage') - say whose
+                name = f"{slot.group(1)}/{slot.group(2)}"
+            label = first["feature"] or first["problem"]
+            no_cost = all((i["cost_implication"] or "").lower() == "none" for i in items)
+
+            def line(i: Dict[str, Any]) -> str:
+                left = i["days_left"]
+                if not i["retirement_date"] or left is None:
+                    return f"{i['problem']} - date not announced"
+                return f"{i['problem']} - {i['retirement_date']} ({'overdue' if left < 0 else f'{left} days left'})"
+
+            parts = rid.split("/")
+            lowered = [p.lower() for p in parts]
+            rg = parts[lowered.index("resourcegroups") + 1] if "resourcegroups" in lowered else "(subscription)"
+            kwargs = dict(
+                finding_type="service_retirement",
+                title=(f"{when}: {label} ({name})" if len(items) == 1
+                       else f"{when}: {label} and {len(items) - 1} more ({name})"),
+                description=("Azure is retiring what this resource uses: " + "; ".join(line(i) for i in items)
+                             + ". After the date the feature stops working or loses support and security fixes."),
+                severity=severity,
+                remediation_steps="\n".join(
+                    f"- {i['solution'] or i['problem']}"
+                    + (f" (API version in use: {i['api_version']}" + (f", last call {i['last_call']}" if i["last_call"] else "") + ")"
+                       if i["api_version"] else "")
+                    + (f" Change: {'; '.join(i['changes'])}." if i["changes"] else "")
+                    for i in items)
+                + "\nPlan the change before the first date; the Advisor 'Service Retirement' workbook lists every "
+                  "affected resource across subscriptions.",
+                evidence={"retirements": items,
+                          **({"cost_of_change": {"monthly_usd": 0.0,
+                                                 "basis": "Advisor states no cost implication"}} if no_cost else {})},
+                estimated_monthly_savings_usd=0.0,
+            )
+            if len(parts) <= 3:
+                findings.append(self.subscription_finding(context, **kwargs))
+            else:
+                provider_idx = lowered.index("providers") if "providers" in lowered else -1
+                rtype = "/".join(lowered[provider_idx + 1:provider_idx + 3]) if provider_idx > 0 else first["impacted_type"]
+                findings.append(self.make_finding(resource_id=rid, resource_name=name, resource_type=rtype,
+                                                  resource_group=rg, subscription_id=context.subscription_id,
+                                                  location="", **kwargs))
+        return ScanOutput(findings=findings, resources_scanned=len(rows),
+                          metadata={"undated_upgrade_advice_skipped": undated} if undated else {})
+
+    def _mock_data(self) -> List[Dict[str, Any]]:
+        kv = "/subscriptions/sub-1/resourceGroups/rg-sec/providers/Microsoft.KeyVault/vaults/kv-legacy-1"
+        app = "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Web/sites/app-portal"
+        return [
+            {"resource_id": kv, "problem": "Azure Key Vault API versions prior to 2026-02-01 are being retired",
+             "solution": "Azure Key Vault API versions prior to 2026-02-01 are being retired", "impact": "High",
+             "impacted_type": "microsoft.keyvault/vaults", "impacted_name": "kv-legacy-1",
+             "retirement_date": "2027-02-27", "feature": "API versions prior to 2026-02-01",
+             "cost_implication": "None", "changes": "[\"No Cost Impact\"]", "api_version": "2019-09-01"},
+            {"resource_id": app, "problem": "Community support for Node 20 LTS is ending",
+             "solution": "Upgrade the app to Node 22 LTS", "impact": "Medium", "impacted_type": "microsoft.web/sites",
+             "impacted_name": "app-portal", "retirement_date": "2026-04-30", "feature": "Support for Node 20 LTS"},
+        ]

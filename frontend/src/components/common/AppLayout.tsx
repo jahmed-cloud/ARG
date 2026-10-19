@@ -39,7 +39,7 @@ import {
 import {
   Dashboard,
   SearchOutlined,
-  AttachMoney,
+  Payments,
   Security,
   Person,
   Policy,
@@ -53,13 +53,17 @@ import {
   BugReport,
   Logout,
   PlayArrow,
+  Inventory2,
+  AccountTree,
+  Insights,
   Menu as MenuIcon,
 } from "@mui/icons-material";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useAppDispatch, useAppSelector, logout, setUser } from "../../store/store";
 import { useApi } from "../../hooks/useApi";
+import { useCanOperate, useIsAdmin } from "../../hooks/useRoles";
 import { useCurrencyChoice } from "../../hooks/useCurrency";
-import { useCanOperate } from "../../hooks/useRoles";
+import { BRAND } from "../../theme/ThemeProvider";
 import { RouteBoundary } from "./RouteBoundary";
 
 const SIDEBAR_EXPANDED = 224;
@@ -73,14 +77,19 @@ interface NavItem {
   group: "WORKSPACE" | "ASSESSMENT" | "OPERATIONS";
   // Tenant-wide or write-only pages: admins and contributors only (hidden for owners, readers and auditors).
   operatorsOnly?: boolean;
+  // Whole-estate pages: ARG administrators only.
+  adminOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
   { label: "Overview", path: "/dashboard", icon: <Dashboard />, group: "WORKSPACE" },
   { label: "Scans", path: "/scans", icon: <SearchOutlined />, group: "WORKSPACE" },
   { label: "Findings", path: "/findings", icon: <BugReport />, group: "WORKSPACE" },
-  { label: "Cost Savings", path: "/costs", icon: <AttachMoney />, group: "WORKSPACE" },
+  { label: "Cost Savings", path: "/costs", icon: <Payments />, group: "WORKSPACE" },
+  { label: "Estate", path: "/estate", icon: <Inventory2 />, group: "WORKSPACE", adminOnly: true },
+  { label: "Architecture", path: "/architecture", icon: <AccountTree />, group: "WORKSPACE", adminOnly: true },
   { label: "Identity", path: "/identity", icon: <Person />, group: "ASSESSMENT", operatorsOnly: true },
+  { label: "Analysis", path: "/analysis", icon: <Insights />, group: "ASSESSMENT" },
   { label: "Governance", path: "/governance", icon: <Policy />, group: "ASSESSMENT" },
   { label: "Security", path: "/security", icon: <Security />, group: "ASSESSMENT" },
   { label: "Terraform Drift", path: "/drift", icon: <CompareArrows />, group: "ASSESSMENT" },
@@ -95,12 +104,15 @@ export function AppLayout() {
   const location = useLocation();
   const dispatch = useAppDispatch();
   const api = useApi();
-  const currency = useCurrencyChoice();
   const [collapsed, setCollapsed] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const { user } = useAppSelector((s) => s.auth);
   const canOperate = useCanOperate();
-  const navItems = NAV_ITEMS.filter((item) => !(item.operatorsOnly && !canOperate));
+  const isAdmin = useIsAdmin();
+  const currency = useCurrencyChoice();
+  const navItems = NAV_ITEMS.filter(
+    (item) => !(item.operatorsOnly && !canOperate) && !(item.adminOnly && !isAdmin)
+  );
 
   // Below this width, the sidebar switches from a permanent column that
   // always reserves layout space to a temporary overlay drawer that's
@@ -393,7 +405,7 @@ export function AppLayout() {
               size="small"
               value={currency.selected}
               onChange={(e) => currency.select(e.target.value)}
-              inputProps={{ "aria-label": "Currency" }}
+              aria-label="Currency"
               title={
                 currency.referenceDate
                   ? `Amounts in this currency. Billing currency: the invoice's, at its own rate. Others: ECB reference rates of ${currency.referenceDate}.`
@@ -401,7 +413,6 @@ export function AppLayout() {
               }
               SelectProps={{ MenuProps: { PaperProps: { sx: { maxHeight: 360 } } } }}
               sx={{
-                mr: 1.5,
                 minWidth: { xs: 92, sm: 150 },
                 "& .MuiInputBase-root": { color: "#fff", fontSize: 13, height: 32 },
                 "& .MuiOutlinedInput-notchedOutline": { borderColor: alpha("#fff", 0.25) },
@@ -428,7 +439,7 @@ export function AppLayout() {
               onClick={() => navigate("/scans", { state: { startScan: true } })}
               startIcon={isMobile ? undefined : <PlayArrow sx={{ fontSize: "16px !important" }} />}
               sx={{
-                background: "#365b47",
+                background: BRAND.teal,
                 color: "#fff",
                 fontWeight: 700,
                 fontSize: 13,
@@ -439,7 +450,7 @@ export function AppLayout() {
                 boxShadow: "none",
                 "&:hover": {
                   boxShadow: "none",
-                  background: "#365b47",
+                  background: BRAND.tealDark,
                 },
               }}
             >

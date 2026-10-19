@@ -7,6 +7,7 @@ gathers the inventory and cost datasets the report needs.
 import asyncio
 import dataclasses
 import logging
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -19,14 +20,18 @@ from scanners.base.azure_api import (
     cost_basis_from,
     cost_basis_of,
     get_resource_costs,
+    missing_resources,
     query_resource_graph,
     run_cost_query,
+    top_level_id,
 )
 from scanners.base.base_scanner import ScanContext, ScannerRegistry
 from scanners.base.providers import get_provider_analysis
 
+from scripts.subscription_analysis.correlate import correlate
 from scripts.subscription_analysis.estate import DETAIL_COLUMNS, RESOURCE_DETAILS
 from scripts.subscription_analysis.knowledge import classify
+from scripts.subscription_analysis.settings import REPORT_SETTINGS
 
 logger = logging.getLogger("arg.analysis")
 
@@ -70,6 +75,17 @@ class AnalysisData:
     ai_deployments: Dict[str, List[Dict[str, Any]]] = dataclasses.field(default_factory=dict)
     # Resource providers: registration state vs usage vs allow / deny resource-type policies (scanners.base.providers)
     resource_providers: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    # Report-relevant settings of the run (switched-off checks, engineering hourly rate) - see settings.py
+    settings: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    # Defender / Advisor items merged into native findings (correlate.py)
+    correlation: Dict[str, int] = dataclasses.field(default_factory=dict)
+    # Open Azure Advisor reliability recommendations (zone redundancy, backup, geo-replication, ...) for the
+    # resilience section - an aggregate view, not findings
+    reliability: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
+    # Defender for Cloud summary (open recommendations by severity) - shown instead of findings by default
+    defender: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    # Thinking mode, deep step: the optional Azure OpenAI review (thinking.py)
+    thinking: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 def to_jsonable(value: Any) -> Any:
@@ -97,13 +113,14 @@ async def resolve_subscription(arm: ArmClient, value: str) -> Dict[str, Any]:
 
 
 def build_context(credential: Any, arm: ArmClient, subscription: Dict[str, Any]) -> ScanContext:
-    from azure.mgmt.resourcegraph import ResourceGraphClient
+    from scanners.base.azure_api import resource_graph_client
 
     context = ScanContext(
         subscription_id=subscription["id"],
+        subscription_name=subscription.get("name") or "",
         tenant_id=subscription.get("tenant_id") or "",
         scan_job_id=f"cli-{datetime.now(timezone.utc):%Y%m%d%H%M%S}",
-        resource_graph_client=ResourceGraphClient(credential),
+        resource_graph_client=resource_graph_client(credential),
         arm_client=arm,
     )
     try:
@@ -137,18 +154,24 @@ async def run_scanners(context: ScanContext, names: Optional[List[str]], config:
             continue
         logger.info("Running %s", cls.scanner_name)
         output = await cls(config=dict(config)).execute(context)
-        data.scanner_runs.append({
-            "scanner": cls.scanner_name, "display_name": cls.display_name, "category": cls.category.value,
-            "status": "completed", "findings": output.finding_count, "resources_scanned": output.resources_scanned,
-            "warnings": output.warnings,
-        })
-        for finding in output.findings:
-            record = to_jsonable(finding)
-            c = classify(record["finding_type"], record["category"])
-            record.update({"area": c.area, "folder": c.folder, "wave": c.wave, "critique": c.critique,
-                           "scanner": cls.scanner_name})
-            data.findings.append(record)
-        data.warnings.extend(f"{cls.scanner_name}: {w}" for w in output.warnings)
+        add_output(data, cls, output)
+
+
+def add_output(data: AnalysisData, cls: Any, output: Any) -> None:
+    """One scanner's run and findings into the analysis (local runs and the Docker worker's cloud report)."""
+    data.scanner_runs.append({
+        "scanner": cls.scanner_name, "display_name": cls.display_name, "category": cls.category.value,
+        "status": "disabled" if (output.metadata or {}).get("disabled_by_setting") else "completed",
+        "findings": output.finding_count, "resources_scanned": output.resources_scanned,
+        "warnings": output.warnings, "metadata": to_jsonable(output.metadata or {}),
+    })
+    for finding in output.findings:
+        record = to_jsonable(finding)
+        c = classify(record["finding_type"], record["category"])
+        record.update({"area": c.area, "folder": c.folder, "wave": c.wave, "critique": c.critique,
+                       "scanner": cls.scanner_name})
+        data.findings.append(record)
+    data.warnings.extend(f"{cls.scanner_name}: {w}" for w in output.warnings)
 
 
 INVENTORY_QUERY = ("Resources" + RESOURCE_DETAILS
@@ -191,6 +214,85 @@ async def collect_inventory(context: ScanContext, arm: ArmClient, data: Analysis
         row["createdTime"] = extra.get("createdTime")
         row["changedTime"] = extra.get("changedTime")
     data.resources = rows
+
+
+RELIABILITY_QUERY = """
+advisorresources
+| where type =~ 'microsoft.advisor/recommendations'
+| where subscriptionId == '{subscription}'
+| where tostring(properties.category) =~ 'HighAvailability'
+| where tostring(properties.extendedProperties.recommendationSubCategory) != 'ServiceUpgradeAndRetirement'
+{active}
+| project resource_id = tostring(properties.resourceMetadata.resourceId),
+          problem = tostring(properties.shortDescription.problem),
+          sub_category = tostring(properties.extendedProperties.recommendationSubCategory),
+          impact = tostring(properties.impact),
+          impacted_type = tolower(tostring(properties.impactedField)),
+          impacted_name = tostring(properties.impactedValue)
+"""
+
+
+DEFENDER_SUMMARY_QUERY = """
+securityresources
+| where type =~ 'microsoft.security/assessments'
+| where subscriptionId == '{subscription}'
+| where tostring(properties.status.code) =~ 'Unhealthy'
+| summarize resources = dcount(tostring(properties.resourceDetails.Id)), key = take_any(name)
+          by recommendation = tostring(properties.displayName), severity = tostring(properties.metadata.severity),
+             category = tostring(properties.metadata.recommendationCategory)
+"""
+DEFENDER_PORTAL = "https://portal.azure.com/#view/Microsoft_Azure_Security/SecurityMenuBlade/~/5"
+DEFENDER_RECOMMENDATION = "https://portal.azure.com/#blade/Microsoft_Azure_Security/RecommendationsBlade/assessmentKey/{}"
+
+
+async def collect_defender_summary(context: ScanContext, data: AnalysisData, include_plans: bool = False) -> None:
+    """Open Defender for Cloud recommendations by severity, OS-package updates folded into one row - the summary the
+    report shows instead of one finding per resource (unless `defender_recommendations` is on)."""
+    from scanners.security.defender_guidance import is_plan_recommendation, is_system_update
+
+    try:
+        rows = await query_resource_graph(context, DEFENDER_SUMMARY_QUERY.format(subscription=context.subscription_id))
+    except Exception as exc:
+        data.warnings.append(f"Defender for Cloud summary unavailable: {exc}")
+        return
+    if rows is None:
+        return
+    order = {"High": 0, "Medium": 1, "Low": 2}
+    merged: Dict[str, Dict[str, Any]] = {}
+    plans = 0
+    for r in rows:
+        name = r.get("recommendation") or ""
+        if is_plan_recommendation(name) and not include_plans:
+            plans += 1
+            continue
+        updates = is_system_update(name, r.get("category"))
+        key = "Install missing OS / package updates" if updates else name
+        severity = (r.get("severity") or "Low").title()
+        entry = merged.setdefault(key, {"recommendation": key, "severity": severity, "resources": 0,
+                                        "link": DEFENDER_PORTAL if updates or not r.get("key")
+                                        else DEFENDER_RECOMMENDATION.format(r["key"])})
+        count = int(r.get("resources") or 0)
+        # package updates hit the same machines many times: the largest count, not the sum
+        entry["resources"] = max(entry["resources"], count) if updates else entry["resources"] + count
+        if order.get(severity, 3) < order.get(entry["severity"], 3):
+            entry["severity"] = severity
+    items = sorted(merged.values(), key=lambda e: (order.get(e["severity"], 3), -e["resources"], e["recommendation"]))
+    data.defender = {"recommendations": items, "plan_upsells_left_out": plans, "portal": DEFENDER_PORTAL,
+                     "by_severity": dict(Counter(e["severity"] for e in items))}
+
+
+async def collect_reliability(context: ScanContext, data: AnalysisData) -> None:
+    """Advisor reliability recommendations (retirements are a scanner of their own)."""
+    from scanners.base.posture_scanner import ADVISOR_ACTIVE_FILTER
+
+    try:
+        rows = await query_resource_graph(context, RELIABILITY_QUERY.format(
+            subscription=context.subscription_id, active=ADVISOR_ACTIVE_FILTER))
+    except Exception as exc:
+        data.warnings.append(f"Advisor reliability recommendations unavailable: {exc}")
+        return
+    gone = await missing_resources(context, [r.get("resource_id") for r in rows or []])
+    data.reliability = [r for r in rows or [] if r.get("problem") and top_level_id(r.get("resource_id")) not in gone]
 
 
 AI_DEPLOYMENT_KINDS = ("openai", "aiservices")
@@ -286,18 +388,23 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
     load_scanners()
     selected = [n for n in ScannerRegistry.all() if not scanners or n in scanners]
     total = len(selected) + 3
+    raw_credential = credential   # the AI review must not mark the whole run as signed out
     credential = FailFastCredential(credential)
     arm = ArmClient(credential)
     try:
         progress("Resolving subscription", 0, total)
         sub = await resolve_subscription(arm, subscription)
-        data = AnalysisData(subscription=sub, generated_at=datetime.now(timezone.utc))
+        data = AnalysisData(subscription=sub, generated_at=datetime.now(timezone.utc),
+                            settings={k: v for k, v in (config or {}).items()
+                                      if k in REPORT_SETTINGS or k == "required_tags"})
         context = build_context(credential, arm, sub)
         context.cost_basis = cost_basis_from(config)   # amortized unless the amortized_cost setting is off
         logger.info("Collecting inventory for %s (%s)", sub["name"], sub["id"])
         progress("Collecting resource inventory", 1, total)
         await collect_inventory(context, arm, data)
         await collect_ai_deployments(arm, data)
+        await collect_reliability(context, data)
+        await collect_defender_summary(context, data, bool((config or {}).get("defender_plan_recommendations")))
         try:
             data.resource_providers = await get_provider_analysis(context) or {}
         except Exception as exc:
@@ -307,6 +414,10 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
             logger.info("Querying Cost Management")
             await collect_costs(context, data)
         await run_scanners(context, scanners, config or {}, data, progress=progress, step_offset=3, total_steps=total)
+        data.findings, data.correlation = correlate(data.findings)
+        if (config or {}).get("ai_reasoning"):
+            progress("Thinking mode: AI review", total, total)
+            data.thinking = await think_about(data, config or {}, raw_credential)
         if credential.error:
             # Scanners swallow per-call errors as warnings; an expired sign-in would
             # otherwise produce a silently incomplete report.
@@ -314,6 +425,16 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
         return data
     finally:
         arm.close()
+
+
+async def think_about(data: AnalysisData, config: Dict[str, Any], credential: Any) -> Dict[str, Any]:
+    """The optional AI review of the analysed subscription (thinking.py); attaches finding["ai_review"]."""
+    from scanners.base.naming import env_from_subscription
+    from scripts.subscription_analysis.thinking import think
+
+    sub = data.subscription
+    env = {"prod": "production", "nonprod": "non-production"}.get(env_from_subscription(sub.get("name") or "") or "")
+    return await think({"name": sub.get("name"), "environment": env}, data.findings, data.cost, config, credential)
 
 
 def run(credential: Any, subscription: str, **kwargs: Any) -> AnalysisData:

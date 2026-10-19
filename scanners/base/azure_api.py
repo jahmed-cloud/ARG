@@ -27,6 +27,7 @@ ScanContext still holds.
 import asyncio
 import math
 import logging
+import re
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -45,6 +46,44 @@ _RETAIL_PRICE_CACHE: Dict[str, Optional[float]] = {}
 # ---------------------------------------------------------------------------
 # Resource Graph
 # ---------------------------------------------------------------------------
+
+# azure-core's defaults wait 300 s for a response on every attempt, so a connection that dies silently (VPN, NAT,
+# a container network hiccup) stalls a scan for many minutes. Resource Graph answers in seconds; fail fast and let
+# the SDK's retry policy (429 / 5xx with Retry-After, exponential back-off) try again.
+GRAPH_CONNECT_TIMEOUT = 20
+GRAPH_READ_TIMEOUT = 120
+GRAPH_RETRIES = 4
+
+
+def resource_graph_client(credential: Any) -> Any:
+    """ResourceGraphClient with short connect / read timeouts and a bounded retry policy."""
+    from azure.mgmt.resourcegraph import ResourceGraphClient
+
+    return ResourceGraphClient(credential, connection_timeout=GRAPH_CONNECT_TIMEOUT,
+                               read_timeout=GRAPH_READ_TIMEOUT, retry_total=GRAPH_RETRIES)
+
+
+# Resource Graph returns every computed boolean (tobool, isnotnull, isnotempty, ...) as 1 / 0, never true / false -
+# so `row["x"] is False` is never true and `is not True` always is. Raw properties (properties.x) keep JSON booleans.
+BOOL_COLUMN = re.compile(r"\b(\w+)\s*=\s*(?:tobool|toboolean|isnotnull|isnull|isnotempty|isempty)\s*\(", re.IGNORECASE)
+
+
+def bool_columns(query: str) -> set:
+    """Columns a query computes with a boolean function."""
+    return {m.group(1) for m in BOOL_COLUMN.finditer(query or "")}
+
+
+def normalise_bools(query: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Turn the 1 / 0 Resource Graph returns for computed boolean columns back into True / False (None stays None)."""
+    columns = bool_columns(query)
+    if columns:
+        for row in rows:
+            for column in columns:
+                value = row.get(column)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    row[column] = bool(value)
+    return rows
+
 
 async def query_resource_graph(
     context: Any,
@@ -80,7 +119,37 @@ async def query_resource_graph(
         skip_token = getattr(response, "skip_token", None)
         if not skip_token:
             break
-    return rows
+    return normalise_bools(query, rows)
+
+
+def top_level_id(resource_id: str) -> Optional[str]:
+    """'/subscriptions/s/resourcegroups/rg/providers/ns/type/name' of any resource or child resource ID (lower case)."""
+    parts = (resource_id or "").lower().split("/")
+    if len(parts) >= 9 and parts[1] == "subscriptions" and parts[3] == "resourcegroups" and parts[5] == "providers":
+        return "/".join(parts[:9])
+    return None
+
+
+async def missing_resources(context: Any, resource_ids: Iterable[str]) -> set:
+    """
+    Top-level resource IDs among `resource_ids` that no longer exist. Advisor keeps recommending on a resource for
+    days after it is deleted; drop those. Empty when it cannot tell (mock mode, or the lookup fails) - nothing is
+    dropped on doubt. The parent is checked, so child resources Resource Graph does not index are never dropped.
+    """
+    tops = sorted({t for t in map(top_level_id, resource_ids) if t})
+    if not tops or getattr(context, "resource_graph_client", None) is None:
+        return set()
+    found: set = set()
+    try:
+        for i in range(0, len(tops), 300):
+            batch = ", ".join(f"'{t}'" for t in tops[i:i + 300])
+            rows = await query_resource_graph(context, f"resources | where tolower(id) in ({batch}) "
+                                                       f"| project id = tolower(id)")
+            found.update(r.get("id") for r in rows or [])
+    except Exception as exc:
+        logger.warning("Resource existence check failed: %s", exc)
+        return set()
+    return set(tops) - found
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +452,38 @@ async def run_cost_query(context: Any, start: date, end: date, grouping: List[Di
         logger.info("CostUSD aggregation rejected (%s); retrying with billing currency only", exc)
         return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=False,
                                                       cost_type=cost_type, cost_filter=cost_filter))
+
+
+def parse_monthly(rows: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Monthly cost-query rows -> [{"month": "2026-09", "cost", "cost_usd", "currency"}], oldest first."""
+    months = []
+    for r in rows or []:
+        month = str(r.get("BillingMonth") or r.get("UsageDate") or "")[:10]
+        if len(month) == 8 and month.isdigit():
+            month = f"{month[:4]}-{month[4:6]}"
+        cost = float(r.get("Cost") or 0.0)
+        usd = r.get("CostUSD")
+        if usd is None and (r.get("Currency") or "").upper() == "USD":
+            usd = cost
+        months.append({"month": month[:7], "cost": round(cost, 2),
+                       "cost_usd": round(float(usd), 2) if usd is not None else None, "currency": r.get("Currency")})
+    return sorted(months, key=lambda m: m["month"])
+
+
+async def monthly_costs(context: Any, months: int = 6,
+                        cost_type: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    """The subscription's cost per calendar month - the last `months` months including the current one, on the scan's
+    cost basis (amortized by default). None without Cost Management access."""
+    end = date.today()
+    start = end.replace(day=1)
+    for _ in range(months - 1):
+        start = (start - timedelta(days=1)).replace(day=1)
+    try:
+        rows = await run_cost_query(context, start, end, [], granularity="Monthly", cost_type=cost_type)
+    except Exception as exc:
+        logger.warning("Monthly cost query failed for %s: %s", getattr(context, "subscription_id", "?"), exc)
+        return None
+    return None if rows is None else parse_monthly(rows)
 
 
 async def get_resource_costs(context: Any, days: int = 30,

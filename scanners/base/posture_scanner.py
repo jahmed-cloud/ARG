@@ -22,6 +22,19 @@ from scanners.base.base_scanner import BaseScanner, ScanContext, ScannerFinding,
 SUBSCRIPTION_RESOURCE_TYPE = "microsoft.resources/subscriptions"
 SUBSCRIPTION_RESOURCE_GROUP = "(subscription)"
 
+# Azure Advisor keeps recommendations it has verified as done (recommendationStatus Completed, platformState
+# Resolved) and ones the owner dismissed or postponed; only the open ones are findings.
+ADVISOR_ACTIVE_FILTER = ("| where tostring(properties.recommendationStatus) !in~ ('Completed', 'Dismissed', 'Postponed')"
+                         " and tostring(properties.platformState) !~ 'Resolved'"
+                         " and tostring(properties.customerState) !in~ ('Dismissed', 'Postponed')")
+
+
+def is_stopped(power_state: Optional[str]) -> bool:
+    """A VM power state code ('PowerState/deallocated', ...) that is not running - not reachable, no guest OS up.
+    An unknown state counts as running."""
+    state = (power_state or "").lower()
+    return "deallocat" in state or state.endswith("/stopped") or state.endswith("/stopping")
+
 
 class PostureScanner(BaseScanner):
     """Abstract helper base - subclasses still implement scan()."""
@@ -61,7 +74,7 @@ class PostureScanner(BaseScanner):
             title=title,
             description=description,
             resource_id=subscription_resource_id(context.subscription_id),
-            resource_name=context.subscription_id,
+            resource_name=getattr(context, "subscription_name", "") or context.subscription_id,
             resource_type=SUBSCRIPTION_RESOURCE_TYPE,
             resource_group=SUBSCRIPTION_RESOURCE_GROUP,
             subscription_id=context.subscription_id,

@@ -120,7 +120,8 @@ reports/
     │                                subscription with the same name already owns <name>/
     ├── README.md                    executive summary, headline savings, top risks, prioritised actions
     ├── summary.json                 totals used by the index and the portal
-    ├── 01-current-findings/         baseline, workloads, architecture diagram, resource-inventory.md
+    ├── 01-current-findings/         baseline, workloads, architecture diagram, resource-inventory.md,
+    │                                resource-providers.md (every provider and its status)
     ├── 02-gap-analysis/             gaps by area × severity (structural, security, operational, performance, FinOps)
     ├── 03-cost-drivers/             12-month trend, service/RG/resource breakdown, forecast, savings-register.md
     │                                (per wave: actions with a saving, other actions, tag / naming hygiene counts)
@@ -168,6 +169,17 @@ No saving is estimated: whether to renew, resize or cancel is a business decisio
 
 A missing budget (`budget_missing`) is **High** instead of Medium when the peak monthly spend in the last six full months
 is at least `budget_missing_high_monthly_usd` (10,000 USD).
+- **summary** = README, current findings (without resource inventory), gap analysis, cost drivers, savings register,
+  critique, deep-dive index. **full** adds the resource inventory, the full resource-provider list and every
+  deep-dive page (large for big subscriptions).
+- Output: `reports/<subscription>/report-<detail>.pdf`, plus `report-<detail>.html` (a standalone, print-ready copy).
+  Both are replaced on re-run.
+- **How:** the report is rendered into one HTML document (cover page, table of contents, one section per page,
+  internal links turned into in-document links, author credit).  The Microsoft Edge (or Chrome)
+  already on the machine then prints it headlessly. Nothing extra to install. Set `ARG_PDF_BROWSER` to a browser path
+  to override.
+- No Edge/Chrome, or printing failed? Open `report-<detail>.html` (or the portal's **Print view**) and use the browser's
+  **Print > Save as PDF**. Mermaid diagrams need access to the jsDelivr CDN at print time; offline they appear as code.
 
 ---
 
@@ -204,21 +216,183 @@ saving is the Defender for Storage price per account.
 ## 5a-3. Resource providers
 
 Section 7 of *01 - Current findings* shows which resource providers the subscription **accepts** (registered) and
-which it does not, against what it actually uses:
+which it does not, against what it actually uses. `01-current-findings/resource-providers.md` lists **every** provider
+of the subscription (also in the full PDF):
 
 | Status | Meaning |
 |---|---|
 | In use | Registered and resources exist |
-| Registered, not in use | Registered on request, nothing deployed - normal (portals and tools register on first use), not a finding |
+| Registered, not in use | Registered, nothing deployed yet - normal for core services and the governance baseline; information only for niche providers |
 | Platform (always registered) | Registration-free providers Azure keeps registered |
 | Not registered | The subscription cannot create these resources until an Owner / Contributor registers the provider |
 | Registering / Unregistering | A registration change in progress |
 | In use, not registered | Resources exist although the provider is not registered (usually created before it was unregistered) |
 
+A registered provider without resources is normal and costs nothing. **Core services** (Compute, Storage, Network,
+Key Vault, Web, SQL, containers, messaging, Logic Apps, AI, backup, DevTestLab for VM auto-shutdown, Blueprint,
+Capacity, ManagedServices, ... - `CORE_PROVIDERS`) and the **governance baseline** (`PLATFORM_PROVIDERS`: Defender,
+Policy, Monitor, Cost Management, Advisor, Update Manager, managed identities) are never unregister candidates:
+unregistering saves nothing and breaks the next deployment until someone registers the provider again. Findings
+(`resource_provider_registration_scanner`):
+
+| Finding | When | Severity |
+|---|---|---|
+| `resource_provider_blocked_registered` | A provider on the `blocked_resource_providers` list is registered (default: the retired classic providers `Microsoft.ClassicCompute`, `ClassicNetwork`, `ClassicStorage`, `ClassicInfrastructureMigrate`) | Low; Medium when resources of it exist |
+| `resource_providers_registered_unused` | Opt-in (`report_unused_providers`, off by default): niche providers registered with no resources - core services and the governance baseline excluded. Informational; the unregister commands are commented out | Info |
+
+For services the company does not allow, the control that sticks is a "Not allowed resource types" (or "Allowed
+resource types") policy at the management group - the portal re-registers an unregistered provider on the next
+deployment by anyone with rights.
+
 It also lists the **"Allowed resource types" / "Not allowed resource types"** policy assignments that apply -
 on the subscription, one of its resource groups or an ancestor management group - with their enforcement mode.
 Resource types in use that such a policy denies raise `resource_type_denied_by_policy`. The estate overview adds
-the same view across all subscriptions (where each provider is registered, used, or registered but unused).
+the same view across all subscriptions: providers in use, niche providers registered but unused, and every provider with the number
+of subscriptions where it is in use, registered, registered but unused, or not registered.
+
+## 5a-4. Why, when not, cost of implementation and references
+
+Every finding carries an implementation analysis (`scripts/subscription_analysis/guidance.py`, the same in the local
+report and the Docker UI's finding detail):
+
+| Part | What it says |
+|---|---|
+| Why it is needed | The mechanism: what goes wrong, or what is wasted, if nothing changes |
+| When it is not needed | The honest exceptions (dev/test, compensating controls, cases where the fix costs more than the risk) |
+| Cost of implementation | **Azure run-cost change per month** (e.g. a private endpoint about USD 7.30, API Management Basic v2 about USD 150, Defender plans per resource) and **engineering effort** in hours (and a one-off amount when `engineering_hourly_rate_usd` is set) |
+| Net effect | For findings with a saving: the saving minus the run cost of the change (the AI gateway saving is already net) |
+| References | Microsoft Learn pages and the Azure pricing page for the change |
+
+Where it shows: the *Cost to implement* column of the action list, gap analysis, savings register (with *Net /
+month*) and deep-dive tables; the full analysis under each finding in the deep dives; the README totals for waves
+1 + 2 (wave 3 is reported separately - it is project work); `implementation` on every finding in
+`raw/findings.json`. Prices are USD pay-as-you-go list prices from the Azure Retail Prices API
+(`scanners/base/guidance.py`, `PRICES_AS_OF`); enterprise agreements and other regions differ, so they are estimates
+for planning.
+
+**Defender for Cloud recommendations** are imported per resource (High by default, `defender_severities`):
+
+- Recommendations that only ask to **buy a paid plan** ("Microsoft Defender for Storage plan should be enabled with
+  Malware Scanning ...", "Microsoft Defender CSPM should be enabled", "... for Resource Manager / Key Vault / SQL ...")
+  are left out - plan choice is a central cost decision, not a configuration gap. The README and the security deep
+  dive say how many were left out; `defender_plan_recommendations` brings them back. The per-subscription plan
+  overview with the price of each plan (`defender_plan_disabled`) is off by default too (`defender_plan_coverage`).
+- Per-package OS updates ("Update openssl", "Update libc6", ...) become one entry per machine.
+- The most common recommendations have curated guidance with commands for the affected resource
+  (`scanners/security/defender_guidance.py`) - e.g. *Linux / Windows virtual machines should enable Azure Disk
+  Encryption or EncryptionAtHost*: managed disks are already encrypted at rest, encryption at host adds the temp disk,
+  caches and host-to-storage flow at no extra charge (one restart), and Azure Disk Encryption retires on
+  15 September 2028. Other recommendations show Microsoft's own description, remediation and links from Defender.
+
+**AI gateway.** `ai_spend_without_gateway` prices the gateway itself (API Management `ai_gateway_sku`, Basic v2 by
+default, from the Retail Prices API) and shares it across the subscription's AI accounts by spend. The saving is
+the assumed reduction (`ai_gateway_saving_ratio`, 15 %) **minus** that cost; below break-even the finding stays at Low
+with no saving and states the AI spend from which the gateway pays for itself. It also says what the gateway
+delivers (per-app token metrics, token limits, managed-identity access, failover, optional semantic cache - which
+needs Azure Managed Redis on top).
+
+## 5a-4b. What the executive summary leads with
+
+The README is written for the person who has to decide, not for the person who fixes one resource
+(`scripts/subscription_analysis/insights.py`):
+
+| View | What it answers |
+|---|---|
+| **Actionable vs hygiene** | Findings are counted without tag / naming hygiene (rated Low; reported as cost allocation instead) |
+| **Where the money is** | The 10 costliest resources, their share of spend and which findings address them. Spend with **no recommendation** is called out - it needs a design review with the owner, because ARG (or Advisor) has no analyser for it |
+| **Cost allocation** | Share of the last 30 days' spend on resources that carry every required tag, and the most-missed tag weighted by cost - the chargeback KPI, instead of hundreds of per-resource tag findings |
+| **By environment** | Production vs non-production spend (tags, names, the subscription naming convention) |
+| **Systemic issues** | A gap on 10+ resources (or 3+ and half of a type) is a platform default: one row with the **built-in Azure Policy guardrail** (Audit → remediate → Deny); the gap analysis shows it once, the deep dive lists every resource |
+| **Quick wins** | Material items (a saving, or critical / high) that take an hour or less and add no run cost |
+| **Retirement calendar** | Azure retirements that affect the subscription (`service_retirement_scanner`, from Advisor - feature, API version, SKU, VM series, runtime - with the date and days left) plus ARG's end-of-support checks; overdue first |
+| **Resilience posture** | Open Advisor reliability recommendations (zone redundancy, backup, geo-replication, scalability), production first, in *01 - Current findings §8*; items ARG already reports are not repeated |
+| **Changes since the previous analysis** | New, resolved and re-rated findings against the report that was in the folder, and a trend over the last runs (`history.json`, kept across re-runs) |
+
+**No double counting.** Defender for Cloud and Advisor items that a ARG finding already covers on the same
+resource are merged into it (`correlate.py`; "also reported by" in the evidence), and an Advisor cost item on a
+resource that already carries a ARG saving is dropped. Advisor recommendations that Azure marks Completed /
+Resolved or that were dismissed are never imported.
+
+**Advisor cost recommendations** (`advisor_cost_scanner`) bring in the savings ARG has no native analyser for -
+for example Data Explorer table cache policies (per table: current and recommended hot period, the `.alter table ...
+policy caching` command), VM and App Service right-sizing, Basic logs - capped at the resource's own 30-day cost.
+
+**Azure Boards backlog.** Every report folder has `backlog.csv` for *Boards → Queries → Import work items*: one Task
+per systemic issue (guardrail and all affected resources) and per remaining actionable finding, with description,
+why, cost, remediation, commands, references and a "done when"; priority from severity, Remaining Work from the effort
+estimate, tags `ARG; <subscription>; <area>; wave <n>; <finding type>`.
+
+## 5a-5. Settings
+
+| Where | How |
+|---|---|
+| Local portal | **Settings** in the top bar; saved to `<reports-dir>/settings.json` and used by the next analysis from the portal, `Invoke-SubscriptionAnalysis.ps1` or `python -m scripts.subscription_analysis` |
+| Docker stack | Settings → Governance Configuration → *Analysis Settings* (admins); used from the next scan. Findings of a check that is switched off are suppressed with the reason; findings a clean scan no longer reports are resolved |
+| One run | `--config file.json` overrides both |
+
+| Setting | Default | Effect |
+|---|---|---|
+| `naming_convention_enabled` | on | Naming convention check (`naming_convention_violation`). Most resources cannot be renamed in place - switch off unless a naming standard is being enforced |
+| `required_tags_check` | off | One `missing_required_tags` finding per resource without the required tags. Off: tag coverage is still the cost-allocation KPI in the summary, without thousands of findings |
+| `display_currency` | Billing currency | Docker web app: amounts in the Azure invoice's currency (e.g. CHF) at Cost Management's own rate (billing cost / USD cost, last 30 days, refreshed with the estate inventory), or USD. The local report always shows the billing currency with USD alongside |
+| `ai_reasoning`, `ai_endpoint`, `ai_deployment`, `ai_max_findings` | off | The optional AI review of thinking mode (see *Thinking mode*) |
+| `sensitive_data_tags` | empty | `Tag=value` pairs marking confidential data (e.g. `DataClassification=Confidential`). An open storage account, Key Vault, database or AI endpoint carrying one gets a private-endpoint recommendation even when it is idle (see *Network access: the target architecture*) |
+| `defender_recommendations` | off | Import Defender for Cloud recommendations as findings. Off: the report shows them as a summary by severity, each linked to Defender for Cloud, where triage, exemptions and owners are tracked |
+| `defender_plan_recommendations` | off | Include Defender's paid plan-enablement recommendations |
+| `defender_plan_coverage` | off | One finding listing the Defender plans on Free with the cost of each on this subscription |
+| `report_unused_providers` | off | `resource_providers_registered_unused` for niche providers only (core services and the governance baseline are never listed); informational |
+| `blocked_resource_providers` | classic providers | Providers that must not be registered |
+| `engineering_hourly_rate_usd` | not set | Turns effort hours into a one-off amount |
+| `ai_gateway_sku` | Basic v2 | API Management tier priced into the AI gateway recommendation (Basic v2, Standard v2, Developer) |
+
+### Network access: the target architecture
+
+For storage accounts, Key Vaults, SQL servers, Cosmos DB and AI accounts open to all networks the scanners
+recommend the **target architecture** (Well-Architected / Cloud Adoption Framework landing zone) - not the cheapest
+control - and rank every other option (`scanners/base/access_need.py`):
+
+| Situation (Resource Graph + 30 days of metrics) | Target | Interim step |
+|---|---|---|
+| Data in active use (production, non-production or unknown) | Private endpoint + private DNS, public access off | When the endpoint needs prerequisites (no subnet in the region, no `privatelink.*` zone in the tenant, callers without a private path): a service endpoint for VNet callers, else IP rules - closes the internet exposure today, free |
+| Confidential-data tag (`sensitive_data_tags`) | Private endpoint, always | as above |
+| 0-10 data operations / API calls in 30 days - it only keeps data | Public access off: no network path at all (stronger than a private endpoint nobody uses) | - |
+| Holds VM boot diagnostics | Managed boot diagnostics, then public access off / delete | - |
+| Written only by Azure services | Default Deny + trusted Microsoft services | - |
+| Tagged `arg-public` (external clients, static website, CDN origin) | Public, hardened (Entra ID, short-lived SAS) | - |
+
+Each option is listed with its role (target / interim / alternative / not suitable), the exposure that remains
+after it, its run cost and why it does or does not fit this resource. Severity: high for production data in use
+and confidential data, medium when the environment is unknown, low for non-production, idle data and endpoints
+public by design. The README's *Open endpoints - target architecture* line summarises them; *Recommendations that
+add run cost* lists what the targets cost.
+
+### Thinking mode
+
+**Built-in reasoning (always on, `reasoning.py`).** Every finding carries *How ARG reasoned*: what was observed
+(the resource's own values - usage, configuration, callers, private DNS, environment), what changes the answer here
+(environment, prerequisites, other findings on the same resource, when it is not needed), every option considered
+with its role, the recommendation, the risks specific to the finding type, how to verify the fix (CLI and metrics)
+and the confidence with its reason. Shown in the deep dives, `raw/findings.json` and the Docker finding detail.
+
+**AI review (optional, `thinking.py`, setting `ai_reasoning`).** An Azure OpenAI model in the company tenant reviews
+the subscription like a principal architect: challenges recommendations where the evidence points elsewhere, finds
+themes across findings (one root cause, sequencing) and asks the owner what the data cannot answer. It is told to
+cite resources and numbers and never to give generic advice.
+
+| Setting | Meaning |
+|---|---|
+| `ai_reasoning` | Switch the AI review on (off by default) |
+| `ai_endpoint` | `https://<name>.openai.azure.com` (or `*.cognitiveservices.azure.com`, `*.services.ai.azure.com`); other hosts are refused |
+| `ai_deployment` | The chat model deployment (JSON output), e.g. `gpt-4.1` |
+| `ai_max_findings` | Findings sent per subscription (default 30, most severe / most expensive; tag and naming hygiene excluded) |
+
+What is sent: subscription name, environment, cost by service, and per finding its type, severity, resource name and
+type, evidence facts and the built-in recommendation and options. GUIDs are replaced by aliases; tag values and
+secrets are never sent. Sign-in: Entra ID - the `az login` session locally, the service principal in Docker (it
+needs *Cognitive Services OpenAI User* on the resource) - or the `ARG_AOAI_API_KEY` environment variable. One request
+per subscription, typically 6-15k input and 2-4k output tokens. Output: an *AI review* line in the README,
+`05-deep-dive/thinking.md` (summary, themes, a verdict per finding, questions for the owner) and an *AI review* block
+per finding (deep dives, Docker finding detail). A failed call never fails the report.
 
 ## 5c. Estate inventory (all subscriptions)
 
@@ -349,6 +523,76 @@ The **Estate** page:
 Suggestions and cost come from the latest report of each subscription; subscriptions that were never analysed
 still appear in the inventory, without suggestions.
 
+### Architecture diagrams
+
+The estate refresh also collects, read-only through Resource Graph, the management-group hierarchy
+(`managementGroupAncestorsChain`), the Azure Policy assignments on management groups and subscriptions (effect,
+enforcement, and the parameters of the built-in *Allowed locations*, *Allowed resource types* and *Not allowed
+resource types* policies) and every VNet with its address space, subnets and peerings. `diagram.py` draws two views
+from it with the official Microsoft Azure architecture icons (`scripts/subscription_analysis/azure_icons/`, used
+unchanged under Microsoft's icon terms - see its `NOTICE.md`):
+
+| View | Shows |
+|---|---|
+| Tenant | Tenant root -> management groups -> subscriptions (grid per group: environment colour, resources, 30-day cost); per group its policy assignments - deny, allowed locations, allowed / not allowed types, DeployIfNotExists / Modify, initiatives; a badge for assignments made on a subscription itself (Defender for Cloud's own *ASC ...* assignments left out) |
+| Subscription | Management-group path; effective policy - what is allowed, what is not, deny policies and what in use violates them; VNets with peerings (a peered VNet in another subscription opens that one); every resource group with its services, counts and cost |
+
+A second layer, **Network** (`network.py`, `network_diagram.py`), uses the same refresh: subnets with NSG, route
+table (and the 0.0.0.0/0 next hop), NAT gateway, delegation and service endpoints; private endpoints and their
+targets; which VM sits in which subnet and whether it has a public IP; gateways, firewalls, Bastion, App Gateway,
+load balancers, AKS, Container Apps, API Management and flexible databases; public IPs; and the network exposure of
+21 PaaS and app types (public network access, firewall default action and rules, private endpoints, VNet
+integration).
+
+| View | Shows |
+|---|---|
+| Tenant network | Hubs (gateway / firewall subnet with peerings, or 3+ peerings) with their spokes, peerings without a hub, isolated VNets; peering state; address-space overlaps between connected VNets (and isolated VNets that reuse ranges); the VNet hosting the default-route NVA / firewall |
+| Subscription network | Internet and on-premises entry points; each VNet with its subnets and what runs in them - VMs coloured by power state (amber deallocated, red stopped but billed), private endpoints, gateways and platform services - with NSG / route / NAT / service-endpoint / delegation badges; every PaaS service and app grouped by exposure, with lines from private endpoints to their services and from apps to their VNet-integration subnets |
+
+Service Bus, Event Hubs and Redis keep their firewall rules in child resources Resource Graph does not return; they
+are shown as *rules not in Resource Graph* rather than as open.
+
+Local portal: **Architecture** (Resources & policy / Network). Docker UI: **Architecture** (admins),
+`GET /estate/architecture.svg[?subscription=][&view=network]`. The overview pages (local home page, Docker
+*Overview* for admins, `GET /estate/telemetry`) chart the same inventory: spend by category, service and
+subscription, VM power state and CPU bands, data services and apps by exposure, VMs with public IPs, private
+endpoints, tag coverage and suggestions by severity.
+Both: wheel or buttons to zoom, drag to pan, search, click a subscription to open it, *Export SVG* / *Export PNG*
+(PNG up to 2x, at most 16,000 px on the long side). Effects inside initiatives are not resolved in these two views:
+an initiative is shown by name, and deny counts only include assignments whose own `effect` parameter is a deny (the
+Landing zone view below resolves them).
+
+### Landing zone view
+
+A third layer, **Landing zone** (`landing_zone.py`, `landing_zone_diagram.py`, `policy_catalog.py`), compares the
+tenant with Microsoft's **Azure Landing Zones** reference - the
+[Azure Landing Zones Library](https://github.com/Azure/Azure-Landing-Zones-Library) (MIT), one pinned release kept
+unchanged in `scripts/subscription_analysis/alz_library` (`SOURCE.md` names it; update with
+`python -m scripts.update_alz_library [release]` and review the diff). It answers what AzAdvertizer / Azure Governance
+Visualizer answer, for this tenant:
+
+| Part | What it shows |
+|---|---|
+| Structure | Every management group with its ALZ archetype (intermediate root, platform, connectivity, identity, management, security, landing zones, corp, online, local, sandbox, decommissioned), next to the ALZ reference tree; which archetypes are missing; subscriptions outside the intermediate root (no root guardrail reaches them); environment-split landing zones; where the hub networks live |
+| Controls | Each ALZ policy assignment of an archetype at the groups mapped to it: **in place**, **audit only** (ALZ denies or remediates, the tenant audits or does not enforce), **on every / some subscriptions** (assigned per subscription, e.g. Defender's default initiative), **similar** (one of your policies reads most of the same distinctive resource properties - named, to confirm), **disabled**, **missing**. ALZ initiatives are compared policy by policy |
+| Policy depth | Per management group: each assignment (initiative or policy, number of policies, built-in / custom, effects, enforcement), non-compliant resources, exemptions; deprecated policies in force; exemptions without an end date or expired; assignments made on subscriptions directly |
+| Connectivity | Hubs - Azure Firewall or NVA firewall VMs, firewall policy, gateways / Route Server, Bastion, DNS resolver (hub or peered), DDoS - and per spoke: peered to a hub, default route (route tables, or learned over BGP from the hub's Route Server / gateway), DNS that resolves private endpoints, DDoS, subnets without NSG |
+
+How the archetype is chosen: the `landing_zone_mapping` setting (one `management group = archetype` per line,
+display name or ID; Settings > Analysis settings), else the group's name, else its position - the tenant root's
+child holding most subscriptions is the intermediate root, its children with subscriptions are landing zones, groups
+below take their parent's. Name your corp (private, hub-connected) and online (Internet-facing) groups in the setting -
+ALZ gives them different policies.
+
+What is collected (read-only, with the estate refresh): every policy assignment, custom definition and initiative,
+exemption and compliance state through Resource Graph; the built-in definitions and initiatives in one paged ARM
+list each (Resource Graph does not return them; about 7 s, cached 12 h). Every assignment is resolved to its policies
+with the effect each runs with (assignment parameter > initiative default > definition default). Stored compactly -
+assignments with the same definition and parameters share one profile, only referenced definitions are kept -
+locally in `reports/_estate/policy.json` (about 1 MB for 200 assignments) and in the Docker snapshot (left out of
+`GET /estate`). Routes: local `/architecture?view=landing`, `/api/landing-zone.html`, `/api/landing-zone.md`; Docker
+`GET /estate/architecture.svg?view=landing`, `GET /estate/landing-zone`.
+
 ---
 
 ### Cheaper region (`cheaper_region_available`)
@@ -373,7 +617,7 @@ Settings: `region_min_saving_pct` (10), `region_min_saving_usd` (20), `region_ex
 
 ## 6. What it analyses
 
-63 scanners across network, compute/App Service, database, storage, security, identity, governance/observability
+75 scanners across network, compute/App Service, database, storage, security, identity, governance/observability
 and cost. See [scanner-catalog.md](./scanner-catalog.md). The five Microsoft Graph (Entra ID) scanners are **skipped**
 locally; they need the Docker stack with a service principal and Graph consent. Terraform drift is skipped unless state
 was imported into the Docker stack.
@@ -394,9 +638,16 @@ Pass a JSON file with `--config`. Keys apply to every scanner that reads them:
   "max_owners": 3, "secure_score_target": 0.8, "defender_severities": ["High"],
   "min_daily_cap_gb": 0.5, "max_workspaces": 2, "max_workloads_per_subscription": 2,
   "overrun_months": 3, "ai_min_monthly_usd": 100, "max_ai_accounts": 2,
-  "timeout_seconds": 900
+  "ai_gateway_sku": "Basic v2", "ai_gateway_saving_ratio": 0.15,
+  "naming_convention_enabled": true, "defender_plan_recommendations": false, "defender_plan_coverage": false,
+  "report_unused_providers": true, "blocked_resource_providers": ["Microsoft.ClassicCompute"],
+  "engineering_hourly_rate_usd": 100,
+  "arm_concurrency": 8, "timeout_seconds": 900
 }
 ```
+
+The settings in [5a-5](#5a-5-settings) can be kept in `<reports-dir>/settings.json` (the portal's Settings page)
+instead; `--config` wins for a single run.
 
 ---
 

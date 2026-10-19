@@ -30,7 +30,7 @@ from backend.api.routes import (
     auth, subscriptions, tenants, scans, findings,
     costs, identity, governance, drift, security,
     reports, dashboard, remediation, webhooks, health, users,
-    governance_config, api_keys
+    governance_config, api_keys, estate, analysis
 )
 from backend.models.models import Base
 
@@ -257,6 +257,8 @@ app.include_router(dashboard.router,    prefix=f"{PREFIX}/dashboard",    tags=["
 app.include_router(remediation.router,  prefix=f"{PREFIX}/remediation",  tags=["Remediation"])
 app.include_router(webhooks.router,     prefix=f"{PREFIX}/webhooks",     tags=["Webhooks"])
 app.include_router(api_keys.router,     prefix=f"{PREFIX}/api-keys",     tags=["API keys (CI/CD)"])
+app.include_router(estate.router,       prefix=f"{PREFIX}/estate",       tags=["Estate (admins)"])
+app.include_router(analysis.router,     prefix=f"{PREFIX}/analysis",     tags=["Analysis"])
 
 
 # ---------------------------------------------------------------------------

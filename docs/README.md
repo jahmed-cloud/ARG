@@ -7,6 +7,8 @@
 | [scanner-catalog.md](./scanner-catalog.md) | Every scanner, its finding types and data sources, and where each finding lands in the report (generated from the registry) |
 | [azure-policy.md](./azure-policy.md) | Azure Policy scanners, "what governs this resource?", the managed-by finder and required VM extensions |
 | [azure-policy-limits.md](./azure-policy-limits.md) | Azure Policy hard limits (definitions, assignments, exemptions, rule size) |
+| [prerequisites.md](./prerequisites.md) | Requirements per mode: software, Azure roles, Graph permissions, endpoints, ports, environment variables |
+| [azure-devops.md](./azure-devops.md) | Hosting the repository and its validation pipeline in Azure DevOps |
 | [../README.md](../README.md) | Project overview and the Docker stack |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Development setup, adding scanners, tests |
 | [../CHANGELOG.md](../CHANGELOG.md) | Changes |

@@ -14,7 +14,9 @@
     <nav aria-label="Main navigation">
       <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>Subscriptions</a>
       <a href="/estate" {% if path.startswith('/estate') %}aria-current="page"{% endif %}>Estate</a>
+      <a href="/architecture" {% if path.startswith('/architecture') %}aria-current="page"{% endif %}>Architecture</a>
       <a href="/reports/README.md" {% if path.startswith('/reports') %}aria-current="page"{% endif %}>Reports</a>
+      <a href="/settings" {% if path.startswith('/settings') %}aria-current="page"{% endif %}>Settings</a>
     </nav>
     {% if path and not path.startswith('/login') %}
     {% set chosen = request.cookies.get('arg_currency', 'billing') if request is defined else 'billing' %}

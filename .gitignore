@@ -142,3 +142,15 @@ htmlcov/
 
 # Maintainer AI-assistant notes (kept locally)
 MEMORY.md
+.copilot/
+.cursor/
+
+# One-off bug-fix and investigation scripts - never committed
+scratch/
+tmp/
+local/
+scripts/local/
+*.local.ps1
+*.local.py
+*.local.sh
+*.local.md

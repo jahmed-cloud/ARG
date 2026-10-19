@@ -58,13 +58,15 @@ export const WsSection: React.FC<{ number: number; title: string; children: Reac
   </section>
 );
 
-export const WsFacts: React.FC<{ rows: [string, React.ReactNode][] }> = ({ rows }) => (
-  <dl className="ws-facts">
-    {rows.filter(([, v]) => v !== null && v !== undefined && v !== '').map(([k, v]) => (
-      <React.Fragment key={k}><dt>{k}</dt><dd>{v}</dd></React.Fragment>
-    ))}
-  </dl>
-);
+export const WsFacts: React.FC<{ rows: [string, React.ReactNode][] }> = ({ rows }) => {
+  const shown = rows.filter(([, v]) => v !== null && v !== undefined && v !== '');
+  if (!shown.length) return <p className="ws-text ws-muted">Nothing recorded.</p>;
+  return (
+    <dl className="ws-facts">
+      {shown.map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{v}</dd></React.Fragment>)}
+    </dl>
+  );
+};
 
 export const WsList: React.FC<{ items?: (string | null | undefined)[] | null; ordered?: boolean }> = ({
   items, ordered,

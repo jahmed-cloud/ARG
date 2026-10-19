@@ -211,6 +211,7 @@ export const EstatePage: React.FC = () => {
   }, [estate]);
 
   const resource = resourceKey && estate ? estate.resourceIndex.get(resourceKey) ?? null : null;
+  let sectionNo = 0;   // resource dossier: numbers only the sections shown
   const hasFilters = FILTER_KEYS.some((k) => filters[k]);
   const money0 = (v: number) => format(v);
   const cost = (r: Resource) => (r.cost30 === null ? '—' : moneyText(`${fmt(r.cost30) || '0'} ${r.currency}`.trim()));
@@ -406,20 +407,20 @@ export const EstatePage: React.FC = () => {
               <WsMetric label="Environment" value={resource.env} />
               <WsMetric label="Suggestions" value={String(resource.suggestions)} note={resource.hygiene ? `${resource.hygiene} hygiene` : undefined} />
             </WsStrip>
-            <WsSection number={1} title="Configuration">
+            <WsSection number={++sectionNo} title="Configuration">
               <WsFacts rows={[
                 ['Size / SKU', resource.size], ['vCPU', resource.vcpu], ['RAM (GB)', resource.ramGB], ['Configuration', resource.config],
                 ['OS / runtime', resource.os], ['State', resource.state], ['Kind', resource.kind], ['Managed by', resource.managedBy],
               ]} />
             </WsSection>
             {(hasCpu(resource) || activityBand(resource)) && (
-              <WsSection number={2} title="Usage, last 30 days">
+              <WsSection number={++sectionNo} title="Usage, last 30 days">
                 <p className="ws-text">{cpuProfile(resource) || activityBand(resource) || 'No metrics.'}</p>
                 {resource.memAvg !== null && <p className="ws-text">Memory average {resource.memAvg.toFixed(1)} %.</p>}
                 {resource.usage && <p className="ws-text ws-muted">{resource.usage}</p>}
               </WsSection>
             )}
-            <WsSection number={3} title="Suggestions">
+            <WsSection number={++sectionNo} title="Suggestions">
               {(estate?.byResource.get(resource.key) ?? []).length === 0 ? <p className="ws-text ws-muted">None.</p> : (
                 <ul className="ws-list">
                   {(estate?.byResource.get(resource.key) ?? []).slice().sort((a, b) => sevRank(a.severity) - sevRank(b.severity)).map((s, i) => (
@@ -435,11 +436,11 @@ export const EstatePage: React.FC = () => {
               )}
             </WsSection>
             {Object.keys(resource.tags).length > 0 && (
-              <WsSection number={4} title="Tags">
+              <WsSection number={++sectionNo} title="Tags">
                 <WsFacts rows={Object.entries(resource.tags).map(([k, v]) => [k, v])} />
               </WsSection>
             )}
-            <WsSection number={5} title="Azure">
+            <WsSection number={++sectionNo} title="Azure">
               <WsFacts rows={[['Resource ID', resource.id]]} />
               <p className="ws-text" style={{ marginTop: 10 }}>
                 <a href={`https://portal.azure.com/#@/resource${resource.id}`} target="_blank" rel="noopener noreferrer">Open in the Azure portal</a>

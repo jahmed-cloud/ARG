@@ -10,9 +10,6 @@
  * rather than dropdowns, since analysts commonly want "critical + high"
  * or "open + acknowledged" simultaneously — a single-select dropdown
  * would force repeated round trips.
- *
- * Clicking a row expands it in place (FindingDetailPanel, GET /findings/{id}):
- * the same per-finding analysis the local subscription report shows.
  */
 import React, { useEffect, useState, useCallback } from 'react';
 import {
@@ -29,8 +26,6 @@ import {
   TableRow,
   TableCell,
   Checkbox,
-  Collapse,
-  IconButton,
   Pagination,
   Button,
   Menu,
@@ -42,14 +37,11 @@ import {
   InputLabel,
   alpha,
 } from '@mui/material';
-import { Search, MoreVert, FilterAltOff, KeyboardArrowDown, KeyboardArrowRight } from '@mui/icons-material';
+import { Search, MoreVert, FilterAltOff } from '@mui/icons-material';
 import { useApi, ApiError } from '../hooks/useApi';
 import { useMoney } from '../hooks/useCurrency';
-import { SEVERITY_COLORS } from '../theme/ThemeProvider';
+import { FindingDossier } from '../components/findings/FindingDossier';
 import { useSnackbar } from 'notistack';
-import { FindingDetailPanel } from '../components/findings/FindingDetailPanel';
-
-const COLUMN_COUNT = 8;
 
 interface SubscriptionOption {
   id: string;
@@ -65,12 +57,20 @@ interface TenantOption {
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 const STATUSES = ['open', 'acknowledged', 'resolved', 'suppressed', 'false_positive'];
 
+const SEVERITY_COLORS: Record<string, string> = {
+  critical: '#F44336',
+  high: '#FF9800',
+  medium: '#FFC107',
+  low: '#2196F3',
+  info: '#9E9E9E',
+};
+
 const STATUS_COLORS: Record<string, string> = {
-  open: '#f44336',
-  acknowledged: '#ffc107',
-  resolved: '#4caf50',
-  suppressed: '#9e9e9e',
-  false_positive: '#607d8b',
+  open: '#F44336',
+  acknowledged: '#FFC107',
+  resolved: '#4CAF50',
+  suppressed: '#9E9E9E',
+  false_positive: '#607D8B',
 };
 
 interface FindingItem {
@@ -90,7 +90,8 @@ interface FindingItem {
 
 export const FindingsPage: React.FC = () => {
   const api = useApi();
-  const money = useMoney();
+  const { format: money, text: moneyText } = useMoney();
+  const [dossierId, setDossierId] = useState<string | null>(null);
   const { enqueueSnackbar } = useSnackbar();
 
   const [items, setItems] = useState<FindingItem[]>([]);
@@ -116,9 +117,6 @@ export const FindingsPage: React.FC = () => {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkAnchor, setBulkAnchor] = useState<null | HTMLElement>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  const toggleExpanded = (id: string) => setExpandedId((prev) => (prev === id ? null : id));
 
   const fetchFindings = useCallback(async () => {
     setLoading(true);
@@ -442,7 +440,6 @@ export const FindingsPage: React.FC = () => {
                     onChange={toggleSelectAll}
                   />
                 </TableCell>
-                <TableCell padding="checkbox" />
                 <TableCell>Severity</TableCell>
                 <TableCell>Title</TableCell>
                 <TableCell>Resource</TableCell>
@@ -452,47 +449,34 @@ export const FindingsPage: React.FC = () => {
               </TableRow>
             </TableHead>
             <TableBody>
-              {items.map((f) => {
-                const expanded = expandedId === f.id;
-                return (
-                <React.Fragment key={f.id}>
-                <TableRow
-                  hover
-                  selected={selected.has(f.id)}
-                  onClick={() => toggleExpanded(f.id)}
-                  sx={{ cursor: 'pointer', '& > td': expanded ? { borderBottom: 'none' } : undefined }}
-                >
-                  <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
-                    <Checkbox size="small" checked={selected.has(f.id)} onChange={() => toggleSelectOne(f.id)} />
-                  </TableCell>
+              {items.map((f) => (
+                <TableRow key={f.id} hover selected={selected.has(f.id)}>
                   <TableCell padding="checkbox">
-                    <IconButton
-                      size="small"
-                      aria-label={expanded ? 'Collapse finding' : 'Expand finding'}
-                      aria-expanded={expanded}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleExpanded(f.id);
-                      }}
-                    >
-                      {expanded ? <KeyboardArrowDown fontSize="small" /> : <KeyboardArrowRight fontSize="small" />}
-                    </IconButton>
+                    <Checkbox size="small" checked={selected.has(f.id)} onChange={() => toggleSelectOne(f.id)} />
                   </TableCell>
                   <TableCell>
                     <Chip
                       size="small"
                       label={f.severity.toUpperCase()}
                       sx={{
-                        bgcolor: alpha(SEVERITY_COLORS[f.severity] ?? '#9e9e9e', 0.15),
-                        color: SEVERITY_COLORS[f.severity] ?? '#9e9e9e',
+                        bgcolor: alpha(SEVERITY_COLORS[f.severity] ?? '#9E9E9E', 0.15),
+                        color: SEVERITY_COLORS[f.severity] ?? '#9E9E9E',
                         fontWeight: 700,
                         fontSize: 11,
                       }}
                     />
                   </TableCell>
                   <TableCell sx={{ maxWidth: 320 }}>
-                    <Typography variant="body2" noWrap>
-                      {money.text(f.title)}
+                    <Typography
+                      variant="body2"
+                      noWrap
+                      component="button"
+                      onClick={() => setDossierId(f.id)}
+                      title="Open the finding dossier"
+                      sx={{ all: 'unset', cursor: 'pointer', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis',
+                            '&:hover, &:focus-visible': { color: '#b8d9ba', textDecoration: 'underline' } }}
+                    >
+                      {moneyText(f.title)}
                     </Typography>
                   </TableCell>
                   <TableCell sx={{ color: alpha('#fff', 0.6) }}>{f.resource_name ?? '—'}</TableCell>
@@ -501,16 +485,16 @@ export const FindingsPage: React.FC = () => {
                       size="small"
                       label={f.status.replace('_', ' ')}
                       sx={{
-                        bgcolor: alpha(STATUS_COLORS[f.status] ?? '#9e9e9e', 0.15),
-                        color: STATUS_COLORS[f.status] ?? '#9e9e9e',
+                        bgcolor: alpha(STATUS_COLORS[f.status] ?? '#9E9E9E', 0.15),
+                        color: STATUS_COLORS[f.status] ?? '#9E9E9E',
                         fontSize: 11,
                       }}
                     />
                   </TableCell>
                   <TableCell align="right">
-                    {f.estimated_monthly_saving ? money.format(f.estimated_monthly_saving, { decimals: 2 }) : '—'}
+                    {f.estimated_monthly_saving ? money(f.estimated_monthly_saving, { decimals: 2 }) : '—'}
                   </TableCell>
-                  <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                  <TableCell align="right">
                     {f.status === 'open' ? (
                       <Button size="small" onClick={() => updateSingleStatus(f.id, 'acknowledged')}>
                         Acknowledge
@@ -522,16 +506,7 @@ export const FindingsPage: React.FC = () => {
                     )}
                   </TableCell>
                 </TableRow>
-                <TableRow>
-                  <TableCell colSpan={COLUMN_COUNT} sx={{ p: 0, borderBottom: expanded ? undefined : 'none' }}>
-                    <Collapse in={expanded} timeout="auto" unmountOnExit>
-                      <FindingDetailPanel findingId={f.id} />
-                    </Collapse>
-                  </TableCell>
-                </TableRow>
-                </React.Fragment>
-                );
-              })}
+              ))}
             </TableBody>
           </Table>
           </TableContainer>
@@ -543,6 +518,7 @@ export const FindingsPage: React.FC = () => {
           <Pagination count={totalPages} page={page} onChange={(_, p) => setPage(p)} color="primary" />
         </Box>
       )}
+      <FindingDossier findingId={dossierId} onClose={() => setDossierId(null)} />
     </Box>
   );
 };

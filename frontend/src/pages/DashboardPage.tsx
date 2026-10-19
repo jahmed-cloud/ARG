@@ -4,8 +4,7 @@ import { ArrowForward, NorthEast, ShieldOutlined, CloudQueue, CheckCircleOutline
 import { Link } from 'react-router-dom';
 import { ResponsiveContainer, AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { useAppSelector } from '../store/store';
-import { useCanOperate, useIsAdmin } from '../hooks/useRoles';
-import { EstateTelemetry } from '../components/dashboard/EstateTelemetry';
+import { useCanOperate } from '../hooks/useRoles';
 import { useMoney } from '../hooks/useCurrency';
 import './dashboard.css';
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
@@ -75,11 +74,9 @@ function Posture({ title, value, path }: { title: string; value: ScoreCard; path
   return <Link to={path} className="posture-row"><span>{title}<small>{measured ? 'Latest assessment' : 'Awaiting assessment'}</small></span><span className="posture-track" aria-hidden="true"><i style={{ width: measured ? `${Math.max(0, Math.min(100, value.score))}%` : 0 }} /></span><strong>{measured ? Math.round(value.score) : '—'}<small>{measured ? '/100' : 'No data'}</small></strong><NorthEast fontSize="small" /></Link>;
 }
 export const DashboardPage: React.FC = () => {
+  const { format: money, convert, currency, text: moneyText } = useMoney();
   const { accessToken } = useAppSelector((s) => s.auth);
   const tenantView = useCanOperate(); // identity (tenant-wide) figures: admins and contributors only
-  const estateView = useIsAdmin(); // whole-estate telemetry: ARG administrators only (like the Estate page)
-  const { format: formatMoney, convert, currency, text: moneyText } = useMoney();
-  const money = (n: number) => formatMoney(n);
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -173,13 +170,13 @@ export const DashboardPage: React.FC = () => {
       </section>
       <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">POSTURE</p><h2>Assessment coverage</h2></div></div><Posture title="Governance" value={data.governance_score} path="/governance" /><Posture title="Security" value={data.security_score} path="/security" />{tenantView && <Posture title="Identity" value={data.identity_score} path="/identity" />}<p className="panel-note">Scores appear after a successful assessment. Unchecked areas remain unscored.</p></section>
       <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">FINANCIAL PICTURE</p><h2>Recorded Azure spend</h2></div><Link to="/costs" className="text-link">Costs <NorthEast fontSize="small" /></Link></div>
-        {data.cost_trend.length ? <ResponsiveContainer width="100%" height={225}><AreaChart data={data.cost_trend.map(p => ({ ...p, total_cost: Math.round(convert(p.total_cost)) }))} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="month" stroke="#94aaa5" fontSize={11} /><YAxis stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Area dataKey="total_cost" name={`Recorded cost (${currency})`} stroke="#b8d9ba" fill="#b8d9ba" fillOpacity={0.1} strokeWidth={2} /></AreaChart></ResponsiveContainer>
+        {data.cost_trend.length ? <ResponsiveContainer width="100%" height={225}><AreaChart data={data.cost_trend.map(p => ({ ...p, total_cost: convert(p.total_cost) }))} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="month" stroke="#94aaa5" fontSize={11} /><YAxis stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Area dataKey="total_cost" name={`Recorded cost (${currency})`} stroke="#a6d7bc" fill="#a6d7bc" fillOpacity={0.1} strokeWidth={2} /></AreaChart></ResponsiveContainer>
         : <div className="quiet-empty"><span className="empty-rule" /><p>No billing data recorded yet.</p><small>Recorded monthly costs will appear here when available. Missing data is never shown as zero spend.</small></div>}
       </section>
       <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">OVER TIME</p><h2>Posture history</h2></div><ToggleButtonGroup size="small" exclusive value={trendDays} onChange={(_, v) => v !== null && setTrendDays(v)} aria-label="History window">{[7, 30, 90].map(d => <ToggleButton key={d} value={d} aria-label={`${d} days`}>{d}d</ToggleButton>)}</ToggleButtonGroup></div>
-        {trendLoading ? <Skeleton height={225} /> : trendError ? <Alert severity="warning">History is unavailable. Choose another range to retry.</Alert> : scoreHistory.length ? <ResponsiveContainer width="100%" height={225}><LineChart data={scoreHistory} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="date" stroke="#94aaa5" fontSize={11} /><YAxis domain={[0, 100]} stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Line dataKey="governance_score" name="Governance" stroke="#b8d9ba" dot={false} /><Line dataKey="security_score" name="Security" stroke="#e9bc79" dot={false} /><Line dataKey="identity_score" name="Identity" stroke="#2196f3" dot={false} /></LineChart></ResponsiveContainer>
+        {trendLoading ? <Skeleton height={225} /> : trendError ? <Alert severity="warning">History is unavailable. Choose another range to retry.</Alert> : scoreHistory.length ? <ResponsiveContainer width="100%" height={225}><LineChart data={scoreHistory} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="date" stroke="#94aaa5" fontSize={11} /><YAxis domain={[0, 100]} stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Line dataKey="governance_score" name="Governance" stroke="#a6d7bc" dot={false} /><Line dataKey="security_score" name="Security" stroke="#e9bc79" dot={false} /><Line dataKey="identity_score" name="Identity" stroke="#98b5db" dot={false} /></LineChart></ResponsiveContainer>
         : <div className="quiet-empty"><span className="empty-rule" /><p>A baseline comes before a trend.</p><small>Daily score snapshots will build this history after your first assessment.</small></div>}
       </section>
-    </div>{estateView && <EstateTelemetry />}<footer className="overview-footer"><span>RESOURCE GUARDIAN</span><span>Azure estate intelligence · Refreshes every 30 seconds</span></footer>
+    </div><footer className="overview-footer"><span>RESOURCE GUARDIAN</span><span>Azure estate intelligence · Refreshes every 30 seconds</span></footer>
   </div>;
 };

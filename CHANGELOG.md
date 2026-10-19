@@ -15,8 +15,12 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
   `python -m scripts.update_alz_library`); local portal and Docker UI.
 - **Analysis page** in the Docker UI: the 5-part subscription analysis written by the worker after each scan
   (`ANALYSIS_REPORT_AFTER_SCAN`), backlog CSV (Azure Boards import), zip download. Migration `b5d2e8f1c3a7`.
-- **Finding detail**: click a finding for scripts, analysis, evidence, resource context, related findings and
-  implementation guidance (why, when not, effort hours / story points, run-cost change, references).
+- **Finding dossier**: a finding opens in a side panel (Findings, Cost Savings, Estate) with scripts, analysis,
+  evidence, resource context, related findings and implementation guidance (why, when not, effort hours / story
+  points, run-cost change, references).
+- **ARG's own UI throughout**: Overview, Findings, Cost Savings, Settings and the layout keep ARG's design; the
+  Estate, Analysis and Architecture screens, the finding dossier and the analysis settings are built in ARG's
+  workspace language (`components/workspace`).
 - **Reasoning and AI review**: built-in reasoning on every finding; optional AI review by an Azure OpenAI deployment
   in your own tenant (Settings, off by default; GUIDs masked; Entra ID sign-in or `ARG_AOAI_API_KEY`).
 - **Insights**: Defender for Cloud and Advisor items correlated with ARG findings (no double counting), retirement

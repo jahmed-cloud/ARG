@@ -4,6 +4,8 @@
  * Matches backend/api/routes/costs.py: GET /costs/summary
  */
 import React, { useEffect, useState } from 'react';
+import { useMoney } from '../hooks/useCurrency';
+import { FindingDossier } from '../components/findings/FindingDossier';
 import {
   Box,
   Grid,
@@ -19,16 +21,11 @@ import {
   TableRow,
   TableCell,
   Chip,
-  Collapse,
-  IconButton,
+  Tooltip,
   alpha,
 } from '@mui/material';
-import {
-  AttachMoney, TrendingUp, TrendingDown, AccountBalanceWallet, KeyboardArrowDown, KeyboardArrowRight,
-} from '@mui/icons-material';
+import { AttachMoney, TrendingUp, TrendingDown, AccountBalanceWallet } from '@mui/icons-material';
 import { useApi, ApiError } from '../hooks/useApi';
-import { useMoney } from '../hooks/useCurrency';
-import { FindingDetailPanel } from '../components/findings/FindingDetailPanel';
 
 interface SavingOpportunity {
   id: string;
@@ -40,10 +37,7 @@ interface SavingOpportunity {
   severity: string;
   remediation_steps: string | null;
   structural?: boolean; // e.g. a cheaper region: a migration, not in the savings total
-  why?: string | null;
-  cost_to_implement?: string | null;
-  net_monthly_usd?: number | null;
-  saving_basis?: string | null;
+  net_monthly_usd?: number | null; // saving minus the extra Azure run cost of the change
 }
 
 interface CostSummary {
@@ -57,11 +51,11 @@ interface CostSummary {
 }
 
 const SEVERITY_COLORS: Record<string, string> = {
-  critical: '#f44336',
-  high: '#ff9800',
-  medium: '#ffc107',
-  low: '#2196f3',
-  info: '#9e9e9e',
+  critical: '#F44336',
+  high: '#FF9800',
+  medium: '#FFC107',
+  low: '#2196F3',
+  info: '#9E9E9E',
 };
 
 function MetricCard({ icon, label, value, subtext, accent }: any) {
@@ -102,11 +96,11 @@ function MetricCard({ icon, label, value, subtext, accent }: any) {
 
 export const CostsPage: React.FC = () => {
   const api = useApi();
-  const money = useMoney();
+  const { format: money } = useMoney();
+  const [dossierId, setDossierId] = useState<string | null>(null);
   const [data, setData] = useState<CostSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -150,30 +144,30 @@ export const CostsPage: React.FC = () => {
           <MetricCard
             icon={<AttachMoney fontSize="small" />}
             label="Monthly Spend"
-            value={money.format(data.total_monthly_cost)}
+            value={money(data.total_monthly_cost)}
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <MetricCard
             icon={<TrendingUp fontSize="small" />}
             label="Annual Spend"
-            value={money.format(data.total_annual_cost)}
+            value={money(data.total_annual_cost)}
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <MetricCard
             icon={<TrendingDown fontSize="small" />}
             label="Potential Monthly Savings"
-            value={money.format(data.potential_monthly_savings)}
-            accent="#4caf50"
+            value={money(data.potential_monthly_savings)}
+            accent="#4CAF50"
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <MetricCard
             icon={<AccountBalanceWallet fontSize="small" />}
             label="Potential Annual Savings"
-            value={money.format(data.potential_annual_savings)}
-            accent="#4caf50"
+            value={money(data.potential_annual_savings)}
+            accent="#4CAF50"
           />
         </Grid>
       </Grid>
@@ -183,14 +177,10 @@ export const CostsPage: React.FC = () => {
           <Typography variant="subtitle2" sx={{ mb: data.structural_monthly_savings ? 0.5 : 2, color: alpha('#fff', 0.7) }}>
             Top Savings Opportunities
           </Typography>
-          <Typography variant="caption" component="p" sx={{ mb: 1.5, color: alpha('#fff', 0.45) }}>
-            Click a row for why it is needed, when it is not, the cost of implementing it, the steps, scripts and
-            Microsoft Learn references. Net = saving minus the extra Azure run cost of the change.
-          </Typography>
           {!!data.structural_monthly_savings && (
             <Typography variant="caption" component="p" sx={{ mb: 2, color: alpha('#fff', 0.5) }}>
-              Cheaper regions (a migration to plan, not a quick win) could save about $
-              {data.structural_monthly_savings.toLocaleString(undefined, { maximumFractionDigits: 0 })}/month more - not included in the totals above.
+              Cheaper regions (a migration to plan, not a quick win) could save about{' '}
+              {money(data.structural_monthly_savings)}/month more - not included in the totals above.
             </Typography>
           )}
           {data.top_savings.length === 0 ? (
@@ -202,39 +192,24 @@ export const CostsPage: React.FC = () => {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell padding="checkbox" />
                   <TableCell>Severity</TableCell>
                   <TableCell>Resource</TableCell>
-                  <TableCell>Recommendation · why</TableCell>
-                  <TableCell>Cost to implement</TableCell>
-                  <TableCell align="right">Saving / month</TableCell>
-                  <TableCell align="right">Net / month</TableCell>
-                  <TableCell align="right">Saving / year</TableCell>
+                  <TableCell>Recommendation</TableCell>
+                  <TableCell align="right">Monthly</TableCell>
+                  <TableCell align="right">Net</TableCell>
+                  <TableCell align="right">Annual</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {data.top_savings.map((s) => {
-                  const expanded = expandedId === s.id;
-                  return (
-                  <React.Fragment key={s.id}>
-                  <TableRow
-                    hover
-                    onClick={() => setExpandedId(expanded ? null : s.id)}
-                    sx={{ cursor: 'pointer', '& > td': expanded ? { borderBottom: 'none' } : undefined }}
-                  >
-                    <TableCell padding="checkbox">
-                      <IconButton size="small" aria-label={expanded ? 'Collapse saving' : 'Expand saving'}
-                        aria-expanded={expanded}>
-                        {expanded ? <KeyboardArrowDown fontSize="small" /> : <KeyboardArrowRight fontSize="small" />}
-                      </IconButton>
-                    </TableCell>
+                {data.top_savings.map((s) => (
+                  <TableRow key={s.id} hover onClick={() => setDossierId(s.id)} sx={{ cursor: 'pointer' }}>
                     <TableCell>
                       <Chip
                         size="small"
                         label={s.severity.toUpperCase()}
                         sx={{
-                          bgcolor: alpha(SEVERITY_COLORS[s.severity] ?? '#9e9e9e', 0.15),
-                          color: SEVERITY_COLORS[s.severity] ?? '#9e9e9e',
+                          bgcolor: alpha(SEVERITY_COLORS[s.severity] ?? '#9E9E9E', 0.15),
+                          color: SEVERITY_COLORS[s.severity] ?? '#9E9E9E',
                           fontWeight: 700,
                           fontSize: 11,
                         }}
@@ -248,62 +223,40 @@ export const CostsPage: React.FC = () => {
                       </Typography>
                     </TableCell>
                     <TableCell sx={{ color: alpha('#fff', 0.6), maxWidth: 360 }}>
-                      <Typography
-                        variant="body2"
-                        sx={{
-                          display: '-webkit-box',
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: 'vertical',
-                          overflow: 'hidden',
-                          whiteSpace: 'pre-line',
-                        }}
-                      >
-                        {money.text(s.title)}
-                      </Typography>
-                      {s.why && (
+                      <Tooltip title={s.remediation_steps ?? ''} arrow placement="top">
                         <Typography
-                          variant="caption"
-                          sx={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-                                overflow: 'hidden', color: alpha('#fff', 0.45) }}
+                          variant="body2"
+                          sx={{
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                            whiteSpace: 'pre-line',
+                            cursor: s.remediation_steps ? 'help' : 'default',
+                          }}
                         >
-                          {s.why}
+                          {s.remediation_steps ?? '—'}
                         </Typography>
-                      )}
+                      </Tooltip>
                     </TableCell>
-                    <TableCell sx={{ color: alpha('#fff', 0.6), whiteSpace: 'nowrap' }}>
-                      <Typography variant="caption">{s.cost_to_implement ?? '—'}</Typography>
+                    <TableCell align="right" sx={{ color: '#4CAF50', fontWeight: 600 }}>
+                      {money(s.monthly_saving, { decimals: 2 })}
                     </TableCell>
-                    <TableCell align="right" sx={{ color: '#4caf50', fontWeight: 600 }}>
-                      {money.format(s.monthly_saving, { decimals: 2 })}
-                      {s.saving_basis && (
-                        <Typography variant="caption" component="div" sx={{ color: alpha('#fff', 0.4), fontWeight: 400 }}>
-                          {s.saving_basis}
-                        </Typography>
-                      )}
+                    <TableCell align="right" sx={{ color: alpha('#fff', 0.7) }}>
+                      {s.net_monthly_usd === null || s.net_monthly_usd === undefined ? '—' : money(s.net_monthly_usd, { decimals: 2 })}
                     </TableCell>
-                    <TableCell align="right" sx={{ color: '#4caf50', fontWeight: 600 }}>
-                      {money.format(s.net_monthly_usd, { decimals: 2 })}
-                    </TableCell>
-                    <TableCell align="right" sx={{ color: '#4caf50', fontWeight: 600 }}>
-                      {money.format(s.annual_saving, { decimals: 2 })}
+                    <TableCell align="right" sx={{ color: '#4CAF50', fontWeight: 600 }}>
+                      {money(s.annual_saving, { decimals: 2 })}
                     </TableCell>
                   </TableRow>
-                  <TableRow>
-                    <TableCell colSpan={8} sx={{ p: 0, borderBottom: expanded ? undefined : 'none' }}>
-                      <Collapse in={expanded} timeout="auto" unmountOnExit>
-                        <FindingDetailPanel findingId={s.id} />
-                      </Collapse>
-                    </TableCell>
-                  </TableRow>
-                  </React.Fragment>
-                  );
-                })}
+                ))}
               </TableBody>
             </Table>
             </TableContainer>
           )}
         </CardContent>
       </Card>
+      <FindingDossier findingId={dossierId} onClose={() => setDossierId(null)} />
     </Box>
   );
 };

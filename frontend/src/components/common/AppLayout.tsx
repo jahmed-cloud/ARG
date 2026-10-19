@@ -39,7 +39,7 @@ import {
 import {
   Dashboard,
   SearchOutlined,
-  Payments,
+  AttachMoney,
   Security,
   Person,
   Policy,
@@ -53,17 +53,16 @@ import {
   BugReport,
   Logout,
   PlayArrow,
-  Inventory2,
-  AccountTree,
-  Insights,
+  ViewQuilt,
+  MenuBook,
+  Hub,
   Menu as MenuIcon,
 } from "@mui/icons-material";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useAppDispatch, useAppSelector, logout, setUser } from "../../store/store";
 import { useApi } from "../../hooks/useApi";
-import { useCanOperate, useIsAdmin } from "../../hooks/useRoles";
 import { useCurrencyChoice } from "../../hooks/useCurrency";
-import { BRAND } from "../../theme/ThemeProvider";
+import { useCanOperate, useIsAdmin } from "../../hooks/useRoles";
 import { RouteBoundary } from "./RouteBoundary";
 
 const SIDEBAR_EXPANDED = 224;
@@ -77,7 +76,7 @@ interface NavItem {
   group: "WORKSPACE" | "ASSESSMENT" | "OPERATIONS";
   // Tenant-wide or write-only pages: admins and contributors only (hidden for owners, readers and auditors).
   operatorsOnly?: boolean;
-  // Whole-estate pages: ARG administrators only.
+  // Whole-estate pages: ARG administrators only (the API enforces the same).
   adminOnly?: boolean;
 }
 
@@ -85,14 +84,14 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Overview", path: "/dashboard", icon: <Dashboard />, group: "WORKSPACE" },
   { label: "Scans", path: "/scans", icon: <SearchOutlined />, group: "WORKSPACE" },
   { label: "Findings", path: "/findings", icon: <BugReport />, group: "WORKSPACE" },
-  { label: "Cost Savings", path: "/costs", icon: <Payments />, group: "WORKSPACE" },
-  { label: "Estate", path: "/estate", icon: <Inventory2 />, group: "WORKSPACE", adminOnly: true },
-  { label: "Architecture", path: "/architecture", icon: <AccountTree />, group: "WORKSPACE", adminOnly: true },
+  { label: "Cost Savings", path: "/costs", icon: <AttachMoney />, group: "WORKSPACE" },
+  { label: "Estate", path: "/estate", icon: <ViewQuilt />, group: "WORKSPACE", adminOnly: true },
   { label: "Identity", path: "/identity", icon: <Person />, group: "ASSESSMENT", operatorsOnly: true },
-  { label: "Analysis", path: "/analysis", icon: <Insights />, group: "ASSESSMENT" },
   { label: "Governance", path: "/governance", icon: <Policy />, group: "ASSESSMENT" },
   { label: "Security", path: "/security", icon: <Security />, group: "ASSESSMENT" },
   { label: "Terraform Drift", path: "/drift", icon: <CompareArrows />, group: "ASSESSMENT" },
+  { label: "Analysis", path: "/analysis", icon: <MenuBook />, group: "ASSESSMENT" },
+  { label: "Architecture", path: "/architecture", icon: <Hub />, group: "ASSESSMENT", adminOnly: true },
   { label: "Reports", path: "/reports", icon: <Description />, group: "OPERATIONS" },
   { label: "Remediation", path: "/remediation", icon: <Build />, group: "OPERATIONS", operatorsOnly: true },
   { label: "Subscriptions", path: "/subscriptions", icon: <CloudQueue />, group: "OPERATIONS" },
@@ -104,12 +103,12 @@ export function AppLayout() {
   const location = useLocation();
   const dispatch = useAppDispatch();
   const api = useApi();
+  const currency = useCurrencyChoice();
   const [collapsed, setCollapsed] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const { user } = useAppSelector((s) => s.auth);
   const canOperate = useCanOperate();
   const isAdmin = useIsAdmin();
-  const currency = useCurrencyChoice();
   const navItems = NAV_ITEMS.filter(
     (item) => !(item.operatorsOnly && !canOperate) && !(item.adminOnly && !isAdmin)
   );
@@ -405,23 +404,31 @@ export function AppLayout() {
               size="small"
               value={currency.selected}
               onChange={(e) => currency.select(e.target.value)}
-              aria-label="Currency"
+              inputProps={{ "aria-label": "Currency" }}
               title={
                 currency.referenceDate
                   ? `Amounts in this currency. Billing currency: the invoice's, at its own rate. Others: ECB reference rates of ${currency.referenceDate}.`
                   : "Amounts in this currency."
               }
-              SelectProps={{ MenuProps: { PaperProps: { sx: { maxHeight: 360 } } } }}
+              variant="standard"
+              SelectProps={{
+                disableUnderline: true,
+                renderValue: (v) => (v === "billing" ? "CUR · BILLING" : `CUR · ${String(v)}`),
+                MenuProps: { PaperProps: { sx: { maxHeight: 360, bgcolor: "#17241f", border: "1px solid #30423b" } } },
+              }}
               sx={{
-                minWidth: { xs: 92, sm: 150 },
-                "& .MuiInputBase-root": { color: "#fff", fontSize: 13, height: 32 },
-                "& .MuiOutlinedInput-notchedOutline": { borderColor: alpha("#fff", 0.25) },
-                "& .MuiSvgIcon-root": { color: alpha("#fff", 0.7) },
+                mr: 1.5,
+                px: 1.25,
+                py: 0.25,
+                border: "1px solid #30423b",
+                borderRadius: "2px",
+                "& .MuiInputBase-root": { color: "#b8d9ba", font: "600 11px Consolas, monospace", letterSpacing: "0.08em" },
+                "& .MuiSvgIcon-root": { color: "#a3b5ad" },
               }}
             >
               {currency.options.map((o) => (
-                <MenuItem key={o.code} value={o.code} title={o.label}>
-                  {o.code === "billing" ? "Billing currency" : o.label}
+                <MenuItem key={o.code} value={o.code} title={o.label} sx={{ fontSize: 13 }}>
+                  {o.code === "billing" ? "Billing currency (each subscription's invoice)" : o.label}
                 </MenuItem>
               ))}
             </TextField>
@@ -439,7 +446,7 @@ export function AppLayout() {
               onClick={() => navigate("/scans", { state: { startScan: true } })}
               startIcon={isMobile ? undefined : <PlayArrow sx={{ fontSize: "16px !important" }} />}
               sx={{
-                background: BRAND.teal,
+                background: "#365b47",
                 color: "#fff",
                 fontWeight: 700,
                 fontSize: 13,
@@ -450,7 +457,7 @@ export function AppLayout() {
                 boxShadow: "none",
                 "&:hover": {
                   boxShadow: "none",
-                  background: BRAND.tealDark,
+                  background: "#365b47",
                 },
               }}
             >

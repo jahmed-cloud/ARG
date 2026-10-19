@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { ResponsiveContainer, AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { useAppSelector } from '../store/store';
 import { useCanOperate } from '../hooks/useRoles';
+import { useMoney } from '../hooks/useCurrency';
 import './dashboard.css';
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
 interface ScoreCard {
@@ -67,13 +68,13 @@ interface DashboardSummary {
   last_scan_duration_s: number | null;
 }
 
-const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 const severityColor: Record<string, string> = { critical: '#ee8278', high: '#f0b56d', medium: '#e5d48c', low: '#81c8e6', info: '#a9b4bb' };
 function Posture({ title, value, path }: { title: string; value: ScoreCard; path: string }) {
   const measured = Boolean(value.last_updated);
   return <Link to={path} className="posture-row"><span>{title}<small>{measured ? 'Latest assessment' : 'Awaiting assessment'}</small></span><span className="posture-track" aria-hidden="true"><i style={{ width: measured ? `${Math.max(0, Math.min(100, value.score))}%` : 0 }} /></span><strong>{measured ? Math.round(value.score) : '—'}<small>{measured ? '/100' : 'No data'}</small></strong><NorthEast fontSize="small" /></Link>;
 }
 export const DashboardPage: React.FC = () => {
+  const { format: money, convert, currency, text: moneyText } = useMoney();
   const { accessToken } = useAppSelector((s) => s.auth);
   const tenantView = useCanOperate(); // identity (tenant-wide) figures: admins and contributors only
   const [data, setData] = useState<DashboardSummary | null>(null);
@@ -164,12 +165,12 @@ export const DashboardPage: React.FC = () => {
     </ol></section>}
     <div className="overview-grid">
       <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">PRIORITIES</p><h2>Needs your attention</h2></div><Link to="/findings" className="text-link">All findings <NorthEast fontSize="small" /></Link></div>
-        {data.top_findings.length ? <div className="priority-list">{data.top_findings.slice(0, 5).map(f => <Link to="/findings" className="priority-item" key={f.id}><span className="severity-marker" style={{ background: severityColor[f.severity] }} /><div><strong>{f.title}</strong><small>{f.resource_name ?? 'Subscription-level finding'} · {f.category}</small></div><Chip size="small" label={f.severity} sx={{ color: severityColor[f.severity], borderColor: severityColor[f.severity] }} variant="outlined" /><span className="finding-savings">{f.estimated_savings != null ? money(f.estimated_savings) : '—'}</span></Link>)}</div>
+        {data.top_findings.length ? <div className="priority-list">{data.top_findings.slice(0, 5).map(f => <Link to="/findings" className="priority-item" key={f.id}><span className="severity-marker" style={{ background: severityColor[f.severity] }} /><div><strong>{moneyText(f.title)}</strong><small>{f.resource_name ?? 'Subscription-level finding'} · {f.category}</small></div><Chip size="small" label={f.severity} sx={{ color: severityColor[f.severity], borderColor: severityColor[f.severity] }} variant="outlined" /><span className="finding-savings">{f.estimated_savings != null ? money(f.estimated_savings) : '—'}</span></Link>)}</div>
         : <div className="empty-assessment"><ShieldOutlined /><h3>{scanned ? 'No open findings' : 'Your findings will appear here'}</h3><p>{scanned ? 'Review scan coverage to confirm which resources and checks were assessed.' : 'A completed scan turns your resource inventory into a prioritized action list.'}</p><Link className="text-link" to="/scans">{scanned ? 'Review scan coverage' : 'Explore scan options'} <ArrowForward fontSize="small" /></Link></div>}
       </section>
       <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">POSTURE</p><h2>Assessment coverage</h2></div></div><Posture title="Governance" value={data.governance_score} path="/governance" /><Posture title="Security" value={data.security_score} path="/security" />{tenantView && <Posture title="Identity" value={data.identity_score} path="/identity" />}<p className="panel-note">Scores appear after a successful assessment. Unchecked areas remain unscored.</p></section>
       <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">FINANCIAL PICTURE</p><h2>Recorded Azure spend</h2></div><Link to="/costs" className="text-link">Costs <NorthEast fontSize="small" /></Link></div>
-        {data.cost_trend.length ? <ResponsiveContainer width="100%" height={225}><AreaChart data={data.cost_trend} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="month" stroke="#94aaa5" fontSize={11} /><YAxis stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Area dataKey="total_cost" name="Recorded cost (USD)" stroke="#a6d7bc" fill="#a6d7bc" fillOpacity={0.1} strokeWidth={2} /></AreaChart></ResponsiveContainer>
+        {data.cost_trend.length ? <ResponsiveContainer width="100%" height={225}><AreaChart data={data.cost_trend.map(p => ({ ...p, total_cost: convert(p.total_cost) }))} margin={{ right: 20, top: 10 }}><CartesianGrid vertical={false} stroke="#293b3b" /><XAxis dataKey="month" stroke="#94aaa5" fontSize={11} /><YAxis stroke="#94aaa5" fontSize={11} /><Tooltip contentStyle={{ background: '#172624', border: '1px solid #405450' }} /><Area dataKey="total_cost" name={`Recorded cost (${currency})`} stroke="#a6d7bc" fill="#a6d7bc" fillOpacity={0.1} strokeWidth={2} /></AreaChart></ResponsiveContainer>
         : <div className="quiet-empty"><span className="empty-rule" /><p>No billing data recorded yet.</p><small>Recorded monthly costs will appear here when available. Missing data is never shown as zero spend.</small></div>}
       </section>
       <section className="overview-panel"><div className="panel-heading"><div><p className="eyebrow">OVER TIME</p><h2>Posture history</h2></div><ToggleButtonGroup size="small" exclusive value={trendDays} onChange={(_, v) => v !== null && setTrendDays(v)} aria-label="History window">{[7, 30, 90].map(d => <ToggleButton key={d} value={d} aria-label={`${d} days`}>{d}d</ToggleButton>)}</ToggleButtonGroup></div>

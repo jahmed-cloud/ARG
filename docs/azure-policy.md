@@ -75,7 +75,8 @@ written under `reports/` (git-ignored - it contains tenant identifiers).
 
 ## Required VM extensions
 
-Off until you list the extensions every VM must carry. In `.env` (Docker stack) or the environment (CLI):
+Off until you list the extensions every VM must carry: in the Docker stack under *Settings → Governance
+Configuration → Analysis settings* (the `.env` values below are the defaults until saved), or in the environment (CLI):
 
 ```bash
 # comma-separated entries; "|" separates alternatives (extension name or type) that satisfy one entry

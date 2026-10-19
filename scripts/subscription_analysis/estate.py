@@ -1490,6 +1490,7 @@ def _reports(reports_dir: Path) -> Dict[str, Dict[str, Any]]:
         result[(sub.get("id") or "").lower()] = {
             "folder": child.name, "name": sub.get("name"), "generated_at": summary.get("generated_at"),
             "currency": summary.get("currency") or "",
+            "per_usd": summary.get("per_usd") if isinstance(summary.get("per_usd"), (int, float)) else None,
             "findings": _load_json(raw / "findings.json", []),
             "costs": _load_json(raw / "cost" / "last30_by_resource.json", {}),
             "resources": _load_json(raw / "inventory" / "resources.json", []),
@@ -1566,6 +1567,7 @@ def build_estate(reports_dir: Path, inventory: Optional[Dict[str, Any]] = None) 
         subscriptions.append({
             "id": sub_id, "name": sub_names.get(sub_id) or sub_id, "folder": rep.get("folder") or "",
             "analysedAt": rep.get("generated_at"), "currency": rep.get("currency") or "",
+            "perUsd": rep.get("per_usd"),   # billing-currency units per USD: the Currency dropdown converts with it
             "resources": sum(1 for r in resources if r["subscriptionId"] == sub_id),
             "suggestions": sum(1 for s in suggestions if s["subscriptionId"] == sub_id),
         })

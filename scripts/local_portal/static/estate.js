@@ -27,7 +27,7 @@
   const SUGGESTION_COLUMNS = [
     { key: "severity", label: "Severity" }, { key: "title", label: "Suggestion" }, { key: "type", label: "Suggestion type" },
     { key: "resourceName", label: "Resource" }, { key: "typeLabel", label: "Resource type" },
-    { key: "subscription", label: "Subscription" }, { key: "savingsUsd", label: "Est. saving / month (USD)", num: true },
+    { key: "subscription", label: "Subscription" }, { key: "savingsUsd", label: "Est. saving / month", num: true },
     { key: "wave", label: "Wave", num: true },
   ];
 
@@ -44,6 +44,30 @@
     return node;
   }
   const fmt = (n) => (n === undefined || n === null || n === "" ? "" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }));
+  // The Currency dropdown (/api/currency). "billing": every subscription in its own billing currency, at the rate
+  // Cost Management applied to its cost (perUsd); another code: savings (USD) at the reference rate, costs (billing
+  // currency) through USD at the subscription's own rate.
+  let currency = { selected: "billing", per_usd: {} };
+  const round2 = (v) => Math.round(v * 100) / 100;
+  const targetRate = () => (currency.selected === "USD" ? 1 : currency.per_usd[currency.selected]);
+  function billing(usd, sub) {
+    if (!usd) return { value: 0, currency: "" };
+    if (currency.selected === "billing") {
+      if (!sub || !sub.perUsd || !sub.currency || sub.currency === "USD") return { value: usd, currency: "USD" };
+      return { value: round2(usd * sub.perUsd), currency: sub.currency };
+    }
+    const rate = targetRate();
+    return rate ? { value: round2(usd * rate), currency: currency.selected } : { value: usd, currency: "USD" };
+  }
+  function costIn(cost, cur, sub) {
+    if (cost === null || cost === undefined || currency.selected === "billing" || cur === currency.selected) {
+      return { value: cost, currency: cur };
+    }
+    const from = sub && sub.currency === cur && sub.perUsd ? sub.perUsd : (cur === "USD" ? 1 : currency.per_usd[cur]);
+    const to = targetRate();
+    return from && to ? { value: round2(cost / from * to), currency: currency.selected } : { value: cost, currency: cur };
+  }
+  const money = (s) => (s.savingsUsd ? fmt(s.savings) + " " + s.savingsCurrency : "");
   const sevRank = (s) => { const i = SEVERITIES.indexOf(s); return i < 0 ? 9 : i; };
 
   // ---- data ----------------------------------------------------------------
@@ -55,13 +79,14 @@
     const resources = (data.resources || []).map((r) => {
       const sub = subsList[r.s] || {};
       const t = types[r.type] || {};
+      const cost = costIn(r.cost === undefined ? null : r.cost, r.cur || "", sub);
       return {
         id: r.id, name: r.name, type: r.type, typeLabel: t.label || r.type, category: t.category || "Other",
         subscriptionId: sub.id || "", subscription: sub.name || sub.id || "", folder: sub.folder || "",
         resourceGroup: r.rg || "", location: r.loc || "", kind: r.kind || "", size: r.size || "", config: r.cfg || "",
         os: r.os || "",
         state: r.state || "", env: r.env || "Unknown", managedBy: r.mb || "", sizeGB: r.gb || null, tags: r.tags || {},
-        cost30: r.cost === undefined ? null : r.cost, currency: r.cur || "", suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
+        cost30: cost.value, currency: cost.currency, suggestions: r.n || 0, hygiene: r.h || 0, maxSeverity: r.sev || "",
         vcpu: r.vcpu || null, ramGB: r.ram || null, cpuAvg: r.cpu === undefined ? null : r.cpu,
         cpuMax: r.cpuMax === undefined ? null : r.cpuMax, memAvg: r.mem === undefined ? null : r.mem, subResource: !!r.sub,
         cpuPeakHour: r.cpuHr === undefined ? null : r.cpuHr, cpuP95: r.cpu95 === undefined ? null : r.cpu95,
@@ -77,7 +102,8 @@
       return {
         ref: s.ref || "", title: s.title || "", severity: s.sev || "info", type: s.type || "", wave: s.wave || "",
         hygiene: !!s.hy,
-        savingsUsd: s.usd || 0, subscriptionId: sub.id || "", subscription: sub.name || sub.id || "",
+        savingsUsd: s.usd || 0, savings: billing(s.usd || 0, sub).value, savingsCurrency: billing(s.usd || 0, sub).currency,
+        subscriptionId: sub.id || "", subscription: sub.name || sub.id || "",
         resourceId: r ? r.id : "", resourceName: r ? r.name : (s.name || "(subscription)"),
         category: r ? r.category : "Subscription", typeLabel: r ? r.typeLabel : "Subscription",
         link: report + (s.af ? "/05-deep-dive/" + s.af + "/README.md" : "/README.md"),
@@ -90,6 +116,10 @@
   async function load() {
     $("estate-status").textContent = "Loading estate…";
     let response, data;
+    try {
+      const choice = await fetch("/api/currency", { credentials: "same-origin" });
+      if (choice.ok) currency = await choice.json();
+    } catch (err) { /* billing currency stays */ }
     try {
       response = await fetch("/api/estate", { credentials: "same-origin" });
       if (response.ok) data = await response.json();
@@ -445,7 +475,7 @@
       const li = el("li");
       li.append(sevPill(s.severity), " ");
       li.appendChild(el("a", { href: s.link }, (s.ref ? s.ref + " - " : "") + s.title));
-      if (s.savingsUsd) li.append(" · est. USD " + fmt(s.savingsUsd) + "/month");
+      if (s.savingsUsd) li.append(" · est. " + money(s) + "/month");
       return li;
     };
     if (list.length) {
@@ -476,7 +506,7 @@
     title.appendChild(el("a", { href: s.link }, (s.ref ? s.ref + " - " : "") + s.title));
     tr.appendChild(title);
     ["type", "resourceName", "typeLabel", "subscription"].forEach((k) => tr.appendChild(el("td", null, s[k])));
-    tr.appendChild(el("td", { class: "num" }, s.savingsUsd ? fmt(s.savingsUsd) : ""));
+    tr.appendChild(el("td", { class: "num" }, money(s)));
     tr.appendChild(el("td", { class: "num" }, s.wave || ""));
     return tr;
   }

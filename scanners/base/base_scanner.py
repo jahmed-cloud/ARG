@@ -137,6 +137,9 @@ class ScanContext:
     # settings, firewall rules, Cost Management query, budgets). None means
     # "no live Azure access": ARM-dependent scanners fall back to mock data.
     arm_client:               Any = None
+    # Cost Management cost type for this scan ("AmortizedCost" / "ActualCost"); None = amortized. Set from the
+    # amortized_cost setting - see scanners.base.azure_api.cost_basis_of.
+    cost_basis:               Optional[str] = None
 
     # Configuration
     config: Dict[str, Any] = field(default_factory=dict)

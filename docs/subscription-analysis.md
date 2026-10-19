@@ -136,6 +136,10 @@ reports/
 - **Savings waves:** wave 1 is no-regret cleanup, wave 2 is optimisation, and wave 3 is structural (no direct saving).
 - **Currency:** savings are computed in USD - at each resource's own amortized cost where it is known, otherwise at list
   prices (see *Savings at your own price* in 5a-2) - and shown in the billing currency at the subscription's implied rate.
+  The local portal's **Currency** dropdown (top bar) shows every page in another currency: *Billing currency* (each
+  subscription's own, the default), USD, or any currency with a European Central Bank reference rate (downloaded
+  once every 12 hours, no key). Billing amounts convert through USD at the subscription's own invoice rate, so they
+  stay consistent with the invoice. `DISPLAY_CURRENCY=USD` makes USD the default; the choice is kept in a cookie.
 - Re-running a subscription **replaces** its generated files. Copy the folder first if you want history.
 - **Same display name:** each folder records its owner in `.subscription-id`, so subscriptions that share a name
   (e.g. several "Visual Studio Professional Subscription"s) never overwrite each other. The index and the portal show
@@ -169,8 +173,10 @@ is at least `budget_missing_high_monthly_usd` (10,000 USD).
 
 ## 5a-2. Cost basis: amortized vs actual
 
-Reports use **amortized cost**: Cost Management spreads reservation and savings-plan purchases over the resources
-that use them. With actual cost a VM covered by a savings plan bought in another subscription shows almost nothing
+Reports use **amortized cost** by default: Cost Management spreads reservation and savings-plan purchases over the
+resources that use them. Switch to **actual (invoiced) cost** with `--actual-cost`, `AMORTIZED_COST=false` in the
+environment (also for the local portal), or `{"amortized_cost": false}` in the `--config` file; in the Docker stack
+it is *Settings → Governance Configuration → Analysis settings*. The README and the 12-month trend name the basis used. With actual cost a VM covered by a savings plan bought in another subscription shows almost nothing
 (for example 2 CHF instead of 147 CHF a month) and the buying subscription carries the whole commitment. The README
 states the basis and shows the **invoiced (actual)** cost for the same 12 months next to it; the 12-month trend has
 both columns.

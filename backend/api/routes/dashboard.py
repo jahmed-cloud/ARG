@@ -531,3 +531,48 @@ async def _get_top_findings(db: AsyncSession, sub_id: Optional[str], access: Acc
         )
         for row in result.all()
     ]
+
+
+def billing_display(rows: List[Optional[dict]]) -> Optional[dict]:
+    """The billing currency most of the visible subscriptions are invoiced in, at its latest recorded rate."""
+    by_currency: Dict[str, List[dict]] = {}
+    for fx in rows:
+        if isinstance(fx, dict) and fx.get("currency") and fx.get("per_usd"):
+            by_currency.setdefault(str(fx["currency"]).upper(), []).append(fx)
+    if not by_currency:
+        return None
+    currency, entries = max(by_currency.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    latest = max(entries, key=lambda fx: str(fx.get("as_of") or ""))
+    return {"currency": currency, "per_usd": float(latest["per_usd"]), "basis": latest.get("basis"),
+            "as_of": latest.get("as_of"), "subscriptions": len(entries)}
+
+
+@router.get("/currency", response_model=dict)
+async def display_currency(db: AsyncSession = Depends(get_db),
+                           scope: AccessScope = Depends(get_access_scope)) -> dict:
+    """The currency the UI shows amounts in, and the Currency dropdown's choices.
+
+    ARG stores savings in USD; the UI multiplies them by the chosen `per_usd`. Default: the billing currency of the
+    viewer's subscriptions at Cost Management's own rate (recorded by each scan), unless the display_currency
+    setting asks for USD. Any other currency converts with the European Central Bank reference rates."""
+    import asyncio
+
+    from backend.api.routes.governance_config import effective_analysis_settings
+    from backend.models.models import GovernanceConfig, Subscription
+    from scripts.subscription_analysis.currency import BILLING, USD, options, reference_rates
+
+    config = await db.scalar(select(GovernanceConfig).where(GovernanceConfig.tenant_id.is_(None)).limit(1))
+    preference = effective_analysis_settings(getattr(config, "analysis_settings", None) if config else None)[
+        "display_currency"]
+    rows = (await db.execute(select(Subscription.billing_fx).where(
+        Subscription.is_active == True, scope.where(Subscription.id)))).scalars().all()  # noqa: E712
+    billing = billing_display(list(rows))
+    rates = await asyncio.to_thread(reference_rates)
+    shown = billing if preference != "USD" and billing else dict(USD)
+    return {"currency": shown["currency"], "per_usd": shown["per_usd"], "basis": shown.get("basis"),
+            "as_of": shown.get("as_of"),
+            "default": "USD" if preference == "USD" else BILLING,
+            "billing": {"currency": billing["currency"], "per_usd": billing["per_usd"]} if billing else None,
+            "options": options(rates),
+            "reference": {"per_usd": (rates or {}).get("per_usd") or {}, "date": (rates or {}).get("date"),
+                          "source": (rates or {}).get("source")}}

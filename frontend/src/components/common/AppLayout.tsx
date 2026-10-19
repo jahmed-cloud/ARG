@@ -31,6 +31,7 @@ import {
   MenuItem,
   Divider,
   Button,
+  TextField,
   useTheme,
   useMediaQuery,
   alpha,
@@ -57,6 +58,7 @@ import {
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { useAppDispatch, useAppSelector, logout, setUser } from "../../store/store";
 import { useApi } from "../../hooks/useApi";
+import { useCurrencyChoice } from "../../hooks/useCurrency";
 import { useCanOperate } from "../../hooks/useRoles";
 import { RouteBoundary } from "./RouteBoundary";
 
@@ -93,6 +95,7 @@ export function AppLayout() {
   const location = useLocation();
   const dispatch = useAppDispatch();
   const api = useApi();
+  const currency = useCurrencyChoice();
   const [collapsed, setCollapsed] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const { user } = useAppSelector((s) => s.auth);
@@ -384,6 +387,33 @@ export function AppLayout() {
             >
               {NAV_ITEMS.find((n) => location.pathname.startsWith(n.path))?.label ?? "Settings"}
             </Typography>
+
+            <TextField
+              select
+              size="small"
+              value={currency.selected}
+              onChange={(e) => currency.select(e.target.value)}
+              inputProps={{ "aria-label": "Currency" }}
+              title={
+                currency.referenceDate
+                  ? `Amounts in this currency. Billing currency: the invoice's, at its own rate. Others: ECB reference rates of ${currency.referenceDate}.`
+                  : "Amounts in this currency."
+              }
+              SelectProps={{ MenuProps: { PaperProps: { sx: { maxHeight: 360 } } } }}
+              sx={{
+                mr: 1.5,
+                minWidth: { xs: 92, sm: 150 },
+                "& .MuiInputBase-root": { color: "#fff", fontSize: 13, height: 32 },
+                "& .MuiOutlinedInput-notchedOutline": { borderColor: alpha("#fff", 0.25) },
+                "& .MuiSvgIcon-root": { color: alpha("#fff", 0.7) },
+              }}
+            >
+              {currency.options.map((o) => (
+                <MenuItem key={o.code} value={o.code} title={o.label}>
+                  {o.code === "billing" ? "Billing currency" : o.label}
+                </MenuItem>
+              ))}
+            </TextField>
 
             {/* Takes the user to the Scans page and opens its scan dialog there,
                 where they choose which subscription(s) to target —

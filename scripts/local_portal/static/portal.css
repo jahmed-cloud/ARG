@@ -17,6 +17,9 @@ code { background: #eef2f6; padding: 1px 4px; border-radius: 3px; }
 .topbar nav { display: flex; gap: 16px; flex: 1; }
 .user { display: flex; align-items: center; gap: 12px; }
 .user form { margin: 0; }
+.currency-pick { display: flex; align-items: center; gap: 6px; font-size: 0.8em; color: var(--muted); }
+.currency-pick select { font: inherit; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border);
+  background: #fff; color: var(--text); max-width: 150px; }
 
 main { max-width: 1400px; margin: 24px auto; padding: 0 24px; }
 main.narrow { max-width: 480px; }

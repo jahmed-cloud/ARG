@@ -17,6 +17,7 @@ Security model (it is a single-user tool on your workstation):
 import asyncio
 import hmac
 import json
+import os
 import secrets
 import time
 from pathlib import Path
@@ -52,6 +53,7 @@ SUBSCRIPTION_CACHE_SECONDS = 600
 MAX_JSON_PREVIEW_BYTES = 2_000_000
 MIN_API_TOKEN_LENGTH = 24
 PUBLIC_PATHS = ("/login", "/static/", "/favicon.ico")
+CURRENCY_COOKIE = "arg_currency"   # the Currency dropdown: 'billing' or an ISO code
 CSP = ("default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
        "form-action 'self'")
@@ -166,6 +168,32 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
             result[(s.get("subscription") or {}).get("id", "").lower()] = s
         return result
 
+    # -- currency: the Currency dropdown (cookie), default DISPLAY_CURRENCY ("billing" or "USD") ----------------
+
+    def currency_choice(request: Request) -> str:
+        from scripts.subscription_analysis.currency import BILLING
+
+        chosen = (request.cookies.get(CURRENCY_COOKIE) or "").strip()
+        if chosen and len(chosen) <= 10:
+            return chosen
+        return "USD" if os.getenv("DISPLAY_CURRENCY", "").strip().upper() == "USD" else BILLING
+
+    def converter(request: Request) -> Any:
+        """Blocking (may download the reference rates once): call from a thread."""
+        from scripts.subscription_analysis.currency import BILLING, Converter, reference_rates
+
+        choice = currency_choice(request)
+        return Converter(choice, reference_rates() if choice not in (BILLING, "USD") else None)
+
+    def billing_rates(folder: Optional[str] = None) -> Dict[str, float]:
+        """{billing currency: units per USD} a page was written with: its subscription's, or every analysed
+        subscription's for pages across subscriptions (index, estate overview)."""
+        rates: Dict[str, float] = {}
+        for s in summaries_by_id().values():
+            if (folder is None or s.get("folder") == folder) and s.get("currency") and s.get("per_usd"):
+                rates.setdefault(s["currency"], s["per_usd"])
+        return rates
+
     def report_folder(folder: str) -> Optional[Path]:
         """A direct child of reports_dir that holds a generated report (summary.json)."""
         target = resolve_report_path(folder)
@@ -239,11 +267,25 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
     async def dashboard(request: Request):
         status = await asyncio.to_thread(azure.status)
         subs = await subscriptions() if status["signed_in"] else []
+        conv = await asyncio.to_thread(converter, request)
         return templates.TemplateResponse(request, "dashboard.html", {
             "azure": status, "subscriptions": subs, "subscription_error": cache["error"],
             "summaries": summaries_by_id(), "jobs": [j.to_dict() for j in jobs.list()],
-            "reports_dir": str(reports_dir), "username": auth.username,
+            "reports_dir": str(reports_dir), "username": auth.username, "money": conv.money,
         })
+
+    @app.get("/api/currency")
+    async def api_currency(request: Request):
+        """The Currency dropdown: what is selected, the choices and the reference rates (units per USD)."""
+        from scripts.subscription_analysis.currency import BILLING, options, reference_rates
+
+        rates = await asyncio.to_thread(reference_rates)
+        choice = currency_choice(request)
+        per_usd = (rates or {}).get("per_usd") or {}
+        selected = choice if choice in (BILLING, "USD") or choice.upper() in per_usd else BILLING
+        return {"selected": selected if selected == BILLING else selected.upper(), "options": options(rates),
+                "per_usd": per_usd, "date": (rates or {}).get("date"), "source": (rates or {}).get("source"),
+                "billing": billing_rates()}
 
     @app.get("/api/state")
     async def api_state():
@@ -381,7 +423,11 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
                 "crumbs": breadcrumbs(target), "sidebar": sidebar(target), "folder": folder_of(target)})
         suffix = target.suffix.lower()
         if suffix == ".md":
-            html = render_markdown(target.read_text(encoding="utf-8"))
+            conv = await asyncio.to_thread(converter, request)
+            text = target.read_text(encoding="utf-8")
+            if conv.active:   # the page is written in its subscription's billing currency
+                text = conv.text(text, billing_rates(folder_of(target)) or billing_rates())
+            html = render_markdown(text)
             return templates.TemplateResponse(request, "page.html", {
                 "title": target.stem, "html": html, "listing": None, "json": None,
                 "crumbs": breadcrumbs(target), "sidebar": sidebar(target), "folder": folder_of(target)})

@@ -5,6 +5,18 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Currency dropdown and amortized / actual cost - 2026-10-19
+- **Currency dropdown** in the Docker UI top bar and the local portal: *Billing currency* (the invoice's, at Cost
+  Management's own rate - recorded per subscription by each scan), USD, or any currency with a European Central
+  Bank reference rate. Dashboard, Cost Savings, Findings (including amounts inside titles), local report pages, the
+  portal dashboard and the estate page convert; the choice is remembered per browser. `GET /api/v1/dashboard/currency`.
+- **Amortized or actual cost.** Amortized stays the default; switch with Settings → Governance Configuration →
+  Analysis settings (Docker), `--actual-cost` / `AMORTIZED_COST=false` (CLI and local portal) or `amortized_cost` in
+  `--config`. Every Cost Management query without an explicit type follows it; budgets keep actual cost.
+- Analysis settings also hold the default currency and the required VM agent extensions. Migration
+  `f3b8d2a6c710` adds `governance_configs.analysis_settings` and `subscriptions.billing_fx`.
+  Tests: `test_currency_and_cost_basis.py`.
+
 ### Azure Policy governance - 2026-10-18
 - **Policy scanners** (one shared Resource Graph snapshot per subscription, including assignments and exemptions
   inherited from management groups): `policy_assignment_scanner` (nothing assigned, DoNotEnforce),

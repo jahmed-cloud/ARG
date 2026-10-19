@@ -324,10 +324,26 @@ def _cost_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 # Amortized cost spreads reservation and savings-plan purchases over the resources that use them, so a VM covered
-# by a savings plan bought in another subscription shows its real share instead of ~0 (actual cost). Budgets and
-# Marketplace purchases are judged on actual (invoiced) cost and ask for it explicitly.
+# by a savings plan bought in another subscription shows its real share instead of ~0 (actual cost). It is the
+# default; the amortized_cost setting (off) switches a scan to actual cost. Budgets and Marketplace purchases are
+# judged on actual (invoiced) cost and ask for it explicitly.
 COST_BASIS = "AmortizedCost"
 ACTUAL_COST = "ActualCost"
+
+
+def cost_basis_of(context: Any, cost_type: Optional[str] = None) -> str:
+    """The cost type a query runs with: the one asked for, else the scan's basis (the amortized_cost setting, set on
+    the context as cost_basis), else amortized."""
+    return cost_type or getattr(context, "cost_basis", None) or COST_BASIS
+
+
+def cost_basis_from(settings: Optional[Dict[str, Any]]) -> str:
+    """The `amortized_cost` setting (default on) as a Cost Management cost type. Accepts booleans and the usual
+    string spellings ("false", "0", "no", "off") so env vars and JSON files behave the same."""
+    value = (settings or {}).get("amortized_cost", True)
+    if isinstance(value, str):
+        value = value.strip().lower() not in ("false", "0", "no", "off")
+    return COST_BASIS if value is not False else ACTUAL_COST
 
 
 def _cost_body(start: date, end: date, grouping: List[Dict[str, str]], granularity: str = "None",
@@ -348,16 +364,17 @@ def _cost_body(start: date, end: date, grouping: List[Dict[str, str]], granulari
 
 
 async def run_cost_query(context: Any, start: date, end: date, grouping: List[Dict[str, str]],
-                         granularity: str = "None", cost_type: str = COST_BASIS, scope: Optional[str] = None,
+                         granularity: str = "None", cost_type: Optional[str] = None, scope: Optional[str] = None,
                          cost_filter: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
     """
-    Cost query (amortized unless cost_type says otherwise) that asks for CostUSD alongside the billing-currency
-    Cost, at the subscription or the given scope (e.g. a resource group), optionally filtered. Some agreement types
-    reject CostUSD - retry once without it.
+    Cost query (the scan's cost basis - amortized by default - unless cost_type says otherwise) that asks for CostUSD
+    alongside the billing-currency Cost, at the subscription or the given scope (e.g. a resource group), optionally
+    filtered. Some agreement types reject CostUSD - retry once without it.
     """
     arm = getattr(context, "arm_client", None)
     if arm is None:
         return None
+    cost_type = cost_basis_of(context, cost_type)
     scope = scope or f"/subscriptions/{context.subscription_id}"
     try:
         return await arm.cost_query(scope, _cost_body(start, end, grouping, granularity, include_usd=True,
@@ -369,11 +386,13 @@ async def run_cost_query(context: Any, start: date, end: date, grouping: List[Di
 
 
 async def get_resource_costs(context: Any, days: int = 30,
-                             cost_type: str = COST_BASIS) -> Optional[Dict[str, Dict[str, Any]]]:
+                             cost_type: Optional[str] = None) -> Optional[Dict[str, Dict[str, Any]]]:
     """
     {lower(resource_id): {"cost", "cost_usd", "currency", "meters": {subcategory: cost}}}
-    for the last `days` days, amortized unless cost_type is ACTUAL_COST. Cached on context.cache for the whole scan.
+    for the last `days` days, on the scan's cost basis (amortized by default) unless cost_type says otherwise. Cached
+    on context.cache for the whole scan.
     """
+    cost_type = cost_basis_of(context, cost_type)
     cache = getattr(context, "cache", None)
     key = f"resource_costs:{days}:{cost_type}"
     if cache is not None and key in cache:

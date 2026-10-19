@@ -4,6 +4,7 @@
  * Matches backend/api/routes/costs.py: GET /costs/summary
  */
 import React, { useEffect, useState } from 'react';
+import { useMoney } from '../hooks/useCurrency';
 import {
   Box,
   Grid,
@@ -93,6 +94,7 @@ function MetricCard({ icon, label, value, subtext, accent }: any) {
 
 export const CostsPage: React.FC = () => {
   const api = useApi();
+  const { format: money } = useMoney();
   const [data, setData] = useState<CostSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -139,21 +141,21 @@ export const CostsPage: React.FC = () => {
           <MetricCard
             icon={<AttachMoney fontSize="small" />}
             label="Monthly Spend"
-            value={`$${data.total_monthly_cost.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            value={money(data.total_monthly_cost)}
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <MetricCard
             icon={<TrendingUp fontSize="small" />}
             label="Annual Spend"
-            value={`$${data.total_annual_cost.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            value={money(data.total_annual_cost)}
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <MetricCard
             icon={<TrendingDown fontSize="small" />}
             label="Potential Monthly Savings"
-            value={`$${data.potential_monthly_savings.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            value={money(data.potential_monthly_savings)}
             accent="#4CAF50"
           />
         </Grid>
@@ -161,7 +163,7 @@ export const CostsPage: React.FC = () => {
           <MetricCard
             icon={<AccountBalanceWallet fontSize="small" />}
             label="Potential Annual Savings"
-            value={`$${data.potential_annual_savings.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            value={money(data.potential_annual_savings)}
             accent="#4CAF50"
           />
         </Grid>
@@ -174,8 +176,8 @@ export const CostsPage: React.FC = () => {
           </Typography>
           {!!data.structural_monthly_savings && (
             <Typography variant="caption" component="p" sx={{ mb: 2, color: alpha('#fff', 0.5) }}>
-              Cheaper regions (a migration to plan, not a quick win) could save about $
-              {data.structural_monthly_savings.toLocaleString(undefined, { maximumFractionDigits: 0 })}/month more - not included in the totals above.
+              Cheaper regions (a migration to plan, not a quick win) could save about{' '}
+              {money(data.structural_monthly_savings)}/month more - not included in the totals above.
             </Typography>
           )}
           {data.top_savings.length === 0 ? (
@@ -234,10 +236,10 @@ export const CostsPage: React.FC = () => {
                       </Tooltip>
                     </TableCell>
                     <TableCell align="right" sx={{ color: '#4CAF50', fontWeight: 600 }}>
-                      ${s.monthly_saving.toFixed(2)}
+                      {money(s.monthly_saving, { decimals: 2 })}
                     </TableCell>
                     <TableCell align="right" sx={{ color: '#4CAF50', fontWeight: 600 }}>
-                      ${s.annual_saving.toFixed(2)}
+                      {money(s.annual_saving, { decimals: 2 })}
                     </TableCell>
                   </TableRow>
                 ))}

@@ -13,10 +13,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from scanners.base.azure_api import (
     ACTUAL_COST,
-    COST_BASIS,
     ArmClient,
     AzureAuthExpiredError,
     FailFastCredential,
+    cost_basis_from,
+    cost_basis_of,
     get_resource_costs,
     query_resource_graph,
     run_cost_query,
@@ -235,7 +236,7 @@ async def collect_costs(context: ScanContext, data: AnalysisData, months: int = 
             data.warnings.append(f"cost query '{label}' failed: {exc}")
             return None
 
-    data.cost["cost_basis"] = COST_BASIS
+    data.cost["cost_basis"] = cost_basis_of(context)   # amortized unless the amortized_cost setting is off
     data.cost["window_12m"] = {"from": start_12m.isoformat(), "to": today.isoformat()}
     data.cost["window_30d"] = {"from": start_30d.isoformat(), "to": today.isoformat()}
     data.cost["monthly_by_service"] = await attempt(
@@ -292,6 +293,7 @@ async def run_analysis(credential: Any, subscription: str, *, scanners: Optional
         sub = await resolve_subscription(arm, subscription)
         data = AnalysisData(subscription=sub, generated_at=datetime.now(timezone.utc))
         context = build_context(credential, arm, sub)
+        context.cost_basis = cost_basis_from(config)   # amortized unless the amortized_cost setting is off
         logger.info("Collecting inventory for %s (%s)", sub["name"], sub["id"])
         progress("Collecting resource inventory", 1, total)
         await collect_inventory(context, arm, data)

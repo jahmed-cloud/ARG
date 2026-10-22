@@ -74,6 +74,9 @@ FINDING_CLASSIFICATION: Dict[str, Classification] = {
     "vm_public_ip_bypasses_bastion": Classification(SECURITY, "networking", WAVE_NO_REGRET, "jumphost"),
     # Compute / App Service
     "vm_unsupported_os": Classification(SECURITY, "compute-appservice", WAVE_NO_REGRET, "jumphost"),
+    "internet_facing_machine_unpatched": Classification(SECURITY, "compute-appservice", WAVE_NO_REGRET, "jumphost"),
+    "machine_vulnerability_scan_missing": Classification(SECURITY, "security-identity", WAVE_OPTIMISE),
+    "sql_server_end_of_support": Classification(SECURITY, "data-sql-storage", WAVE_OPTIMISE),
     "managed_disk_public_network_access": Classification(SECURITY, "compute-appservice", WAVE_NO_REGRET),
     "unattached_managed_disk": Classification(FINOPS, "compute-appservice", WAVE_NO_REGRET),
     "old_disk_snapshot": Classification(FINOPS, "compute-appservice", WAVE_NO_REGRET),

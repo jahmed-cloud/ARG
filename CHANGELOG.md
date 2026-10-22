@@ -5,6 +5,30 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Compute, Policy and grouped menus - 2026-10-22
+- **Compute** (local portal `/compute`, Docker UI *Compute*, admins): every VM and Azure Arc server with the
+  operating system it reports, end of support (`scanners/base/lifecycle.py`), public IP, vulnerability scanner,
+  pending security updates (Update Manager), outdated packages and CVEs (Defender), SQL Server instances, and the
+  language runtime of every App Service app. Machines, SQL Server and App Service views, filters in the URL, search
+  across software / packages / CVE IDs, a machine dossier and CSV. Collected with the estate refresh;
+  `GET /estate/compute`.
+- **New findings** (`machine_security_scanner`): `internet_facing_machine_unpatched`,
+  `machine_vulnerability_scan_missing` (with the Defender for Servers Plan 1 cost) and `sql_server_end_of_support`,
+  each with implementation guidance. `vm_unsupported_os` reads the reported OS, covers Arc servers and warns before
+  the date and for machines on ESU.
+- **Policy** (local portal `/policy`, Docker UI *Policy*, admins; `scripts/subscription_analysis/policy_analyzer.py`):
+  issues, an assignment tree by scope with Microsoft's management group / subscription / resource group icons
+  (search shows where an assignment is made and where it applies), assignments with the effect each of their
+  policies runs with (initiative drill-down and CSV in the assignment dossier), the policy in effect per subscription,
+  policies in force, exemptions and a markdown report (`GET /estate/policy`, `/estate/policy.md`).
+- **Built-in vs custom definitions**: Resource Graph also returns built-in, static and capability definitions; only
+  `policyType == Custom` ones are now read as custom, so built-ins keep their real source.
+- **Grouped menus**: the local portal's menu groups Estate (Inventory, Compute, Architecture) and Governance (Policy,
+  Landing zone); the Docker sidebar adds an Estate group and its groups fold under their headings (remembered per
+  browser; the group of the open page always shows).
+- Both pages are built in ARG's workspace design. 76 scanners, 117 finding types
+  ([scanner-catalog.md](docs/scanner-catalog.md)). Tests: `test_compute_view.py`, `test_policy_analyzer.py`.
+
 ### Estate, architecture, analysis, guidance and AI review - 2026-10-19
 - **Estate page in the Docker UI** (admins): every resource across the connected subscriptions with filters,
   breakdowns, usage profiles, cost, suggestions, CSV and markdown overview; refreshed by the worker after every scan

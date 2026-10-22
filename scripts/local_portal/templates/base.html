@@ -11,10 +11,27 @@
   <header class="topbar">
     <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">A</span> ARG <span>Resource Guardian</span></a>
     {% set path = request.url.path if request is defined else '' %}
-    <nav aria-label="Main navigation">
+    {% set arch_view = request.query_params.get('view', '') if request is defined else '' %}
+    {% set landing = path.startswith('/architecture') and arch_view == 'landing' %}
+    {% set in_estate = path.startswith('/estate') or path.startswith('/compute') or (path.startswith('/architecture') and not landing) %}
+    {% set in_governance = path.startswith('/policy') or landing %}
+    <nav aria-label="Main navigation" class="main-nav">
       <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>Subscriptions</a>
-      <a href="/estate" {% if path.startswith('/estate') %}aria-current="page"{% endif %}>Estate</a>
-      <a href="/architecture" {% if path.startswith('/architecture') %}aria-current="page"{% endif %}>Architecture</a>
+      <details class="nav-menu{% if in_estate %} current{% endif %}">
+        <summary>Estate</summary>
+        <div class="nav-list">
+          <a href="/estate" {% if path.startswith('/estate') %}aria-current="page"{% endif %}>Inventory</a>
+          <a href="/compute" {% if path.startswith('/compute') %}aria-current="page"{% endif %}>Compute</a>
+          <a href="/architecture" {% if path.startswith('/architecture') and not landing %}aria-current="page"{% endif %}>Architecture</a>
+        </div>
+      </details>
+      <details class="nav-menu{% if in_governance %} current{% endif %}">
+        <summary>Governance</summary>
+        <div class="nav-list">
+          <a href="/policy" {% if path.startswith('/policy') %}aria-current="page"{% endif %}>Policy</a>
+          <a href="/architecture?view=landing" {% if landing %}aria-current="page"{% endif %}>Landing zone</a>
+        </div>
+      </details>
       <a href="/reports/README.md" {% if path.startswith('/reports') %}aria-current="page"{% endif %}>Reports</a>
       <a href="/settings" {% if path.startswith('/settings') %}aria-current="page"{% endif %}>Settings</a>
     </nav>
@@ -37,6 +54,7 @@
     <a href="https://github.com/jahmed-cloud/ARG" target="_blank" rel="noopener">github.com/jahmed-cloud/ARG</a>
   </footer>
   {% if path and not path.startswith('/login') %}<script src="/static/currency.js"></script>{% endif %}
+  <script src="/static/nav.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -22,6 +22,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from backend.models.models import EstateSnapshot, Finding, FindingStatus, Subscription, Tenant
+from scripts.subscription_analysis.compute import markdown as compute_markdown
+from scripts.subscription_analysis.compute import merge_compute
 from scripts.subscription_analysis.currency import exchange_rate
 from scripts.subscription_analysis.estate import (
     build_estate,
@@ -101,6 +103,7 @@ def merge_inventories(inventories: List[Dict[str, Any]]) -> Dict[str, Any]:
         "providers": providers,
         "architecture": merge_architecture([i.get("architecture") or {} for i in inventories]),
         "policy": merge_policy(i.get("policy") for i in inventories),
+        "compute": merge_compute(i.get("compute") for i in inventories),
     }
 
 
@@ -124,9 +127,13 @@ def build_snapshot(inventory: Dict[str, Any], reports: Dict[str, Dict[str, Any]]
     # amortized spend for the dashboard (recorded cost per month) and the Costs page (last 30 days), per subscription
     data["cost_30d"] = cost_totals(costs)
     data["cost_trend"] = trend or {}
+    # the Compute page (GET /estate/compute); GET /estate leaves it out
+    compute = inventory.get("compute") or {}
+    data["compute"] = {} if compute.get("error") else compute
+    compute_section = compute_markdown(data["compute"])
     return {
         "data": data,
-        "markdown": render_estate_markdown(estate),
+        "markdown": render_estate_markdown(estate) + ("\n\n" + compute_section if compute_section else ""),
         "subscriptions": len(estate["subscriptions"]),
         "resources": len(estate["resources"]),
         "suggestions": len(estate["suggestions"]),

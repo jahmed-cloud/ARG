@@ -38,6 +38,7 @@ logger = logging.getLogger("arg.analysis")
 SCANNER_MODULES = (
     "scanners.compute.compute_scanners",
     "scanners.compute.compute_posture_scanners",
+    "scanners.compute.machine_security_scanners",
     "scanners.identity.identity_scanners",
     "scanners.network.network_scanners",
     "scanners.network.network_posture_scanners",

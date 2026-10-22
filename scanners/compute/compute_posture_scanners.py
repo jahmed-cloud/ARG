@@ -2,7 +2,7 @@
 Azure Resource Guardian - Compute & App Service Posture Scanners
 =================================================================
 Scanners in this module:
-1. UnsupportedOSImageScanner           - VMs built from end-of-support OS images
+1. UnsupportedOSImageScanner           - VMs and Arc servers on an OS past or near end of support
 2. ManagedDiskNetworkAccessScanner     - Disks exportable from any network
 3. AppServicePlanGenerationScanner     - Premium v2 plans (no reservations, older CPUs)
                                           and single-instance production plans
@@ -44,6 +44,15 @@ from scanners.base.base_scanner import (
     SeverityLevel,
     register_scanner,
 )
+from scanners.base.lifecycle import (
+    ENDED,
+    ENDING,
+    ESU,
+    RUNTIME_END_OF_SUPPORT,  # noqa: F401 - re-exported for callers of this module
+    identify_os,
+    runtime_end_of_support,
+    support,
+)
 from scanners.base.naming import env_from_name, env_from_tags, is_nva_image
 from scanners.base.posture_scanner import PostureScanner, is_stopped
 
@@ -55,114 +64,156 @@ def _as_date(value: Any) -> date:
 
 
 # ---------------------------------------------------------------------------
-# 1. End-of-support OS images
+# 1. End-of-support operating systems (VMs and Azure Arc servers)
 # ---------------------------------------------------------------------------
 
-# (offer regex, sku regex, end-of-support date, label) - matched case-insensitively
-# against storageProfile.imageReference. Dates are vendor end-of-support
-# (no security updates without paid ESU).
-OS_END_OF_SUPPORT: List[Tuple[str, str, str, str]] = [
-    (r"windows-10", r".*", "2025-10-14", "Windows 10"),
-    (r"windows-10", r"^(rs\d|19h1|19h2|20h1|20h2|21h1)", "2022-12-13", "Windows 10 (feature release)"),
-    (r"windowsserver", r"2008", "2020-01-14", "Windows Server 2008 R2"),
-    (r"windowsserver", r"2012", "2023-10-10", "Windows Server 2012 / 2012 R2"),
-    (r"ubuntuserver", r"^16\.04", "2021-04-30", "Ubuntu 16.04 LTS"),
-    (r"ubuntuserver", r"^18\.04", "2023-05-31", "Ubuntu 18.04 LTS"),
-    (r"ubuntu-server-focal|ubuntu.*20_04", r".*", "2025-05-31", "Ubuntu 20.04 LTS"),
-    (r"centos", r".*", "2024-06-30", "CentOS"),
-    (r"^rhel$", r"^7", "2024-06-30", "RHEL 7"),
-    (r"debian-10", r".*", "2024-06-30", "Debian 10"),
-    (r"sles", r"12", "2024-10-31", "SLES 12"),
-]
+MACHINE_OS_QUERY = """
+Resources
+| where type in~ ('microsoft.compute/virtualmachines', 'microsoft.hybridcompute/machines')
+| extend p = properties, arc = type =~ 'microsoft.hybridcompute/machines'
+| project id, name, type, resourceGroup, subscriptionId, location, tags,
+          os_name = iff(arc, tostring(coalesce(p.osSku, p.osName)), tostring(p.extended.instanceView.osName)),
+          os_version = iff(arc, tostring(p.osVersion), tostring(p.extended.instanceView.osVersion)),
+          publisher = tostring(p.storageProfile.imageReference.publisher),
+          offer = tostring(p.storageProfile.imageReference.offer),
+          sku = tostring(p.storageProfile.imageReference.sku),
+          vm_size = tostring(p.hardwareProfile.vmSize),
+          power_state = tostring(p.extended.instanceView.powerState.code),
+          agent_status = tostring(p.status),
+          esu = tostring(p.licenseProfile.esuProfile.licenseAssignmentState),
+          created = tostring(p.timeCreated)
+"""
+ARC_MACHINE = "microsoft.hybridcompute/machines"
 
 
 def os_end_of_support(offer: str, sku: str, as_of: date) -> Optional[Tuple[str, date]]:
-    """Most specific (earliest) matching EoS entry that has passed as of `as_of`."""
-    matches = []
-    for offer_rx, sku_rx, eos, label in OS_END_OF_SUPPORT:
-        if re.search(offer_rx, offer or "", re.I) and re.search(sku_rx, sku or "", re.I):
-            eos_date = _as_date(eos)
-            if eos_date <= as_of:
-                matches.append((eos_date, label))
-    if not matches:
-        return None
-    eos_date, label = min(matches)
-    return label, eos_date
+    """(label, end-of-support date) when the marketplace image's OS is past end of support on `as_of`."""
+    s = support(identify_os(offer=offer, sku=sku), as_of)
+    return (s.product.label, s.ends) if s.status == ENDED else None
 
 
 @register_scanner
 class UnsupportedOSImageScanner(PostureScanner):
-    """VMs whose marketplace image is past vendor end of support."""
+    """
+    VMs and Azure Arc servers whose operating system is past (or within NEAR_EOS_DAYS of) vendor end of support.
+    The OS is the one the machine reports (guest agent / Arc agent); deallocated VMs fall back to their image.
+    """
 
     scanner_name = "unsupported_os_image_scanner"
     display_name = "End-of-Support Operating System"
-    description = "Detects VMs built from operating system images past end of support"
+    description = "Detects VMs and Arc servers running an operating system past or near end of support"
     category = ScannerCategory.SECURITY
     severity = SeverityLevel.CRITICAL
+    finding_types = {"vm_unsupported_os"}
+
+    NEAR_EOS_DAYS = 120
 
     async def scan(self, context: ScanContext) -> ScanOutput:
-        query = """
-        Resources
-        | where type =~ 'microsoft.compute/virtualmachines'
-        | project id, name, type, resourceGroup, subscriptionId, location, tags,
-                  publisher = tostring(properties.storageProfile.imageReference.publisher),
-                  offer = tostring(properties.storageProfile.imageReference.offer),
-                  sku = tostring(properties.storageProfile.imageReference.sku),
-                  vm_size = tostring(properties.hardwareProfile.vmSize),
-                  power_state = tostring(properties.extended.instanceView.powerState.code),
-                  created = tostring(properties.timeCreated)
-        """
         try:
-            vms = await self.arg(context, query)
+            machines = await self.arg(context, MACHINE_OS_QUERY)
         except Exception as e:
             return ScanOutput(warnings=[f"Failed to query Resource Graph: {e}"])
 
         as_of = _as_date(self.setting("as_of", date.today()))
         findings = []
-        for vm in vms:
-            hit = os_end_of_support(vm.get("offer"), vm.get("sku"), as_of)
-            if not hit:
+        for m in machines:
+            arc = (m.get("type") or "").lower() == ARC_MACHINE
+            product = identify_os(m.get("os_name"), m.get("os_version"), m.get("offer"), m.get("sku"),
+                                  m.get("publisher"))
+            s = support(product, as_of, esu_assigned=(m.get("esu") or "").lower() == "assigned")
+            if s.status not in (ENDED, ESU) and not (s.status == ENDING and s.days_left <= self.NEAR_EOS_DAYS):
                 continue
-            label, eos = hit
-            stopped = is_stopped(vm.get("power_state"))
-            findings.append(self.resource_finding(
-                vm,
-                finding_type="vm_unsupported_os",
-                title=f"End-of-support OS ({label}): {vm['name']}" + (" (VM deallocated)" if stopped else ""),
-                description=(
-                    f"VM '{vm['name']}' ({vm.get('vm_size')}) runs {vm.get('offer')}/{vm.get('sku')} - "
-                    f"{label} reached end of support on {eos.isoformat()} and no longer receives "
-                    f"security updates. Power state: {vm.get('power_state') or 'unknown'}"
-                    + (" - not running today, so no live exposure; it comes back unpatched the moment it starts. "
-                       "A deallocated end-of-support VM is usually a decommission candidate." if stopped else ".")
-                ),
-                severity=SeverityLevel.HIGH if stopped else SeverityLevel.CRITICAL,
-                resource_type="microsoft.compute/virtualmachines",
-                remediation_steps=(
-                    "1. Decide whether the VM is still needed; decommission if not.\n"
-                    "2. Otherwise rebuild on a supported image (Windows 11 / Server 2022+, Ubuntu 22.04+), "
-                    "Trusted Launch, no public IP, access via Bastion/JIT.\n"
-                    "3. As a stop-gap, isolate the VM (NSG deny inbound) until rebuilt."
-                ),
-                azure_cli_script=(
-                    f"az vm show -g {vm.get('resourceGroup')} -n {vm['name']} --query storageProfile.imageReference\n"
-                    f"# after sign-off:\naz vm delete -g {vm.get('resourceGroup')} -n {vm['name']} --yes"
-                ),
-                evidence={"publisher": vm.get("publisher"), "offer": vm.get("offer"), "sku": vm.get("sku"),
-                          "end_of_support": eos.isoformat(), "power_state": vm.get("power_state"),
-                          "created": vm.get("created")},
-                nist_control="SI-2",
-                estimated_monthly_savings_usd=0.0,
-            ))
-        return ScanOutput(findings=findings, resources_scanned=len(vms))
+            findings.append(self._finding(m, s, arc))
+        return ScanOutput(findings=findings, resources_scanned=len(machines))
+
+    def _finding(self, m: Dict[str, Any], s: Any, arc: bool):
+        name, rg = m["name"], m.get("resourceGroup")
+        label = s.product.label
+        reported = " ".join(x for x in (m.get("os_name"), m.get("os_version")) if x)
+        source = (f"reports {reported}" if reported
+                  else f"was built from {m.get('offer')}/{m.get('sku')} (deallocated - no OS reported)")
+        what = "Arc server" if arc else "VM"
+        if arc:
+            status = m.get("agent_status") or "unknown"
+            idle = status.lower() != "connected"
+            state = f"Arc agent {status}"
+        else:
+            idle = is_stopped(m.get("power_state"))
+            state = f"power state {m.get('power_state') or 'unknown'}"
+        upgrade = ("In-place upgrade to a supported release (Windows Server 2022 / 2025, a current LTS "
+                   "distribution) or migrate the workload; test the application in a maintenance window.")
+        esu_step = (f"Until then buy Extended Security Updates ({s.product.esu}) and link the licence to this "
+                    f"{what}." if s.product.esu else "")
+        if s.status == ESU:
+            severity = SeverityLevel.LOW
+            title = f"OS on Extended Security Updates ({label}): {name}"
+            description = (f"{what} '{name}' {source}. {s.note[0].upper() + s.note[1:]} - security fixes still "
+                           f"arrive, but only while the ESU licence lasts. Plan the upgrade.")
+            steps = f"1. {upgrade}\n2. Keep the ESU licence linked until the upgrade is done."
+        elif s.status == ENDING:
+            severity = SeverityLevel.MEDIUM
+            title = f"OS support ends in {s.days_left} days ({label}): {name}"
+            description = (f"{what} '{name}' {source}. {label} {s.note} - after that it gets no security fixes.")
+            steps = f"1. {upgrade}\n2. Decommission it instead if it is no longer needed." + \
+                    (f"\n3. If the upgrade cannot be done in time: {esu_step}" if esu_step else "")
+        else:
+            severity = SeverityLevel.HIGH if idle else SeverityLevel.CRITICAL
+            suffix = f" (Arc agent {m.get('agent_status')})" if arc else " (VM deallocated)"
+            title = f"End-of-support OS ({label}): {name}" + (suffix if idle else "")
+            description = (f"{what} '{name}' {source}: {s.note}, so it no longer receives security fixes. {state}"
+                           + (" - not reachable today, but it comes back unpatched the moment it reconnects or "
+                              "starts; an idle end-of-support machine is usually a decommission candidate." if idle
+                              else "."))
+            steps = ("1. Decide whether the machine is still needed; decommission it if not.\n"
+                     f"2. Otherwise: {upgrade}"
+                     + (f"\n3. {esu_step}" if esu_step else "")
+                     + ("\n4." if esu_step else "\n3.")
+                     + " As a stop-gap, isolate it (no inbound from the internet, access through Bastion / JIT) "
+                       "until it is upgraded.")
+        cli = (f"az connectedmachine show -g {rg} -n {name} --query "
+               "\"{os:osSku, version:osVersion, status:status, esu:licenseProfile.esuProfile}\"" if arc else
+               f"az vm get-instance-view -g {rg} -n {name} --query "
+               "\"{os:instanceView.osName, version:instanceView.osVersion, image:storageProfile.imageReference}\"")
+        if s.status == ENDED and not arc:
+            cli += f"\n# after sign-off:\naz vm delete -g {rg} -n {name} --yes"
+        return self.resource_finding(
+            m,
+            finding_type="vm_unsupported_os",
+            title=title,
+            description=description,
+            severity=severity,
+            resource_type=ARC_MACHINE if arc else "microsoft.compute/virtualmachines",
+            remediation_steps=steps,
+            azure_cli_script=cli,
+            evidence={"os_name": m.get("os_name") or None, "os_version": m.get("os_version") or None,
+                      "product": label, "support": s.status, "end_of_support": s.ends.isoformat() if s.ends else None,
+                      "days_left": s.days_left, "esu": s.product.esu or None, "esu_until": s.product.esu_until,
+                      "esu_assigned": (m.get("esu") or "").lower() == "assigned" if arc else None,
+                      "os_source": "reported by the machine" if reported else "image",
+                      "publisher": m.get("publisher") or None, "offer": m.get("offer") or None,
+                      "sku": m.get("sku") or None, "power_state": m.get("power_state") or None,
+                      "agent_status": m.get("agent_status") or None, "created": m.get("created") or None},
+            nist_control="SI-2",
+            estimated_monthly_savings_usd=0.0,
+        )
 
     def _mock_data(self) -> List[Dict[str, Any]]:
         return [{
             "id": "/subscriptions/sub-1/resourceGroups/rg-vm/providers/Microsoft.Compute/virtualMachines/vm-win10-1",
             "name": "vm-win10-1", "type": "microsoft.compute/virtualmachines", "resourceGroup": "rg-vm",
             "subscriptionId": "sub-1", "location": "westeurope", "publisher": "MicrosoftWindowsDesktop",
-            "offer": "Windows-10", "sku": "19h2-pro", "vm_size": "Standard_B2s",
+            "offer": "Windows-10", "sku": "19h2-pro", "vm_size": "Standard_B2s", "os_name": "", "os_version": "",
             "power_state": "PowerState/deallocated", "created": "2020-03-30T13:38:00Z",
+        }, {
+            "id": "/subscriptions/sub-1/resourceGroups/rg-arc/providers/Microsoft.HybridCompute/machines/srv-file-01",
+            "name": "srv-file-01", "type": "microsoft.hybridcompute/machines", "resourceGroup": "rg-arc",
+            "subscriptionId": "sub-1", "location": "westeurope", "os_name": "Windows Server 2012 R2 Standard",
+            "os_version": "6.3.9600", "agent_status": "Connected", "esu": "NotAssigned",
+        }, {
+            "id": "/subscriptions/sub-1/resourceGroups/rg-arc/providers/Microsoft.HybridCompute/machines/srv-app-02",
+            "name": "srv-app-02", "type": "microsoft.hybridcompute/machines", "resourceGroup": "rg-arc",
+            "subscriptionId": "sub-1", "location": "westeurope", "os_name": "Windows Server 2022 Standard",
+            "os_version": "10.0.20348", "agent_status": "Connected", "esu": "NotAssigned",
         }]
 
 
@@ -755,27 +806,6 @@ class WebAppHttpsAndIdentityScanner(PostureScanner):
 # 7. Runtime / TLS / FTP / health check / 32-bit worker
 # ---------------------------------------------------------------------------
 
-# (stack regex matched against "<stack>|<version>", end-of-support date)
-RUNTIME_END_OF_SUPPORT: List[Tuple[str, str, str]] = [
-    (r"^dotnet(core)?\|(1|2|3)\.", "2022-12-13", ".NET Core 1-3.1"),
-    (r"^dotnet(core)?\|5\.0", "2022-05-10", ".NET 5"),
-    (r"^dotnet(core)?\|6\.0", "2024-11-12", ".NET 6"),
-    (r"^dotnet(core)?\|7\.0", "2024-05-14", ".NET 7"),
-    (r"^dotnet(core)?\|8\.0", "2026-11-10", ".NET 8"),
-    (r"^dotnet(core)?\|9\.0", "2026-11-10", ".NET 9"),
-    (r"^node\|(10|12|14)", "2023-04-30", "Node.js <=14"),
-    (r"^node\|16", "2023-09-11", "Node.js 16"),
-    (r"^node\|18", "2025-04-30", "Node.js 18"),
-    (r"^node\|20", "2026-04-30", "Node.js 20"),
-    (r"^python\|3\.[0-7]($|\.)", "2023-06-27", "Python <=3.7"),
-    (r"^python\|3\.8", "2024-10-07", "Python 3.8"),
-    (r"^python\|3\.9", "2025-10-31", "Python 3.9"),
-    (r"^php\|(5|7)\.", "2022-11-28", "PHP 7.x"),
-    (r"^php\|8\.0", "2023-11-26", "PHP 8.0"),
-    (r"^php\|8\.1", "2025-12-31", "PHP 8.1"),
-]
-
-
 def runtime_stack(config: Dict[str, Any]) -> Optional[str]:
     """Normalise site config to '<stack>|<version>' (Linux FX, or Windows .NET)."""
     fx = config.get("linuxFxVersion") or config.get("windowsFxVersion")
@@ -784,15 +814,6 @@ def runtime_stack(config: Dict[str, Any]) -> Optional[str]:
     net = (config.get("netFrameworkVersion") or "").lower().lstrip("v")
     if net and not net.startswith(("2.", "4.")):
         return f"dotnet|{net}"
-    return None
-
-
-def runtime_end_of_support(stack: Optional[str]) -> Optional[Tuple[str, date]]:
-    if not stack:
-        return None
-    for rx, eos, label in RUNTIME_END_OF_SUPPORT:
-        if re.search(rx, stack, re.I):
-            return label, _as_date(eos)
     return None
 
 

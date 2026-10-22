@@ -188,6 +188,47 @@ def test_estate_page_and_api(client, tmp_path):
     assert client.get("/static/estate.js").status_code == 200
 
 
+def test_compute_page_and_api(client, tmp_path):
+    assert client.get("/compute", follow_redirects=False).status_code == 303
+    assert client.get("/api/compute").status_code == 401
+    _login(client)
+    page = client.get("/compute")
+    assert page.status_code == 200 and "/static/compute.js" in page.text and "<script>" not in page.text
+    assert 'href="/compute" aria-current="page"' in page.text
+    assert client.get("/api/compute").status_code == 404                  # before the first live refresh
+    (tmp_path / "_estate").mkdir(exist_ok=True)
+    (tmp_path / "_estate" / "compute.json").write_text(json.dumps({"machines": [], "summary": {"machines": 0}}),
+                                                       encoding="utf-8")
+    assert client.get("/api/compute").json()["summary"]["machines"] == 0
+    assert client.get("/static/compute.js").status_code == 200
+
+
+def test_policy_page_analysis_and_markdown(client, tmp_path):
+    from tests.unit.test_policy_analyzer import estate as estate_data
+    from tests.unit.test_policy_analyzer import policy as policy_data
+
+    assert client.get("/policy", follow_redirects=False).status_code == 303
+    assert client.get("/api/policy-analysis").status_code == 401
+    _login(client)
+    page = client.get("/policy")
+    assert page.status_code == 200 and "/static/policy.js" in page.text and "<script>" not in page.text
+    assert client.get("/api/policy-analysis").status_code == 404           # no estate / policy collection yet
+    folder = tmp_path / "_estate"
+    folder.mkdir(exist_ok=True)
+    (folder / "estate.json").write_text(json.dumps(estate_data()), encoding="utf-8")
+    (folder / "policy.json").write_text(json.dumps(policy_data()), encoding="utf-8")
+    body = client.get("/api/policy-analysis").json()
+    assert body["summary"]["assignments"] == 6 and body["issues"][0]["key"] == "no_identity"
+    md = client.get("/api/policy.md")
+    assert md.text.startswith("# Azure Policy analysis") and "attachment" in md.headers["content-disposition"]
+    assert client.get("/static/policy.js").status_code == 200
+    icon = client.get("/azure-icons/Management-Groups.svg")      # Microsoft's icon, unchanged, behind the login
+    assert icon.status_code == 200 and icon.headers["content-type"].startswith("image/svg")
+    from pathlib import Path
+    original = Path(__file__).resolve().parents[2] / "scripts" / "subscription_analysis" / "azure_icons"
+    assert icon.content == (original / "Management-Groups.svg").read_bytes()
+
+
 def test_architecture_page_and_diagrams(client, tmp_path):
     assert client.get("/architecture", follow_redirects=False).status_code == 303
     assert client.get("/api/architecture.svg").status_code == 401
@@ -500,3 +541,22 @@ def test_settings_page_saves_and_feeds_the_next_analysis(client, tmp_path):
     from scripts.subscription_analysis.cli import default_config
 
     assert default_config(reports_dir=tmp_path)["engineering_hourly_rate_usd"] == 110.0
+
+
+def test_menu_groups_estate_and_governance_and_marks_the_current_page(client):
+    import re
+
+    _login(client)
+
+    def current(path):
+        page = client.get(path).text
+        page = page.split('<nav aria-label="Main navigation"')[1].split("</nav>")[0]   # the main menu only
+        groups = re.findall(r'<details class="nav-menu( current)?">\s*<summary>(\w+)</summary>', page)
+        return {name for flag, name in groups if flag}, re.findall(r'<a href="([^"]+)" aria-current="page"', page)
+
+    assert current("/compute") == ({"Estate"}, ["/compute"])
+    assert current("/policy") == ({"Governance"}, ["/policy"])
+    assert current("/architecture?view=landing") == ({"Governance"}, ["/architecture?view=landing"])
+    assert current("/architecture") == ({"Estate"}, ["/architecture"])
+    assert current("/") == (set(), ["/"])
+    assert client.get("/static/nav.js").status_code == 200

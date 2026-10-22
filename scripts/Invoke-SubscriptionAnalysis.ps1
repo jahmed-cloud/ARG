@@ -38,7 +38,7 @@
 
 .EXAMPLE
     az login
-    C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'pp-example_workload' -Pdf summary
+    C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'contoso-workload-prod' -Pdf summary
 
 .EXAMPLE
     .\scripts\Invoke-SubscriptionAnalysis.ps1 -All -ReportsPath 'D:\arg-reports'

@@ -55,7 +55,7 @@ The local portal uses your `az login` session and needs no database or Docker. T
 | Question | ARG's Answer |
 |---|---|
 | What resources are costing money unnecessarily? | Cost Optimization Engine with Azure Cost Management integration |
-| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (75 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
+| Which resources are orphaned? | 20+ orphan/idle checks across Compute, Network, Storage, Database, Cost (76 scanners in total - see [docs/scanner-catalog.md](docs/scanner-catalog.md)) |
 | Which resources violate governance standards? | Governance Module with CAF + Zero Trust scoring |
 | Is Azure Policy actually enforcing anything? | Policy scanners: exemptions without expiry, remediation never run, policies that cannot take effect, uncovered resource types |
 | Which Entra ID objects are security risks? | Full Microsoft Graph hygiene analysis |
@@ -267,6 +267,13 @@ are skipped in this mode.
 - **Estate** (local portal and, for admins, the Docker UI): every resource across all connected subscriptions with
   filters, usage profiles (vCPU, RAM, CPU / memory 30 d), cost, suggestions, CSV export and a markdown overview;
   the worker refreshes it after each scan (`ESTATE_REFRESH_AFTER_SCAN`)
+- **Compute**: every VM and Azure Arc server with its operating system and end of support, public IP, vulnerability
+  scanner coverage, pending security updates, outdated packages, CVEs and SQL Server instances, plus the runtime of
+  every App Service app; a search across software, packages and CVE IDs and a *critical path* filter (internet-facing
+  with a known weakness)
+- **Policy**: what Azure Policy enforces across the tenant - issues, the assignment tree by scope (where an assignment
+  is made and where it applies, with Microsoft's icons), every assignment with the effect of each of its policies,
+  the policy in effect per subscription, policies in force, exemptions and a markdown report
 - **Architecture**: network and landing-zone diagrams drawn with Microsoft's Azure icons, and a comparison of the
   tenant's management groups and policy with the Azure Landing Zones reference (pinned ALZ library)
 - **Analysis** page in the Docker UI: the same 5-part analysis as the local report, written after each scan

@@ -12,6 +12,7 @@ from datetime import date
 import pytest
 
 import scanners.compute.compute_posture_scanners as compute
+import scanners.compute.machine_security_scanners  # noqa: F401
 import scanners.cost.cost_scanners  # noqa: F401
 import scanners.database.database_scanners as database
 import scanners.governance.governance_posture_scanners as governance
@@ -52,6 +53,8 @@ EXPECTED = {
     "private_dns_zone_without_endpoints_scanner": {"private_dns_zone_without_endpoints"},
     "subnet_without_nsg_scanner": {"subnet_without_nsg"},
     "unsupported_os_image_scanner": {"vm_unsupported_os"},
+    "machine_security_scanner": {"internet_facing_machine_unpatched", "machine_vulnerability_scan_missing",
+                                 "sql_server_end_of_support"},
     "managed_disk_network_access_scanner": {"managed_disk_public_network_access"},
     "app_service_plan_generation_scanner": {"app_service_plan_previous_generation", "app_service_plan_single_instance"},
     "app_service_plan_utilization_scanner": {"app_service_plan_cpu_saturated", "app_service_plan_underutilized"},
@@ -395,10 +398,11 @@ def test_exposed_management_ports_requires_internet_source():
     assert network.exposed_management_ports(rule, [22, 3389]) == [3389]
 
 
-def test_os_end_of_support_matches_most_specific_entry():
+def test_os_end_of_support_uses_the_release_and_edition_of_the_image():
     label, eos = compute.os_end_of_support("Windows-10", "19h2-pro", date(2026, 1, 1))
-    assert label == "Windows 10 (feature release)" and eos == date(2022, 12, 13)
+    assert label == "Windows 10 1909" and eos == date(2021, 5, 11)
     assert compute.os_end_of_support("windows-11", "win11-24h2-pro", date(2026, 1, 1)) is None
+    assert compute.os_end_of_support("windows-11", "win11-24h2-pro", date(2026, 10, 22))[1] == date(2026, 10, 13)
 
 
 @pytest.mark.parametrize("config, expected", [

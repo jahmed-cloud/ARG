@@ -78,7 +78,7 @@ With plain python: `python -m scripts.local_portal --port 9000 --reports-dir D:\
 
 ```powershell
 # one or more subscriptions (ID or display name)
-C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'pp-example_workload'
+C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'contoso-workload-prod'
 C:\src\ARG\scripts\Invoke-SubscriptionAnalysis.ps1 -Subscription 'sub-a', 'sub-b'
 
 # every enabled subscription visible to az login
@@ -593,6 +593,59 @@ locally in `reports/_estate/policy.json` (about 1 MB for 200 assignments) and in
 `GET /estate`). Routes: local `/architecture?view=landing`, `/api/landing-zone.html`, `/api/landing-zone.md`; Docker
 `GET /estate/architecture.svg?view=landing`, `GET /estate/landing-zone`.
 
+### Compute view
+
+**Compute** (local portal `/compute`, Docker UI *Compute*, admins) lists every VM and Azure Arc server with what it
+runs and how well it is looked after, plus the language runtime of every App Service app. It is collected with the
+estate refresh (`scripts/subscription_analysis/compute.py`, `scanners/compute/machine_inventory.py`; about 15 s of
+read-only Resource Graph queries) and stored as `reports/_estate/compute.json` / under the Docker snapshot's
+`compute` key (`GET /estate/compute`).
+
+| Column | Source |
+|---|---|
+| Operating system and version | What the machine reports (VM guest agent `osName` / `osVersion`, Arc `osSku` / `osVersion`); the marketplace image for deallocated VMs |
+| Support / support ends | `scanners/base/lifecycle.py`: vendor end of (extended) support per OS and SQL Server version, the ESU route and, for Arc, whether an ESU licence is assigned. **Ending** = within 180 days |
+| Public IP | A public IP on the VM's network interfaces (Arc servers: on-premises, n/a) |
+| Vulnerability scanner | **Covered**: CVE results, the Qualys extension, Defender's *vulnerability assessment solution* assessment healthy, or Defender for Endpoint with Defender for Servers P1 / P2. **None**: that assessment unhealthy, or Defender for Servers off and no scanner agent |
+| Security updates | Azure Update Manager assessment: pending security / critical updates with their names (VMs with periodic assessment only) |
+| Outdated packages | Defender's per-package *Update ‹package›* recommendations on the machine |
+| CVEs | Defender vulnerability-assessment sub-assessments, when a scanner reports them |
+| SQL Server | Arc-enabled SQL Server instances and SQL IaaS VMs: version, edition, build, end of support, ESU on the Arc extension |
+
+**Critical path** = running, a public IP and a known weakness (OS past end of support, pending security updates,
+outdated packages Defender rates high, critical / high CVEs). The search box matches names, OS and version, image,
+agents, pending update and package names, CVE IDs and SQL Server versions; the *App runtimes* view matches runtime and
+version (`php`, `node 18`). A CVE ID only matches machines whose scanner reports CVEs - without Defender vulnerability
+assessment, search the affected product and version instead. Installed software and running services need Change
+Tracking (Azure Monitor agent); the view counts where it is deployed.
+
+The same data drives three findings per subscription (`machine_security_scanner`):
+`internet_facing_machine_unpatched`, `machine_vulnerability_scan_missing` (one per subscription, with the Defender for
+Servers Plan 1 cost) and `sql_server_end_of_support`. `vm_unsupported_os` now reads the reported OS, covers Arc
+servers, and also warns 120 days before the date (medium) and for machines on ESU (low).
+
+### Policy analyzer
+
+**Policy** (local portal `/policy`, Docker UI *Policy*, admins; `scripts/subscription_analysis/policy_analyzer.py`)
+shows what Azure Policy is in force across the tenant and where it falls short. It reads the policy collection of the
+estate refresh (the same one the Landing zone view uses) and the management-group hierarchy - no extra Azure calls.
+
+| View | What it shows |
+|---|---|
+| Issues | Assignments not enforced (DoNotEnforce with Deny / remediating policies); DeployIfNotExists / Modify without a managed identity (remediation cannot run); deprecated policies in force; preview policies enforcing; exemptions without an end date or expired; redundant assignments (same definition and parameters already assigned above); assignments with every policy disabled; Deny policies with non-compliant resources; subscriptions without a Deny guardrail or the Microsoft cloud security benchmark; custom definitions nobody assigns - each with the fix |
+| Tree | The management-group hierarchy down to subscriptions and resource groups, with Microsoft's management group / subscription / resource group icons: each scope with the assignments made on it (and their effects), how many reach it from above (excluded scopes left out), subscriptions and assignments below. Searching an assignment or policy marks where it is assigned and where it is in effect; a scope opens its own and its inherited assignments, grouped by the scope they come from |
+| Assignments | Every assignment (management group, subscription, resource group): definition, policies, effects (deny / remediate / audit / disabled), enforcement, managed identity, non-compliant resources and compliance %, exemptions, excluded scopes; a row opens its policies with the effect each runs with and its non-compliant count |
+| Subscriptions | The policy in effect on each subscription - inherited through its management groups and assigned directly, minus excluded scopes; the strongest effect per policy; compliance |
+| Policies | Every policy in force once: category, source, effects, where it is assigned, non-compliant resources |
+| Exemptions | Category, scope, assignment, expiry and status |
+
+Collected with the estate refresh: assignments with their excluded scopes, managed identity and creation date;
+distinct non-compliant / evaluated resources per subscription and per policy of each assignment (Resource Graph
+`policystates`); custom definitions and initiatives no assignment uses. Resource Graph also returns built-in,
+static and capability definitions from `policyresources`; only `policyType == Custom` ones are read as custom (the
+built-ins come from the ARM catalogue). Routes: local `/api/policy-analysis`, `/api/policy.md`; Docker
+`GET /estate/policy`, `GET /estate/policy.md`.
+
 ---
 
 ### Cheaper region (`cheaper_region_available`)
@@ -617,7 +670,7 @@ Settings: `region_min_saving_pct` (10), `region_min_saving_usd` (20), `region_ex
 
 ## 6. What it analyses
 
-75 scanners across network, compute/App Service, database, storage, security, identity, governance/observability
+76 scanners across network, compute/App Service, database, storage, security, identity, governance/observability
 and cost. See [scanner-catalog.md](./scanner-catalog.md). The five Microsoft Graph (Entra ID) scanners are **skipped**
 locally; they need the Docker stack with a service principal and Graph consent. Terraform drift is skipped unless state
 was imported into the Docker stack.

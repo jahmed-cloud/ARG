@@ -56,6 +56,9 @@ import {
   ViewQuilt,
   MenuBook,
   Hub,
+  Dns,
+  Gavel,
+  ExpandMore,
   Menu as MenuIcon,
 } from "@mui/icons-material";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
@@ -68,12 +71,26 @@ import { RouteBoundary } from "./RouteBoundary";
 const SIDEBAR_EXPANDED = 224;
 const SIDEBAR_COLLAPSED = 64;
 
+type NavGroup = "WORKSPACE" | "ESTATE" | "ASSESSMENT" | "OPERATIONS";
+const NAV_GROUPS: NavGroup[] = ["WORKSPACE", "ESTATE", "ASSESSMENT", "OPERATIONS"];
+// Folded sidebar groups, remembered per browser (a convenience only - every group starts open without it).
+const FOLDED_KEY = "arg.nav.folded";
+
+function loadFolded(): Set<string> {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(FOLDED_KEY) || "[]");
+    return new Set(Array.isArray(saved) ? saved.filter((g) => typeof g === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
 interface NavItem {
   label: string;
   path: string;
   icon: React.ReactNode;
   badge?: number;
-  group: "WORKSPACE" | "ASSESSMENT" | "OPERATIONS";
+  group: NavGroup;
   // Tenant-wide or write-only pages: admins and contributors only (hidden for owners, readers and auditors).
   operatorsOnly?: boolean;
   // Whole-estate pages: ARG administrators only (the API enforces the same).
@@ -85,13 +102,15 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Scans", path: "/scans", icon: <SearchOutlined />, group: "WORKSPACE" },
   { label: "Findings", path: "/findings", icon: <BugReport />, group: "WORKSPACE" },
   { label: "Cost Savings", path: "/costs", icon: <AttachMoney />, group: "WORKSPACE" },
-  { label: "Estate", path: "/estate", icon: <ViewQuilt />, group: "WORKSPACE", adminOnly: true },
+  { label: "Estate", path: "/estate", icon: <ViewQuilt />, group: "ESTATE", adminOnly: true },
+  { label: "Compute", path: "/compute", icon: <Dns />, group: "ESTATE", adminOnly: true },
+  { label: "Architecture", path: "/architecture", icon: <Hub />, group: "ESTATE", adminOnly: true },
   { label: "Identity", path: "/identity", icon: <Person />, group: "ASSESSMENT", operatorsOnly: true },
   { label: "Governance", path: "/governance", icon: <Policy />, group: "ASSESSMENT" },
+  { label: "Policy", path: "/policy", icon: <Gavel />, group: "ASSESSMENT", adminOnly: true },
   { label: "Security", path: "/security", icon: <Security />, group: "ASSESSMENT" },
   { label: "Terraform Drift", path: "/drift", icon: <CompareArrows />, group: "ASSESSMENT" },
   { label: "Analysis", path: "/analysis", icon: <MenuBook />, group: "ASSESSMENT" },
-  { label: "Architecture", path: "/architecture", icon: <Hub />, group: "ASSESSMENT", adminOnly: true },
   { label: "Reports", path: "/reports", icon: <Description />, group: "OPERATIONS" },
   { label: "Remediation", path: "/remediation", icon: <Build />, group: "OPERATIONS", operatorsOnly: true },
   { label: "Subscriptions", path: "/subscriptions", icon: <CloudQueue />, group: "OPERATIONS" },
@@ -120,6 +139,21 @@ export function AppLayout() {
   // 60% of the viewport with no way to hide it at all.
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [folded, setFolded] = useState<Set<string>>(loadFolded);
+
+  const fold = (group: NavGroup, shut: boolean) => {
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (shut) next.add(group);
+      else next.delete(group);
+      try {
+        window.localStorage.setItem(FOLDED_KEY, JSON.stringify(Array.from(next)));
+      } catch {
+        // storage blocked: the groups still fold for this visit
+      }
+      return next;
+    });
+  };
 
   // Refresh the user profile from the server on every app mount. The
   // localStorage copy (used for the very first paint, see store.ts
@@ -157,6 +191,10 @@ export function AppLayout() {
 
   useEffect(() => {
     setMobileOpen(false);
+    // The group of the page being shown is always open.
+    const current = NAV_ITEMS.find((n) => location.pathname.startsWith(n.path));
+    if (current && folded.has(current.group)) fold(current.group, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname]);
 
   const compact = !isMobile && collapsed;
@@ -165,6 +203,63 @@ export function AppLayout() {
   const handleLogout = () => {
     dispatch(logout());
     navigate("/login");
+  };
+
+  const renderItem = (item: NavItem) => {
+    const active = location.pathname.startsWith(item.path);
+    return (
+      <ListItem key={item.path} disablePadding sx={{ mb: 0.25 }}>
+        <Tooltip title={compact ? item.label : ""} placement="right">
+          <ListItemButton
+            aria-label={item.label}
+            aria-current={active ? "page" : undefined}
+            selected={active}
+            onClick={() => navigate(item.path)}
+            sx={{
+              borderRadius: 1.5,
+              minHeight: 42,
+              px: compact ? 1.5 : 1.5,
+              bgcolor: active ? alpha("#b8d9ba", 0.12) : "transparent",
+              "&:hover": {
+                bgcolor: alpha("#b8d9ba", 0.08),
+              },
+              ...(active && {
+                "&::before": {
+                  content: '""',
+                  position: "absolute",
+                  left: 0,
+                  top: "20%",
+                  height: "60%",
+                  width: 3,
+                  borderRadius: "0 2px 2px 0",
+                  bgcolor: "#b8d9ba",
+                },
+              }),
+            }}
+          >
+            <ListItemIcon
+              sx={{
+                minWidth: compact ? 0 : 36,
+                color: active ? "#b8d9ba" : alpha("#fff", 0.6),
+                "& svg": { fontSize: 20 },
+              }}
+            >
+              {item.icon}
+            </ListItemIcon>
+            {!compact && (
+              <ListItemText
+                primary={item.label}
+                primaryTypographyProps={{
+                  fontSize: 13,
+                  fontWeight: active ? 600 : 400,
+                  color: active ? "#fff" : alpha("#fff", 0.7),
+                }}
+              />
+            )}
+          </ListItemButton>
+        </Tooltip>
+      </ListItem>
+    );
   };
 
   return (
@@ -248,63 +343,41 @@ export function AppLayout() {
           )}
         </Box>
 
-        {/* Nav items */}
-        <List component="nav" aria-label="Main navigation" sx={{ pt: 1, px: 0.5, flex: 1 }}>
-          {navItems.map((item, index) => {
-            const active = location.pathname.startsWith(item.path);
-            const firstOfGroup = index === 0 || navItems[index - 1].group !== item.group;
+        {/* Nav items, in groups that fold under their eyebrow (icon-only mode shows every item) */}
+        <List component="nav" aria-label="Main navigation" sx={{ pt: 1, px: 0.5, flex: 1, overflowY: "auto" }}>
+          {NAV_GROUPS.map((group, groupIndex) => {
+            const items = navItems.filter((item) => item.group === group);
+            if (!items.length) return null;
+            const open = compact || !folded.has(group);
+            const listId = `nav-group-${group.toLowerCase()}`;
             return (
-              <React.Fragment key={item.path}>{!compact && firstOfGroup && <Typography component="div" sx={{ px: 2, pt: index ? 2.5 : 1.5, pb: 1, color: "#90a79a", fontSize: 9, letterSpacing: ".15em", fontFamily: "Consolas, monospace" }}>{item.group}</Typography>}<ListItem disablePadding sx={{ mb: 0.25 }}>
-                <Tooltip title={compact ? item.label : ""} placement="right">
-                  <ListItemButton
-                    aria-label={item.label}
-                    aria-current={active ? "page" : undefined}
-                    selected={active}
-                    onClick={() => navigate(item.path)}
+              <React.Fragment key={group}>
+                {!compact && (
+                  <Box
+                    component="button"
+                    type="button"
+                    aria-expanded={open}
+                    aria-controls={listId}
+                    onClick={() => fold(group, open)}
                     sx={{
-                      borderRadius: 1.5,
-                      minHeight: 42,
-                      px: compact ? 1.5 : 1.5,
-                      bgcolor: active ? alpha("#b8d9ba", 0.12) : "transparent",
-                      "&:hover": {
-                        bgcolor: alpha("#b8d9ba", 0.08),
-                      },
-                      ...(active && {
-                        "&::before": {
-                          content: '""',
-                          position: "absolute",
-                          left: 0,
-                          top: "20%",
-                          height: "60%",
-                          width: 3,
-                          borderRadius: "0 2px 2px 0",
-                          bgcolor: "#b8d9ba",
-                        },
-                      }),
+                      display: "flex", alignItems: "center", gap: 1, width: "100%", background: "none", border: 0,
+                      cursor: "pointer", px: 2, pt: groupIndex ? 2.5 : 1.5, pb: 1, color: "#90a79a", fontSize: 9,
+                      letterSpacing: ".15em", fontFamily: "Consolas, monospace", textAlign: "left",
+                      "&:hover": { color: "#b8d9ba" },
+                      "&:focus-visible": { outline: "1px solid #b8d9ba", outlineOffset: -1 },
                     }}
                   >
-                    <ListItemIcon
-                      sx={{
-                        minWidth: compact ? 0 : 36,
-                        color: active ? "#b8d9ba" : alpha("#fff", 0.6),
-                        "& svg": { fontSize: 20 },
-                      }}
-                    >
-                      {item.icon}
-                    </ListItemIcon>
-                    {!compact && (
-                      <ListItemText
-                        primary={item.label}
-                        primaryTypographyProps={{
-                          fontSize: 13,
-                          fontWeight: active ? 600 : 400,
-                          color: active ? "#fff" : alpha("#fff", 0.7),
-                        }}
-                      />
-                    )}
-                  </ListItemButton>
-                </Tooltip>
-              </ListItem></React.Fragment>
+                    <span style={{ flex: 1 }}>{group}</span>
+                    {!open && <span>{items.length}</span>}
+                    <ExpandMore sx={{ fontSize: 14, transition: "transform .15s", transform: open ? "none" : "rotate(-90deg)" }} />
+                  </Box>
+                )}
+                {open && (
+                  <Box component="ul" id={listId} aria-label={group} sx={{ m: 0, p: 0, listStyle: "none" }}>
+                    {items.map(renderItem)}
+                  </Box>
+                )}
+              </React.Fragment>
             );
           })}
         </List>

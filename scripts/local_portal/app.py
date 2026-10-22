@@ -144,6 +144,9 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         return response
 
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
+    # Microsoft's Azure architecture icons, unchanged (azure_icons/NOTICE.md) - the Policy page's assignment tree
+    app.mount("/azure-icons", StaticFiles(directory=str(HERE.parent / "subscription_analysis" / "azure_icons")),
+              name="azure-icons")
 
     # -- helpers ---------------------------------------------------------------
 
@@ -443,6 +446,50 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
             return PlainTextResponse("No estate inventory yet - refresh it on the Estate page.", status_code=404)
         return HTMLResponse(render_markdown(text))
 
+    # -- policy analyzer ---------------------------------------------------------------
+
+    policy_cache: Dict[str, Any] = {"key": None, "result": None}
+
+    def policy_analysis() -> Optional[Dict[str, Any]]:
+        """The analyzer result for the saved estate and policy collection; reused while neither file changes."""
+        from scripts.subscription_analysis.estate import ESTATE_DIR, ESTATE_FILE, POLICY_FILE, load_policy
+        from scripts.subscription_analysis.policy_analyzer import analyse
+
+        folder = reports_dir / ESTATE_DIR
+        try:
+            key = tuple((folder / f).stat().st_mtime_ns for f in (ESTATE_FILE, POLICY_FILE))
+        except OSError:
+            return None
+        if policy_cache["key"] != key:
+            data, policy = estate_data(), load_policy(reports_dir)
+            if data is None or not policy:
+                return None
+            policy_cache.update(key=key, result=analyse(data, policy))
+        return policy_cache["result"]
+
+    NO_POLICY = "No policy collection yet - refresh the inventory on the Estate page (about 5 minutes)."
+
+    @app.get("/policy", response_class=HTMLResponse)
+    async def policy_page(request: Request):
+        return templates.TemplateResponse(request, "policy.html", {"username": auth.username})
+
+    @app.get("/api/policy-analysis")
+    async def api_policy_analysis():
+        result = await asyncio.to_thread(policy_analysis)
+        if result is None:
+            return JSONResponse({"detail": NO_POLICY}, status_code=404)
+        return result
+
+    @app.get("/api/policy.md")
+    async def api_policy_markdown():
+        from scripts.subscription_analysis.policy_analyzer import markdown
+
+        result = await asyncio.to_thread(policy_analysis)
+        if result is None:
+            return PlainTextResponse(NO_POLICY, status_code=404)
+        return PlainTextResponse(markdown(result), media_type="text/markdown; charset=utf-8",
+                                 headers={"Content-Disposition": 'attachment; filename="policy-analysis.md"'})
+
     # -- settings ---------------------------------------------------------------------
 
     @app.get("/settings", response_class=HTMLResponse)
@@ -498,6 +545,20 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
         path = reports_dir / ESTATE_DIR / ESTATE_FILE
         if not path.is_file():
             await asyncio.to_thread(refresh_estate, reports_dir)  # first visit: build from the reports
+        return FileResponse(path, media_type="application/json")
+
+    @app.get("/compute", response_class=HTMLResponse)
+    async def compute_page(request: Request):
+        return templates.TemplateResponse(request, "compute.html", {"username": auth.username})
+
+    @app.get("/api/compute")
+    async def api_compute():
+        from scripts.subscription_analysis.estate import COMPUTE_FILE, ESTATE_DIR
+
+        path = reports_dir / ESTATE_DIR / COMPUTE_FILE
+        if not path.is_file():
+            return JSONResponse({"detail": "No Compute data yet - press Refresh inventory (about 5 minutes); the "
+                                           "estate refresh collects it."}, status_code=404)
         return FileResponse(path, media_type="application/json")
 
     @app.get("/api/estate/status")

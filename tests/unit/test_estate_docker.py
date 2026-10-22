@@ -237,7 +237,9 @@ def completed(**kw):
 
 @pytest.mark.parametrize("role", [UserRole.ANALYST, UserRole.VIEWER, UserRole.AUDITOR])
 @pytest.mark.parametrize("method,path", [("get", "/estate"), ("get", "/estate/status"),
-                                         ("get", "/estate/overview.md"), ("post", "/estate/refresh")])
+                                         ("get", "/estate/overview.md"), ("post", "/estate/refresh"),
+                                         ("get", "/estate/compute"), ("get", "/estate/policy"),
+                                         ("get", "/estate/policy.md")])
 def test_estate_is_admin_only(role, method, path):
     assert getattr(client(AsyncDb(), role), method)(path).status_code == 403
 
@@ -248,6 +250,32 @@ def test_get_estate_returns_the_newest_completed_snapshot_or_404():
     assert body["format"] == 2 and body["snapshot"]["resources"] == 6914 and body["snapshot"]["triggered_by"] == "scan:job-1"
     r = client(AsyncDb(completed())).get("/estate/overview.md")
     assert r.text == "# Estate Inventory" and "attachment" in r.headers["content-disposition"]
+
+
+def test_compute_has_its_own_route_and_stays_out_of_get_estate():
+    data = {"format": 2, "resources": [], "suggestions": [], "policy": {"assignments": []},
+            "compute": {"machines": [{"name": "vm-1"}], "apps": [], "sql": [], "summary": {"machines": 1}}}
+    body = client(AsyncDb(completed(data=data))).get("/estate").json()
+    assert "compute" not in body and "policy" not in body
+    view = client(AsyncDb(completed(data=data))).get("/estate/compute").json()
+    assert view["machines"][0]["name"] == "vm-1" and view["snapshot"]["id"] == "snap-1"
+    assert client(AsyncDb(completed())).get("/estate/compute").status_code == 404       # an older snapshot
+    assert client(AsyncDb(None)).get("/estate/compute").status_code == 404
+    assert client(AsyncDb(), UserRole.ANALYST).get("/estate/compute").status_code == 403
+
+
+def test_policy_analysis_route_and_markdown():
+    from tests.unit.test_policy_analyzer import estate as estate_data
+    from tests.unit.test_policy_analyzer import policy as policy_data
+
+    data = {"format": 2, "resources": [], "suggestions": [], **estate_data(), "policy": policy_data()}
+    body = client(AsyncDb(completed(data=data))).get("/estate/policy").json()
+    assert body["summary"]["assignments"] == 6 and body["snapshot"]["id"] == "snap-1"
+    md = client(AsyncDb(completed(data=data))).get("/estate/policy.md")
+    assert md.text.startswith("# Azure Policy analysis") and "policy-analysis-" in md.headers["content-disposition"]
+    assert client(AsyncDb(completed())).get("/estate/policy").status_code == 404           # no policy collection
+    assert client(AsyncDb(None)).get("/estate/policy").status_code == 404
+    assert client(AsyncDb(), UserRole.VIEWER).get("/estate/policy").status_code == 403
 
 
 def test_status_reports_a_running_refresh_and_the_page_data_available():
@@ -300,3 +328,14 @@ def test_migration_creates_the_estate_snapshots_table(monkeypatch):
     sql = output.getvalue()
     assert "CREATE TABLE estate_snapshots" in sql
     assert "CREATE UNIQUE INDEX uq_estate_snapshots_one_running ON estate_snapshots (status) WHERE status = 'running'" in sql
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPER_ADMIN])
+def test_compute_and_policy_open_for_admins_only(role):
+    from tests.unit.test_policy_analyzer import estate as estate_data
+    from tests.unit.test_policy_analyzer import policy as policy_data
+
+    data = {"format": 2, "resources": [], "suggestions": [], **estate_data(), "policy": policy_data(),
+            "compute": {"machines": [{"name": "vm-1"}], "apps": [], "sql": [], "summary": {"machines": 1}}}
+    assert client(AsyncDb(completed(data=data)), role).get("/estate/compute").status_code == 200
+    assert client(AsyncDb(completed(data=data)), role).get("/estate/policy").json()["tree"]["roots"]

@@ -71,9 +71,58 @@ async def get_estate(db: AsyncSession = Depends(get_db), _: User = Depends(requi
                              .where(EstateSnapshot.status == COMPLETED))
     if snapshot is None or snapshot.data is None:
         raise HTTPException(status_code=404, detail=NOT_READY)
-    # the policy collection (landing-zone view, about 1 MB) stays on the server
-    body = {k: v for k, v in snapshot.data.items() if k != "policy"}
+    # the policy collection (landing-zone view, about 1 MB) stays on the server; the Compute page loads its own part
+    body = {k: v for k, v in snapshot.data.items() if k not in ("policy", "compute")}
     return JSONResponse(content={**body, "snapshot": jsonable(_meta(snapshot))})
+
+
+async def _policy_analysis(db: AsyncSession) -> tuple:
+    """(snapshot, analyzer result) of the newest completed inventory (scripts/subscription_analysis/policy_analyzer.py)."""
+    from scripts.subscription_analysis.policy_analyzer import analyse
+
+    snapshot = await _newest(db, select(EstateSnapshot).options(defer(EstateSnapshot.overview_markdown))
+                             .where(EstateSnapshot.status == COMPLETED))
+    if snapshot is None or snapshot.data is None:
+        raise HTTPException(status_code=404, detail=NOT_READY)
+    policy = snapshot.data.get("policy") or {}
+    if not policy.get("assignments"):
+        raise HTTPException(status_code=404, detail="This inventory has no policy collection - refresh the inventory "
+                                                    "(about 5 minutes).")
+    return snapshot, await asyncio.to_thread(analyse, snapshot.data, policy)
+
+
+@router.get("/policy")
+async def estate_policy(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """The Policy page: every assignment with the effects its policies run with, enforcement, identity, compliance and
+    exemptions; the policy in effect per subscription; policies in force; exemptions; issues."""
+    snapshot, result = await _policy_analysis(db)
+    return JSONResponse(content={**result, "snapshot": jsonable(_meta(snapshot))})
+
+
+@router.get("/policy.md", response_class=PlainTextResponse)
+async def estate_policy_markdown(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    from scripts.subscription_analysis.policy_analyzer import markdown
+
+    snapshot, result = await _policy_analysis(db)
+    stamp = (snapshot.completed_at or snapshot.started_at).strftime("%Y-%m-%d")
+    return PlainTextResponse(markdown(result), media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="policy-analysis-{stamp}.md"'})
+
+
+@router.get("/compute")
+async def get_compute(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """The Compute page: every VM and Arc server with its OS version and end of support, vulnerability-scan coverage,
+    pending security updates, outdated packages, CVEs and SQL Server instances, plus App Service runtimes
+    (scripts/subscription_analysis/compute.py), from the newest completed inventory."""
+    snapshot = await _newest(db, select(EstateSnapshot).options(defer(EstateSnapshot.overview_markdown))
+                             .where(EstateSnapshot.status == COMPLETED))
+    if snapshot is None or snapshot.data is None:
+        raise HTTPException(status_code=404, detail=NOT_READY)
+    compute = snapshot.data.get("compute") or {}
+    if not compute.get("machines") and not compute.get("apps"):
+        raise HTTPException(status_code=404, detail="This inventory has no Compute data yet - refresh the inventory "
+                                                    "(about 5 minutes).")
+    return JSONResponse(content={**compute, "snapshot": jsonable(_meta(snapshot))})
 
 
 @router.get("/overview.md", response_class=PlainTextResponse)

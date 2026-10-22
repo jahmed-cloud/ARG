@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Compute - ARG Local Portal{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block user %}
+<div class="user">
+  <span title="Portal user">User: {{ username }}</span>
+  <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
+</div>
+{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="toolbar">
+    <h1 class="estate-title">Compute</h1>
+    <span id="compute-meta" class="muted small"></span>
+    <button id="compute-refresh" class="secondary" type="button"
+            title="Runs the estate refresh (Resource Graph inventory, usage metrics, network, policy and this Compute view) for every enabled subscription - about 5 minutes">
+      Refresh inventory</button>
+    <a class="small" href="/reports/_estate/README.md">Markdown overview</a>
+  </div>
+  <p class="muted small">Which operating system and version every VM and Azure Arc server runs, when its support ends,
+    whether a vulnerability scanner covers it, pending security updates, outdated packages, CVEs and SQL Server
+    instances - plus the language runtime of every App Service app. Read-only from Resource Graph.</p>
+  <p id="compute-status" class="muted small" role="status">Loading…</p>
+  <div id="compute-tiles" class="tiles" aria-label="Key figures - click to filter"></div>
+  <p id="compute-sources" class="muted small"></p>
+</section>
+
+<section class="card filters" aria-label="Filters">
+  <div class="view-switch" role="group" aria-label="Compute view">
+    <button type="button" class="tab active" data-view="machines" aria-pressed="true">Machines</button>
+    <button type="button" class="tab" data-view="sql" aria-pressed="false">SQL Server</button>
+    <button type="button" class="tab" data-view="apps" aria-pressed="false">App runtimes</button>
+  </div>
+  <div class="filter-grid">
+    <label>Search software, version or CVE
+      <input id="c-q" type="search" placeholder="php, openssl, Windows Server 2016, SQL Server 2016, CVE-…, name">
+    </label>
+    <label>Subscription <select id="c-sub"></select></label>
+    <label>OS family / product <select id="c-family"></select></label>
+    <label>Support <select id="c-support"></select></label>
+    <label>Machine <select id="c-kind">
+      <option value="">VMs and Arc servers</option><option value="vm">Azure VMs</option><option value="arc">Arc servers</option>
+    </select></label>
+    <label>State <select id="c-state">
+      <option value="">Any state</option><option value="running">Running / connected</option><option value="idle">Stopped / disconnected</option>
+    </select></label>
+    <label>Exposure <select id="c-exposure">
+      <option value="">Any</option><option value="public">Public IP (running)</option><option value="none">No public IP</option>
+    </select></label>
+    <label>Vulnerability scanner <select id="c-scanner">
+      <option value="">Any</option><option value="covered">Covered</option><option value="none">None</option><option value="unverified">Not verified</option>
+    </select></label>
+    <label>Environment <select id="c-env"></select></label>
+    <label class="check"><input type="checkbox" id="c-critical"> Critical path only (internet-facing with a known weakness)</label>
+    <div class="filter-actions">
+      <button id="c-clear" type="button" class="secondary">Clear filters</button>
+      <button id="c-csv" type="button" class="secondary">Download CSV</button>
+    </div>
+  </div>
+  <p id="c-hint" class="muted small"></p>
+</section>
+
+<section class="card">
+  <div class="toolbar">
+    <h2 id="c-title">Machines</h2>
+    <span id="c-count" class="muted small"></span>
+    <div class="pager">
+      <button id="c-prev" type="button" class="secondary">‹ Prev</button>
+      <span id="c-page" class="small"></span>
+      <button id="c-next" type="button" class="secondary">Next ›</button>
+    </div>
+  </div>
+  <div class="table-wrap" role="region" aria-label="Compute results" tabindex="0">
+    <table id="c-results" class="estate">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/compute.js"></script>{% endblock %}

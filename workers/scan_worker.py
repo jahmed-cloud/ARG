@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # is the most common reason a new scanner silently never runs.
 from scanners.compute import compute_scanners  # noqa: F401
 from scanners.compute import compute_posture_scanners  # noqa: F401
+from scanners.compute import machine_security_scanners  # noqa: F401
 from scanners.identity import identity_scanners  # noqa: F401
 from scanners.network import network_scanners  # noqa: F401
 from scanners.network import network_posture_scanners  # noqa: F401

@@ -34,16 +34,21 @@ policyresources
 | project id = tolower(id), name, display = tostring(properties.displayName), scope = tolower(tostring(properties.scope)),
           definition = tolower(tostring(properties.policyDefinitionId)),
           enforcement = tostring(properties.enforcementMode), parameters = properties.parameters,
-          not_scopes = array_length(properties.notScopes)
+          not_scopes = array_length(properties.notScopes), not_scope_list = properties.notScopes,
+          identity = tostring(identity.type), created = tostring(properties.metadata.createdOn)
 """
+# Resource Graph also returns the built-in, static (regulatory control) and capability definitions - keep only the
+# tenant's own; built-ins come from the ARM catalogue with their real source
 CUSTOM_DEFINITION_QUERY = """
 policyresources
 | where type =~ 'microsoft.authorization/policydefinitions'
+| where tostring(properties.policyType) =~ 'Custom'
 | project id = tolower(id), props = properties
 """
 CUSTOM_SET_QUERY = """
 policyresources
 | where type =~ 'microsoft.authorization/policysetdefinitions'
+| where tostring(properties.policyType) =~ 'Custom'
 | project id = tolower(id), props = properties
 """
 EXEMPTION_QUERY = """
@@ -60,6 +65,23 @@ policyresources
          noncompliant = tostring(properties.complianceState) =~ 'NonCompliant'
 | summarize bad = max(toint(noncompliant)) by assignment, resource
 | summarize noncompliant = sum(bad), resources = count() by assignment
+"""
+# policy analyzer: distinct non-compliant / evaluated resources per subscription, and per policy of each assignment
+SUBSCRIPTION_COMPLIANCE_QUERY = """
+policyresources
+| where type =~ 'microsoft.policyinsights/policystates'
+| extend resource = tolower(tostring(properties.resourceId)), sub = tolower(subscriptionId),
+         bad = toint(tostring(properties.complianceState) =~ 'NonCompliant')
+| summarize bad = max(bad) by sub, resource
+| summarize noncompliant = sum(bad), resources = count() by sub
+"""
+POLICY_COMPLIANCE_QUERY = """
+policyresources
+| where type =~ 'microsoft.policyinsights/policystates'
+| where tostring(properties.complianceState) =~ 'NonCompliant'
+| summarize noncompliant = dcount(tolower(tostring(properties.resourceId)))
+          by assignment = tolower(tostring(properties.policyAssignmentId)),
+             definition = tolower(tostring(properties.policyDefinitionId))
 """
 
 
@@ -211,6 +233,8 @@ def build_policy(assignments: Iterable[Dict[str, Any]], defs: Dict[str, Dict[str
             "id": a.get("id"), "name": a.get("name"), "display": a.get("display") or a.get("name"),
             "scope": a.get("scope") or "", "enforcement": a.get("enforcement") or "Default", "profile": pid,
             "not_scopes": a.get("not_scopes") or 0,
+            "not_scope_list": [str(x).lower() for x in a.get("not_scope_list") or []],
+            "identity": a.get("identity") or "", "created": (a.get("created") or "")[:10] or None,
             "noncompliant": state.get("noncompliant"), "resources": state.get("resources")})
     needed = {p["def"] for p in profiles.values()} | {m[0] for p in profiles.values() for m in p["members"]}
     needed |= set(extra_keys)
@@ -244,9 +268,21 @@ async def collect_policy(credential: Any, arg_rows, client: Any, extra_keys: Ite
         compliance = await arg_rows(client, COMPLIANCE_QUERY)
     except Exception:
         compliance = []
+    detail: Dict[str, Any] = {}
+    for key, query in (("by_subscription", SUBSCRIPTION_COMPLIANCE_QUERY), ("by_policy", POLICY_COMPLIANCE_QUERY)):
+        try:   # the policy analyzer's breakdowns; the rest stands without them
+            detail[key] = await arg_rows(client, query)
+        except Exception:
+            detail[key] = []
     builtin_defs, builtin_sets = await asyncio.to_thread(builtin_catalog, ArmClient(credential))
-    return with_reference(assignments, builtin_defs, builtin_sets, custom_defs, custom_sets, exemptions, compliance,
-                          extra_keys)
+    result = with_reference(assignments, builtin_defs, builtin_sets, custom_defs, custom_sets, exemptions, compliance,
+                            extra_keys)
+    result["compliance"] = detail
+    used = set(result["definitions"])
+    result["unassigned_custom"] = sorted(
+        ({"key": k, "display": d.get("display") or k, "category": d.get("category") or "", "set": bool(d.get("set"))}
+         for k, d in {**custom_defs, **custom_sets}.items() if k not in used), key=lambda d: d["display"].lower())
+    return result
 
 
 def with_reference(assignments, builtin_defs, builtin_sets, custom_defs, custom_sets, exemptions=(), compliance=(),
@@ -275,7 +311,8 @@ def with_reference(assignments, builtin_defs, builtin_sets, custom_defs, custom_
 
 def merge_policy(parts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
     """One policy collection from several tenants'."""
-    out: Dict[str, Any] = {"assignments": [], "profiles": {}, "definitions": {}, "exemptions": []}
+    out: Dict[str, Any] = {"assignments": [], "profiles": {}, "definitions": {}, "exemptions": [],
+                           "compliance": {"by_subscription": [], "by_policy": []}, "unassigned_custom": []}
     seen = set()
     for part in parts:
         if not part or part.get("error"):
@@ -288,4 +325,7 @@ def merge_policy(parts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
         out["profiles"].update(part.get("profiles") or {})
         out["definitions"].update(part.get("definitions") or {})
         out["exemptions"].extend(part.get("exemptions") or [])
+        for key in ("by_subscription", "by_policy"):
+            out["compliance"][key].extend((part.get("compliance") or {}).get(key) or [])
+        out["unassigned_custom"].extend(part.get("unassigned_custom") or [])
     return out

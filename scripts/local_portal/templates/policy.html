@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Azure Policy - ARG Local Portal{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block user %}
+<div class="user">
+  <span title="Portal user">User: {{ username }}</span>
+  <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
+</div>
+{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="toolbar">
+    <h1 class="estate-title">Azure Policy</h1>
+    <span id="policy-meta" class="muted small"></span>
+    <button id="policy-refresh" class="secondary" type="button"
+            title="Runs the estate refresh, which collects every policy assignment, definition, exemption and compliance state (about 5 minutes)">
+      Refresh inventory</button>
+    <a class="small" href="/api/policy.md">Markdown report</a>
+    <a class="small" href="/architecture?view=landing">Landing zone comparison</a>
+  </div>
+  <p class="muted small">What Azure Policy is in force across the tenant and where it falls short: every assignment with
+    the effect each of its policies runs with, the policy in effect on each subscription (inherited and direct),
+    every policy in force, exemptions, and issues. Read-only, from the estate refresh.</p>
+  <p id="policy-status" class="muted small" role="status">Loading…</p>
+  <div id="policy-tiles" class="tiles" aria-label="Key figures - click to open a view"></div>
+</section>
+
+<section class="card filters" aria-label="Filters">
+  <div class="view-switch" role="group" aria-label="Policy view">
+    <button type="button" class="tab active" data-view="issues" aria-pressed="true">Issues</button>
+    <button type="button" class="tab" data-view="tree" aria-pressed="false">Tree</button>
+    <button type="button" class="tab" data-view="assignments" aria-pressed="false">Assignments</button>
+    <button type="button" class="tab" data-view="subscriptions" aria-pressed="false">Subscriptions</button>
+    <button type="button" class="tab" data-view="policies" aria-pressed="false">Policies</button>
+    <button type="button" class="tab" data-view="exemptions" aria-pressed="false">Exemptions</button>
+  </div>
+  <div class="filter-grid">
+    <label>Search <input id="p-q" type="search" placeholder="assignment, policy, category, scope, subscription… (Tree: where it applies)"></label>
+    <label>Scope <select id="p-scope"></select></label>
+    <label>Effect <select id="p-effect">
+      <option value="">Any effect</option><option value="deny">Deny</option>
+      <option value="remediate">DeployIfNotExists / Modify / Append</option><option value="audit">Audit</option>
+      <option value="disabled">Disabled</option>
+    </select></label>
+    <label>Source <select id="p-source"></select></label>
+    <label>Category <select id="p-category"></select></label>
+    <label>Enforcement <select id="p-enforcement">
+      <option value="">Any</option><option value="Default">Enforced</option><option value="DoNotEnforce">Not enforced</option>
+    </select></label>
+    <label>Exemption status <select id="p-status"></select></label>
+    <label class="check"><input type="checkbox" id="p-issues"> Only rows with issues</label>
+    <div class="filter-actions">
+      <button id="p-clear" type="button" class="secondary">Clear filters</button>
+      <button id="p-csv" type="button" class="secondary">Download CSV</button>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="toolbar">
+    <h2 id="p-title">Issues</h2>
+    <span id="p-count" class="muted small"></span>
+    <div class="pager">
+      <button id="p-prev" type="button" class="secondary">‹ Prev</button>
+      <span id="p-page" class="small"></span>
+      <button id="p-next" type="button" class="secondary">Next ›</button>
+    </div>
+  </div>
+  <div id="p-issues-list"></div>
+  <div id="p-tree-view" hidden>
+    <div class="toolbar tree-toolbar">
+      <button id="t-expand" type="button" class="secondary">Expand all</button>
+      <button id="t-collapse" type="button" class="secondary">Collapse all</button>
+      <label class="check small"><input type="checkbox" id="t-hide-subs"> Hide subscriptions without their own assignments</label>
+      <span class="tree-legend small muted"><span class="chip match-assigned">assigned here</span>
+        <span class="chip match-applies">in effect through a parent</span> - when searching</span>
+    </div>
+    <p id="t-summary" class="small muted"></p>
+    <div class="tree-layout">
+      <ul id="t-tree" class="tree" role="tree" aria-label="Policy assignments by scope"></ul>
+      <aside id="t-detail" class="card tree-detail" aria-live="polite"></aside>
+    </div>
+  </div>
+  <div class="table-wrap" id="p-table-wrap" role="region" aria-label="Policy results" tabindex="0">
+    <table id="p-results" class="estate">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/policy.js"></script>{% endblock %}

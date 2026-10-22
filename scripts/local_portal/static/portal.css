@@ -243,3 +243,58 @@ main.with-sidebar > * { min-width: 0; }
 .tele-chart { display: block; max-width: 520px; }
 .tele-chart text { fill: var(--text); font-family: inherit; }
 @media (max-width: 640px) { .tele-grid { grid-template-columns: 1fr; } }
+
+/* Grouped main menu (<details>; static/nav.js keeps one open) */
+.nav-menu { position: relative; }
+.nav-menu summary { list-style: none; cursor: pointer; color: inherit; padding: 4px 0; display: inline-flex; align-items: center; gap: 5px; }
+.nav-menu summary::-webkit-details-marker { display: none; }
+.nav-menu summary::after { content: "BE"; font-size: 0.75em; color: var(--muted); }
+.nav-menu.current summary { font-weight: 600; text-decoration: underline; text-underline-offset: 6px; }
+.nav-menu summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.nav-list { position: absolute; top: 100%; left: -10px; z-index: 50; min-width: 180px; margin-top: 6px; padding: 4px 0;
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 18px rgba(31, 41, 51, 0.12); }
+.main-nav .nav-list a { display: block; padding: 7px 14px; color: var(--text); white-space: nowrap; }
+.main-nav .nav-list a:hover, .main-nav .nav-list a:focus-visible { background: var(--bg); text-decoration: none; }
+.main-nav .nav-list a[aria-current="page"] { color: var(--primary); font-weight: 600; border-left: 3px solid var(--primary); padding-left: 11px; }
+
+/* Policy assignment tree (Microsoft Azure icons, unchanged and only scaled) */
+.tree-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr); gap: 16px; align-items: start; }
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { margin-left: 11px; padding-left: 14px; border-left: 1px solid var(--border); }
+.tree-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 3px 6px; border-radius: 4px; }
+.tree-row:hover { background: var(--bg); }
+.tree-row.selected { background: #e8f1fb; }
+.tree-row.match-assigned { box-shadow: inset 3px 0 0 var(--primary); }
+.tree-row.match-applies { box-shadow: inset 3px 0 0 var(--ok); }
+.tree-row h3 { margin: 0; font-size: 16px; }
+.tree-toggle { width: 22px; min-height: 22px; padding: 0; border: none; background: none; color: var(--muted); font-size: 12px; }
+.tree-toggle:hover { color: var(--text); background: none; }
+.tree-spacer { display: inline-block; width: 22px; flex: none; }
+.az-icon { width: 18px; height: 18px; flex: none; }
+.tree-kind { font-size: 11px; color: var(--muted); }
+.tree-name { border: none; background: none; padding: 0; min-height: 0; font-size: 14px; font-weight: 600; color: var(--text);
+  text-align: left; cursor: pointer; }
+.tree-name:hover { text-decoration: underline; background: none; }
+.tree-detail { position: sticky; top: 16px; margin: 0; max-height: 80vh; overflow: auto; }
+.tree-toolbar label.check { display: flex; align-items: center; gap: 8px; }
+.tree-assignments { display: grid; gap: 6px; margin-bottom: 12px; }
+.tree-assignment { border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; }
+.tree-assignment.open { border-color: var(--primary); }
+.tree-meta { padding: 0 6px 4px 34px; }
+.tree-meta .link { padding: 0; min-height: 0; }
+.members { margin-top: 6px; }
+.members-tools { gap: 8px; }
+.members-tools input { flex: 1; min-width: 180px; font-size: 13px; }
+.tree-layout > *, .tree-assignments > *, .tree-detail { min-width: 0; }
+.chip { display: inline-block; border-radius: 4px; padding: 0 7px; font-size: 11px; line-height: 18px; white-space: nowrap;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.chip.assigned { background: var(--text); border-color: var(--text); color: #fff; }
+.chip.effect-deny { background: var(--crit); border-color: var(--crit); color: #fff; }
+.chip.effect-remediate { background: var(--warn); border-color: var(--warn); color: #fff; }
+.chip.effect-audit { border-color: var(--primary); color: var(--primary); background: #fff; }
+.chip.warn { background: #fff4ce; border-color: #e3c25d; color: var(--text); }
+.chip.match-assigned { background: var(--primary); border-color: var(--primary); color: #fff; }
+.chip.match-applies { background: #fff; border-color: var(--ok); color: var(--ok); }
+.chip.def, .chip.def-initiative { max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
+.chip.def-initiative { font-weight: 600; }
+@media (max-width: 1000px) { .tree-layout { grid-template-columns: 1fr; } .tree-detail { position: static; max-height: none; } }

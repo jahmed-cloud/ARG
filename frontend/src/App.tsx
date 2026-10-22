@@ -48,6 +48,8 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ defa
 const ScansPage = lazy(() => import('./pages/ScansPage').then(m => ({ default: m.ScansPage })));
 const EstatePage = lazy(() => import('./pages/EstatePage').then(m => ({ default: m.EstatePage })));
 const ArchitecturePage = lazy(() => import('./pages/ArchitecturePage').then(m => ({ default: m.ArchitecturePage })));
+const ComputePage = lazy(() => import('./pages/ComputePage').then(m => ({ default: m.ComputePage })));
+const PolicyPage = lazy(() => import('./pages/PolicyPage').then(m => ({ default: m.PolicyPage })));
 const AnalysisPage = lazy(() => import('./pages/AnalysisPage').then(m => ({ default: m.AnalysisPage })));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
 
@@ -93,6 +95,8 @@ const App: React.FC = () => {
                   <Route path="/subscriptions" element={<SubscriptionsPage />} />
                   <Route path="/scans" element={<ScansPage />} />
                   <Route path="/estate" element={<AdminsOnly><EstatePage /></AdminsOnly>} />
+                  <Route path="/compute" element={<AdminsOnly><ComputePage /></AdminsOnly>} />
+                  <Route path="/policy" element={<AdminsOnly><PolicyPage /></AdminsOnly>} />
                   <Route path="/architecture" element={<AdminsOnly><ArchitecturePage /></AdminsOnly>} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Route>

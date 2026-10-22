@@ -129,14 +129,55 @@ GUIDANCE: Dict[str, Guidance] = {
     # --- Compute / App Service -------------------------------------------------------------------------------
     "vm_unsupported_os": _g(
         "An OS past end of support gets no security fixes: every new vulnerability stays open for good, and audits "
-        "flag it.",
-        "Isolated machines with Extended Security Updates (free on Azure for Windows Server 2012 / 2012 R2), on a "
-        "dated decommission plan.",
-        "In-place upgrade or rebuild on a supported image; test the application; maintenance window.", (4, 16), 0.0,
-        "No change at the same VM size.",
+        "flag it. Near the date (Windows Server 2016: 12 January 2027) the upgrade needs planning now.",
+        "Machines covered by Extended Security Updates (Azure Arc for on-premises Windows Server 2016 / 2012, free "
+        "on Azure VMs while the program runs) on a dated upgrade or decommission plan.",
+        "In-place upgrade or rebuild on a supported release; test the application; maintenance window.", (4, 16),
+        0.0, "No change at the same VM size; ESU through Azure Arc is billed per core per month.",
         ("Windows Server in-place upgrade on Azure", f"{_LEARN}/virtual-machines/windows-in-place-upgrade"),
         ("Extended Security Updates",
          "https://learn.microsoft.com/windows-server/get-started/extended-security-updates-overview"),
+        ("ESU through Azure Arc", f"{_LEARN}/azure-arc/servers/prepare-extended-security-updates"),
+        ("Microsoft product lifecycle", "https://learn.microsoft.com/lifecycle/")),
+    "internet_facing_machine_unpatched": _g(
+        "The VM has a public IP and missing security fixes: internet scanners and exploit kits probe public IPs within "
+        "minutes of a CVE being published, and a missing patch on a reachable machine is the most common way in.",
+        "Never - at most a deliberate honeypot. A VM that must be public still gets its security updates.",
+        "Install the pending security / critical updates (Update Manager one-time update), enable periodic "
+        "assessment and a patch schedule, then move access behind Bastion / Application Gateway and drop the "
+        "public IP. Reboot window.", (1, 4), 0.0,
+        "Azure Update Manager is free for Azure VMs; Bastion and Application Gateway are charged if added.",
+        ("Azure Update Manager", f"{_LEARN}/update-manager/overview"),
+        ("Periodic assessment", f"{_LEARN}/update-manager/assessment-options"),
+        ("Azure Bastion", f"{_LEARN}/bastion/bastion-overview")),
+    "machine_vulnerability_scan_missing": _g(
+        "Without a vulnerability scanner nobody can answer \"are we affected by CVE-X?\" for these machines - "
+        "installed software, versions and CVEs are unknown until someone logs on to each one.",
+        "Machines scanned by another tool (Tenable, Rapid7, Qualys outside Defender) - record it; short-lived build "
+        "agents rebuilt from a patched image every few days.",
+        "Enable Defender for Servers Plan 1 (Defender for Endpoint with vulnerability management) on the "
+        "subscription, Plan 2 for internet-facing / production servers. Arc servers are covered the same way. No "
+        "downtime.", (1, 4), None,
+        f"Defender for Servers Plan 1 about USD {PRICE['defender_servers_p1']:.2f} per server per month (Plan 2 "
+        "about USD 14.60); the finding shows the total for the listed machines.",
+        ("Choose a Defender for Servers plan", f"{_LEARN}/defender-for-cloud/plan-defender-for-servers-select-plan"),
+        ("Vulnerability assessment with Defender Vulnerability Management",
+         f"{_LEARN}/defender-for-cloud/deploy-vulnerability-assessment-defender-vulnerability-management"),
+        ("Defender for Cloud pricing", "https://azure.microsoft.com/pricing/details/defender-for-cloud/")),
+    "sql_server_end_of_support": _g(
+        "A SQL Server version past end of support gets no security fixes (SQL Server 2016 since 14 July 2026, "
+        "2014 since 9 July 2024, 2012 since 12 July 2022) unless the instance is enrolled in Extended Security "
+        "Updates.",
+        "Instances enrolled in ESU (Azure Arc or volume licensing) on a dated upgrade plan; Developer / Express "
+        "instances that hold no production data and are not reachable from user networks.",
+        "Upgrade in place to SQL Server 2022 / 2025 after a compatibility check, or migrate to Azure SQL Managed "
+        "Instance; meanwhile enrol the instance in ESU through Azure Arc. Maintenance window.", (8, 40), None,
+        "An upgrade needs licences for the new version (Software Assurance / subscription covers it); ESU through "
+        "Azure Arc is billed per core per month.",
+        ("SQL Server end of support options", "https://learn.microsoft.com/sql/sql-server/end-of-support/"
+                                              "sql-server-end-of-support-overview"),
+        ("Extended Security Updates through Azure Arc", "https://learn.microsoft.com/sql/sql-server/azure-arc/"
+                                                        "extended-security-updates"),
         ("Microsoft product lifecycle", "https://learn.microsoft.com/lifecycle/")),
     "managed_disk_public_network_access": _g(
         "The disk can be exported (downloaded) or overwritten through a SAS URL from any network - a leaked SAS means "

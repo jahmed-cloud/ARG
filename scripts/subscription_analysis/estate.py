@@ -42,6 +42,7 @@ ESTATE_DIR = "_estate"
 ESTATE_FILE = "estate.json"
 INVENTORY_FILE = "inventory.json"
 POLICY_FILE = "policy.json"   # policy in force (landing-zone view) - kept out of estate.json, which the browser loads
+COMPUTE_FILE = "compute.json"  # Compute view (OS versions, patching, scanning, SQL Server) - loaded by its own page
 SUBSCRIPTIONS_PER_QUERY = 1000
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 _WRITE_LOCK = threading.Lock()
@@ -945,10 +946,26 @@ def collect_inventory(credential: Any, subscriptions: List[Dict[str, Any]]) -> D
         policy = asyncio.run(collect_tenant_policy(credential)) if ids else {}
     except Exception as exc:  # the landing-zone view shows structure and network without it
         policy = {"error": str(exc)[:300]}
+    try:
+        compute = collect_compute_view(credential, ids, {s["id"].lower(): s.get("name") or s["id"]
+                                                         for s in subscriptions}, rows, architecture) if ids else {}
+    except Exception as exc:  # the Compute view is an add-on: the inventory stands without it
+        compute = {"error": str(exc)[:300]}
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "source": "resource-graph",
             "subscriptions": [{"id": s["id"].lower(), "name": s.get("name")} for s in subscriptions],
             "usage": usage, "resources": rows, "providers": asyncio.run(collect_providers(credential, ids)),
-            "architecture": architecture, "policy": policy}
+            "architecture": architecture, "policy": policy, "compute": compute}
+
+
+def collect_compute_view(credential: Any, subscription_ids: List[str], sub_names: Dict[str, str],
+                         rows: List[Dict[str, Any]], architecture: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute view (compute.py): machines, SQL Server instances and App Service runtimes of these subscriptions."""
+    from scanners.base.azure_api import resource_graph_client
+    from scripts.subscription_analysis.compute import build_compute, collect_compute
+
+    raw = asyncio.run(collect_compute(resource_graph_client(credential), subscription_ids, _arg_rows))
+    paas = (((architecture or {}).get("network") or {}).get("paas")) or []
+    return build_compute(raw, sub_names, rows, paas)
 
 
 async def collect_tenant_policy(credential: Any) -> Dict[str, Any]:
@@ -1814,23 +1831,38 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def write_estate(reports_dir: Path, estate: Dict[str, Any], inventory: Optional[Dict[str, Any]] = None) -> Path:
+    from scripts.subscription_analysis.compute import markdown as compute_markdown
+
     folder = reports_dir / ESTATE_DIR
     folder.mkdir(parents=True, exist_ok=True)
     if inventory is not None:
         policy = inventory.get("policy")
         if policy and not policy.get("error"):
             (folder / POLICY_FILE).write_text(json.dumps(policy, default=str), encoding="utf-8")
-        (folder / INVENTORY_FILE).write_text(json.dumps({k: v for k, v in inventory.items() if k != "policy"},
+        compute = inventory.get("compute")
+        if compute and not compute.get("error"):
+            (folder / COMPUTE_FILE).write_text(json.dumps(compute, default=str, ensure_ascii=False,
+                                                          separators=(",", ":")), encoding="utf-8")
+        (folder / INVENTORY_FILE).write_text(json.dumps({k: v for k, v in inventory.items()
+                                                         if k not in ("policy", "compute")},
                                                         default=str), encoding="utf-8")
     (folder / ESTATE_FILE).write_text(json.dumps(compact(estate), default=str, ensure_ascii=False,
                                                  separators=(",", ":")), encoding="utf-8")
-    (folder / "README.md").write_text(render_estate_markdown(estate) + "\n", encoding="utf-8")
+    compute_section = compute_markdown(load_compute(reports_dir))
+    (folder / "README.md").write_text(render_estate_markdown(estate)
+                                      + ("\n\n" + compute_section if compute_section else "") + "\n",
+                                      encoding="utf-8")
     return folder
 
 
 def load_policy(reports_dir: Path) -> Optional[Dict[str, Any]]:
     """The policy collection saved by the last live estate refresh, None before the first one."""
     return _load_json(reports_dir / ESTATE_DIR / POLICY_FILE, None)
+
+
+def load_compute(reports_dir: Path) -> Optional[Dict[str, Any]]:
+    """The Compute view saved by the last live estate refresh, None before the first one."""
+    return _load_json(reports_dir / ESTATE_DIR / COMPUTE_FILE, None)
 
 
 def refresh_estate(reports_dir: Path, credential: Any = None,

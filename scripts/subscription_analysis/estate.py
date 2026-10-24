@@ -107,7 +107,12 @@ RESOURCE_DETAILS = """
     type =~ 'microsoft.compute/images', pack('source', properties.sourceVirtualMachine.id),
     type in~ ('microsoft.web/sites', 'microsoft.web/sites/slots'),
         pack('plan', properties.serverFarmId, 'fx', coalesce(properties.siteConfig.linuxFxVersion,
-             properties.siteConfig.windowsFxVersion), 'https', properties.httpsOnly),
+             properties.siteConfig.windowsFxVersion), 'https', properties.httpsOnly,
+             'host', properties.defaultHostName, 'hosts', properties.hostNames, 'pna', properties.publicNetworkAccess,
+             'pe', array_length(properties.privateEndpointConnections)),
+    type =~ 'microsoft.web/staticsites',
+        pack('host', properties.defaultHostname, 'hosts', properties.customDomains,
+             'pna', properties.publicNetworkAccess, 'pe', array_length(properties.privateEndpointConnections)),
     type =~ 'microsoft.web/certificates',
         pack('expires', properties.expirationDate, 'subject', properties.subjectName),
     type =~ 'microsoft.web/connections', pack('api', properties.api.name, 'status', properties.statuses[0].status),
@@ -115,9 +120,13 @@ RESOURCE_DETAILS = """
         pack('cpu', properties.template.containers[0].resources.cpu, 'mem', properties.template.containers[0].resources.memory,
              'image', properties.template.containers[0].image, 'min', properties.template.scale.minReplicas,
              'max', properties.template.scale.maxReplicas, 'wp', properties.workloadProfileName,
-             'trigger', properties.configuration.triggerType, 'running', properties.runningStatus),
+             'trigger', properties.configuration.triggerType, 'running', properties.runningStatus,
+             'fqdn', properties.configuration.ingress.fqdn, 'ext', properties.configuration.ingress.external,
+             'domains', properties.configuration.ingress.customDomains,
+             'env', coalesce(properties.managedEnvironmentId, properties.environmentId)),
     type =~ 'microsoft.app/managedenvironments',
-        pack('profiles', array_length(properties.workloadProfiles), 'zr', properties.zoneRedundant),
+        pack('profiles', array_length(properties.workloadProfiles), 'zr', properties.zoneRedundant,
+             'internal', properties.vnetConfiguration.internal),
     type =~ 'microsoft.containerinstance/containergroups',
         pack('cpu', properties.containers[0].properties.resources.requests.cpu,
              'mem', properties.containers[0].properties.resources.requests.memoryInGB,
@@ -858,7 +867,10 @@ def display_name(row: Dict[str, Any]) -> str:
     return row.get("name") or ""
 
 
-def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
+def normalise(row: Dict[str, Any], sub_names: Dict[str, str], internal: Iterable[str] = ()) -> Dict[str, Any]:
+    """One estate resource; `internal` = IDs of VNet-internal Container Apps environments (network.web_endpoint)."""
+    from scripts.subscription_analysis.network import web_endpoint
+
     rtype = (row.get("type") or "").lower()
     id_parts = (row.get("id") or "").split("/")
     sub_id = (row.get("subscriptionId") or (id_parts[2] if len(id_parts) > 2 else "")).lower()
@@ -899,6 +911,7 @@ def normalise(row: Dict[str, Any], sub_names: Dict[str, str]) -> Dict[str, Any]:
         "nva": is_nva(row),
         "usedGB": row.get("usedGB"),
         "tags": row.get("tags") if isinstance(row.get("tags"), dict) else {},
+        "endpoint": web_endpoint(rtype, row.get("cfg"), internal),
     }
 
 
@@ -1731,7 +1744,10 @@ def build_estate(reports_dir: Optional[Path], inventory: Optional[Dict[str, Any]
 
     sub_names = {s["id"].lower(): s.get("name") or s["id"] for s in inventory.get("subscriptions") or []}
     sub_names.update({k: v["name"] for k, v in reports.items() if v.get("name")})
-    resources = [normalise(r, sub_names) for r in inventory.get("resources") or [] if r.get("id")]
+    from scripts.subscription_analysis.network import internal_environments
+
+    internal = internal_environments(inventory.get("resources") or [])
+    resources = [normalise(r, sub_names, internal) for r in inventory.get("resources") or [] if r.get("id")]
     by_id = {r["id"].lower(): r for r in resources}
 
     suggestions: List[Dict[str, Any]] = []
@@ -1811,7 +1827,7 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
                "act": r.get("activity"), "use": r.get("usage"), "idle": 1 if r.get("idle") else None,
                "dor": 1 if r.get("dormant") else None, "nva": 1 if r.get("nva") else None,
                "cost": r.get("cost30"), "cur": r.get("currency"), "n": r["suggestions"], "h": r.get("hygiene"),
-               "sev": r["maxSeverity"]}
+               "sev": r["maxSeverity"], "ep": _endpoint_wire(r.get("endpoint"))}
         resources.append({k: v for k, v in row.items()
                           if v not in (None, "", {}, 0) or k == "s"
                           or (k in ("cpu", "cpuMax", "mem", "act", "cost", "cpuHr", "cpu95", "burst", "memHr")
@@ -1828,6 +1844,14 @@ def compact(estate: Dict[str, Any]) -> Dict[str, Any]:
     return {"format": 2, "generated_at": estate["generated_at"], "inventory_at": estate["inventory_at"],
             "source": estate["source"], "usage": estate.get("usage") or {}, "subscriptions": estate["subscriptions"], "types": types,
             "resources": resources, "suggestions": suggestions, "architecture": estate.get("architecture") or {}}
+
+
+def _endpoint_wire(endpoint: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """estate.json form of network.web_endpoint(): h host, d custom domains, x exposure, i internet-facing."""
+    if not endpoint:
+        return None
+    return {k: v for k, v in {"h": endpoint.get("host"), "d": endpoint.get("domains"), "x": endpoint.get("exposure"),
+                              "i": 1 if endpoint.get("internet") else None}.items() if v}
 
 
 def write_estate(reports_dir: Path, estate: Dict[str, Any], inventory: Optional[Dict[str, Any]] = None) -> Path:
@@ -2135,6 +2159,9 @@ def render_estate_markdown(estate: Dict[str, Any]) -> str:
             ["Actionable suggestions (critical / high / medium / low)",
              f"{sev.get('critical', 0)} / {sev.get('high', 0)} / {sev.get('medium', 0)} / {sev.get('low', 0)}"],
             ["Tag / naming hygiene findings (listed separately)", f"{len(suggestions) - len(actionable):,}"],
+            ["Web endpoints (apps, slots, static web apps, container apps) / with a custom domain",
+             f"{sum(1 for r in resources if (r.get('endpoint') or {}).get('host')):,} / "
+             f"{sum(1 for r in resources if (r.get('endpoint') or {}).get('domains')):,}"],
             ["Last 30 days (resources with cost data)", _cost_label(resources)],
         ]), "",
         "## By category", "",

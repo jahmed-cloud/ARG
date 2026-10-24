@@ -15,8 +15,9 @@ import { useApi, ApiError } from '../hooks/useApi';
 import {
   APPLIES, COLUMNS, EFFECT_CLASSES, EFFECT_SEVERITY, FILTER_KEYS, Issue, PolicyAnalysis, PolicyView, Row, Tree,
   TreeNode, VIEWS, VIEW_LABELS, countBy, effectsText, inheritedOf, matches, membersCsv, membersOf, prepare,
-  searchTerms, sortRows, toCsv, treeRows,
+  searchTerms, sortRows, toCsv, treeRows, GRAPH_KEYS,
 } from '../components/policy/policyData';
+import { PolicyGraph } from '../components/policy/PolicyGraph';
 import {
   SEVERITY_TONE, WsEmpty, WsFacts, WsHeading, WsList, WsMetric, WsPage, WsPanel, WsSection, WsStrip,
 } from '../components/workspace/Workspace';
@@ -72,7 +73,9 @@ const IssueBlock: React.FC<{ issue: Issue }> = ({ issue }) => {
 };
 
 /** One assignment as a compact card in the tree's side panel; the name opens its dossier. */
-const AssignmentCard: React.FC<{ a: Row; onOpen: (a: Row) => void }> = ({ a, onOpen }) => (
+const AssignmentCard: React.FC<{ a: Row; onOpen: (a: Row) => void; onGraph: (lens: string, focus: string) => void }> = ({
+  a, onOpen, onGraph,
+}) => (
   <div className="ws-assignment">
     <div className="ws-tree-row" style={{ padding: 0 }}>
       <Tone tone={a.initiative ? '#b8d9ba' : undefined}>{a.initiative ? 'Initiative' : 'Policy'}</Tone>
@@ -84,15 +87,17 @@ const AssignmentCard: React.FC<{ a: Row; onOpen: (a: Row) => void }> = ({ a, onO
     </div>
     <p className="ws-muted" style={{ fontSize: 11, margin: '6px 0 0' }}>
       Assignment {a.display}{a.source ? ` · ${a.source}` : ''} · {a.noncompliant === null || a.noncompliant === undefined
-        ? 'no compliance data' : `${fmt(a.noncompliant)} non-compliant`}
+        ? 'no compliance data' : `${fmt(a.noncompliant)} non-compliant`} ·{' '}
+      <button type="button" className="ws-link" style={{ fontSize: 11, fontWeight: 400 }}
+        onClick={() => onGraph('initiative', a.definitionId)}>graph: where it is assigned</button>
     </p>
   </div>
 );
 
 const TreeView: React.FC<{
   tree: Tree; assignments: Row[]; q: string; hideSubs: boolean; selected: string;
-  onSelect: (id: string) => void; onOpen: (a: Row) => void;
-}> = ({ tree, assignments, q, hideSubs, selected, onSelect, onOpen }) => {
+  onSelect: (id: string) => void; onOpen: (a: Row) => void; onGraph: (lens: string, focus: string) => void;
+}> = ({ tree, assignments, q, hideSubs, selected, onSelect, onOpen, onGraph }) => {
   const byId = useMemo(() => new Map(assignments.map((a) => [a.id as string, a])), [assignments]);
   const matched = useMemo(() => {
     const terms = searchTerms(q);
@@ -152,7 +157,12 @@ const TreeView: React.FC<{
           <button type="button" className="ws-link" onClick={() => onSelect(nid)}>{n.label}</button>
           {here > 0 && <Tone tone="#b8d9ba">{here} assigned here</Tone>}
           {through && <Tone tone="low">in effect through a parent</Tone>}
-          {n.assigned.length > 0 && <Tone tone="#b8d9ba" title="assignments made on this scope">{n.assigned.length} assigned</Tone>}
+          {n.assigned.slice(0, 3).map((id) => byId.get(id)).filter((a): a is Row => !!a).map((a) => (
+            <Tone key={a.id} tone="#b8d9ba" title={`Assignment: ${a.display}`}>
+              {a.initiative ? 'Initiative' : 'Policy'}: {a.definition}{a.initiative ? ` (${a.policies})` : ''}
+            </Tone>
+          ))}
+          {n.assigned.length > 3 && <Tone title="assignments made on this scope">+{n.assigned.length - 3} more</Tone>}
           <EffectTags effects={n.effects} />
           {n.inherited > 0 && <Tone title="assignments made above that reach this scope">{n.inherited} inherited</Tone>}
           {n.kind !== 'Subscription' && n.kind !== 'Resource group' && n.subscriptions > 0 && (
@@ -193,9 +203,14 @@ const TreeView: React.FC<{
                 <AzIcon src={SCOPE_ICONS[node.kind]} /><h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>{node.label}</h2>
               </div>
               {node.scope && <p className="ws-muted" style={{ fontSize: 11, overflowWrap: 'anywhere' }}>{node.scope}</p>}
+              {node.kind !== 'Group' && (
+                <button type="button" className="ws-button" style={{ marginBottom: 6 }} onClick={() => onGraph('scope', node.id)}>
+                  Show as graph
+                </button>
+              )}
               <WsSection number={1} title={`Assigned here (${assignedHere.length})`}>
                 {assignedHere.length
-                  ? assignedHere.map((a) => <AssignmentCard key={a.id} a={a} onOpen={onOpen} />)
+                  ? assignedHere.map((a) => <AssignmentCard key={a.id} a={a} onOpen={onOpen} onGraph={onGraph} />)
                   : <p className="ws-text ws-muted">No assignments are made on this scope.</p>}
               </WsSection>
               <WsSection number={2} title={`Inherited (${inherited.reduce((sum, g) => sum + g.ids.length, 0)})`}>
@@ -205,7 +220,7 @@ const TreeView: React.FC<{
                     <p className="ws-tree-row" style={{ padding: '4px 0', margin: 0 }}>
                       <AzIcon src={SCOPE_ICONS[g.from.kind]} /><span className="ws-muted" style={{ fontSize: 12 }}>From {g.from.label}</span>
                     </p>
-                    {g.ids.map((id) => byId.get(id)).filter((a): a is Row => !!a).map((a) => <AssignmentCard key={a.id} a={a} onOpen={onOpen} />)}
+                    {g.ids.map((id) => byId.get(id)).filter((a): a is Row => !!a).map((a) => <AssignmentCard key={a.id} a={a} onOpen={onOpen} onGraph={onGraph} />)}
                   </div>
                 ))}
               </WsSection>
@@ -223,9 +238,9 @@ const TreeView: React.FC<{
 };
 
 /** The assignment dossier: what it assigns, where, how it is enforced, and every policy it brings with its effect. */
-const AssignmentDossier: React.FC<{ a: Row; data: PolicyAnalysis; policies: Map<string, Row>; onClose: () => void }> = ({
-  a, data, policies, onClose,
-}) => {
+const AssignmentDossier: React.FC<{
+  a: Row; data: PolicyAnalysis; policies: Map<string, Row>; onClose: () => void; onGraph: (lens: string, focus: string) => void;
+}> = ({ a, data, policies, onClose, onGraph }) => {
   const [filter, setFilter] = useState('');
   const members = useMemo(() => membersOf(a, data.profiles, policies), [a, data.profiles, policies]);
   const terms = searchTerms(filter);
@@ -239,6 +254,9 @@ const AssignmentDossier: React.FC<{ a: Row; data: PolicyAnalysis; policies: Map<
       </div>
       <h1>{a.display}</h1>
       <p className="ws-text ws-muted">{a.definition}{a.source ? ` · ${a.source}` : ''}</p>
+      <p style={{ margin: '0 0 6px' }}>
+        <button type="button" className="ws-button" onClick={() => onGraph('initiative', a.definitionId)}>Where else is it assigned?</button>
+      </p>
       <WsStrip>
         <WsMetric label="Policies" value={fmt(a.policies) || '1'} note={effectsText(a.effects) || undefined} />
         <WsMetric label="Non-compliant" value={a.noncompliant === null || a.noncompliant === undefined ? '–' : fmt(a.noncompliant)} note="resources" />
@@ -385,7 +403,11 @@ export const PolicyPage: React.FC = () => {
   const opened = openId ? rows?.assignments.find((a) => a.id === openId) ?? null : null;
 
   const s = data?.summary;
-  const hasFilters = FILTER_KEYS.some((k) => k !== 'view' && f[k]);
+  const hasFilters = FILTER_KEYS.some((k) => k !== 'view' && !GRAPH_KEYS.includes(k) && f[k]);
+  const toGraph = (lens: string, focus: string) => {
+    setOpenId(null);
+    update({ view: 'graph', lens, focus, expand: null });
+  };
   const applies = (k: string) => (APPLIES[k] || []).includes(view);
   const notEnforced = (rows?.assignments || []).filter((a) => a.enforcement === 'DoNotEnforce').length;
   const effectBars = s ? EFFECT_CLASSES.map((c) => [c, s.byEffect[c] || 0] as [string, number]) : [];
@@ -423,7 +445,7 @@ export const PolicyPage: React.FC = () => {
           </button>
           <button type="button" className="ws-button" onClick={report} disabled={!data}><Description fontSize="inherit" />Markdown report</button>
           <button type="button" className="ws-button" disabled={!data}
-            onClick={() => data && download(toCsv(view === 'tree' ? treeRows(data) : list, view), `policy-${view}.csv`, 'text/csv;charset=utf-8')}>
+            onClick={() => data && download(toCsv(view === 'tree' || view === 'graph' ? treeRows(data) : list, view), `policy-${view}.csv`, 'text/csv;charset=utf-8')}>
             <Download fontSize="inherit" />CSV
           </button>
         </>}
@@ -479,7 +501,7 @@ export const PolicyPage: React.FC = () => {
 
           <WsPanel
             eyebrow="Analysis"
-            title={view === 'subscriptions' ? 'Policy in effect per subscription' : view === 'tree' ? 'Assignments by scope' : VIEW_LABELS[view]}
+            title={view === 'subscriptions' ? 'Policy in effect per subscription' : view === 'tree' ? 'Assignments by scope' : view === 'graph' ? 'How policy reaches a scope' : VIEW_LABELS[view]}
             actions={
               <div className="ws-switch" role="group" aria-label="Policy view">
                 {VIEWS.map((v) => (
@@ -491,7 +513,7 @@ export const PolicyPage: React.FC = () => {
               </div>
             }
           >
-            <div className="ws-filters">
+            {view !== 'graph' && <div className="ws-filters">
               <label>Search
                 <input type="search" value={f.q} onChange={(e) => update({ q: e.target.value || null })}
                   placeholder="assignment, policy, category, scope…" />
@@ -526,17 +548,23 @@ export const PolicyPage: React.FC = () => {
               )}
               <button type="button" className="ws-button" disabled={!hasFilters}
                 onClick={() => update({ view: view === 'issues' ? null : view }, true)}>Clear</button>
-            </div>
-            {view !== 'tree' && (
+            </div>}
+            {view !== 'tree' && view !== 'graph' && (
               <p className="ws-muted" style={{ fontSize: 12, margin: '0 0 12px' }}>
                 {fmt(list.length)} of {fmt(rows[view].length)}{view === 'assignments' ? ' · select a row for its policies' : ''}
               </p>
             )}
 
-            {view === 'tree' ? (
+            {view === 'graph' ? (
+              data.tree ? (
+                <PolicyGraph data={data} assignments={rows.assignments} lens={f.lens} focus={f.focus} expand={f.expand}
+                  onChange={(changes) => update(changes)}
+                  onDownload={(svg, name) => download(svg, name, 'image/svg+xml')} />
+              ) : <WsEmpty title="The assignment graph arrives with the next inventory refresh." />
+            ) : view === 'tree' ? (
               data.tree ? (
                 <TreeView tree={data.tree} assignments={rows.assignments} q={f.q} hideSubs={!!f.hidesubs} selected={f.node}
-                  onSelect={(id) => update({ node: id })} onOpen={(a) => setOpenId(a.id)} />
+                  onSelect={(id) => update({ node: id })} onOpen={(a) => setOpenId(a.id)} onGraph={toGraph} />
               ) : <WsEmpty title="The assignment tree arrives with the next inventory refresh." />
             ) : view === 'issues' ? (
               list.length ? list.map((i) => <IssueBlock key={i.key} issue={i as Issue} />) : <WsEmpty title="No issues match." />
@@ -574,7 +602,7 @@ export const PolicyPage: React.FC = () => {
                 </table>
               </div>
             )}
-            {view !== 'tree' && view !== 'issues' && list.length > shown && (
+            {view !== 'tree' && view !== 'graph' && view !== 'issues' && list.length > shown && (
               <p style={{ marginTop: 14 }}>
                 <button type="button" className="ws-button" onClick={() => setShown((c) => c + PAGE_SIZE)}>
                   Show {Math.min(PAGE_SIZE, list.length - shown)} more of {fmt(list.length - shown)}
@@ -586,7 +614,7 @@ export const PolicyPage: React.FC = () => {
       )}
 
       <Drawer anchor="right" open={!!opened} onClose={() => setOpenId(null)} PaperProps={{ sx: { bgcolor: '#111e19' } }}>
-        {opened && data && <AssignmentDossier a={opened} data={data} policies={policyByKey} onClose={() => setOpenId(null)} />}
+        {opened && data && <AssignmentDossier a={opened} data={data} policies={policyByKey} onClose={() => setOpenId(null)} onGraph={toGraph} />}
       </Drawer>
     </WsPage>
   );

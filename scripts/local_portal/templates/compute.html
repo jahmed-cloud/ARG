@@ -19,17 +19,20 @@
   </div>
   <p class="muted small">Which operating system and version every VM and Azure Arc server runs, when its support ends,
     whether a vulnerability scanner covers it, pending security updates, outdated packages, CVEs and SQL Server
-    instances - plus the language runtime of every App Service app. Read-only from Resource Graph.</p>
+    instances - plus the language runtime and hostnames of every App Service app, and the image, exposure and
+    outdated packages of every container. Read-only from Resource Graph.</p>
   <p id="compute-status" class="muted small" role="status">Loading…</p>
   <div id="compute-tiles" class="tiles" aria-label="Key figures - click to filter"></div>
   <p id="compute-sources" class="muted small"></p>
 </section>
 
-<section class="card filters" aria-label="Filters">
+<section class="card filters" id="c-filters" aria-label="Filters">
   <div class="view-switch" role="group" aria-label="Compute view">
     <button type="button" class="tab active" data-view="machines" aria-pressed="true">Machines</button>
     <button type="button" class="tab" data-view="sql" aria-pressed="false">SQL Server</button>
     <button type="button" class="tab" data-view="apps" aria-pressed="false">App runtimes</button>
+    <button type="button" class="tab" data-view="images" aria-pressed="false">Containers</button>
+    <button type="button" class="tab" data-view="cve" aria-pressed="false">CVE check</button>
   </div>
   <div class="filter-grid">
     <label>Search software, version or CVE
@@ -60,7 +63,32 @@
   <p id="c-hint" class="muted small"></p>
 </section>
 
-<section class="card">
+<section class="card" id="cve-panel" hidden aria-label="CVE check">
+  <div class="toolbar">
+    <h2>CVE check</h2>
+    <span class="muted small">Which VM, Arc server, SQL Server instance, App Service app or container a CVE concerns - NVD's
+      affected versions (one CVE at a time) and CISA's known-exploited catalog (once a day), matched to this inventory.
+      Only the CVE ID is sent.</span>
+  </div>
+  <form id="cve-form" class="toolbar">
+    <label class="cve-input">CVE ID <input id="cve-id" type="search" placeholder="CVE-2024-3094" autocomplete="off"
+      spellcheck="false"></label>
+    <button type="submit">Check</button>
+    <button id="cve-csv" type="button" class="secondary" disabled>Download CSV</button>
+  </form>
+  <p id="cve-status" class="small muted" role="status"></p>
+  <div id="cve-result"></div>
+  <div class="toolbar kev-head">
+    <h3>Exploited in the wild (CISA KEV) - products this estate runs</h3>
+    <label class="small">Added in the last <select id="kev-days">
+      <option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">year</option>
+    </select></label>
+  </div>
+  <p id="kev-status" class="small muted"></p>
+  <div class="table-wrap"><table id="kev-table" class="estate"><thead></thead><tbody></tbody></table></div>
+</section>
+
+<section class="card" id="c-table-card">
   <div class="toolbar">
     <h2 id="c-title">Machines</h2>
     <span id="c-count" class="muted small"></span>

@@ -5,12 +5,12 @@
   "use strict";
 
   const PAGE_SIZE = 100;
-  const VIEWS = ["issues", "tree", "assignments", "subscriptions", "policies", "exemptions"];
+  const VIEWS = ["issues", "tree", "graph", "assignments", "subscriptions", "policies", "exemptions"];
   // Microsoft's Azure architecture icons (unchanged, served by the portal) - always shown with the scope's name
   const ICONS = { "Management group": "/azure-icons/Management-Groups.svg", "Subscription": "/azure-icons/Subscriptions.svg",
     "Resource group": "/azure-icons/Resource-Groups.svg" };
   const POLICY_ICON = "/azure-icons/Policy.svg";
-  const TITLES = { issues: "Issues", tree: "Assignment tree", assignments: "Assignments", subscriptions: "Policy in effect per subscription",
+  const TITLES = { issues: "Issues", tree: "Assignment tree", graph: "Assignment graph", assignments: "Assignments", subscriptions: "Policy in effect per subscription",
     policies: "Policies in force", exemptions: "Exemptions" };
   const SEV_PILL = { high: "sev-critical", medium: "sev-high", low: "sev-medium", info: "sev-info" };
   const CLASS_LABELS = { deny: "deny", remediate: "remediate", audit: "audit", disabled: "disabled" };
@@ -133,7 +133,7 @@
 
   // ---- filters -------------------------------------------------------------
 
-  const FILTERS = ["q", "scope", "effect", "source", "category", "enforcement", "status", "issues", "hidesubs", "node"];
+  const FILTERS = ["q", "scope", "effect", "source", "category", "enforcement", "status", "issues", "hidesubs", "node", "lens", "focus", "expand"];
 
   function readUrl() {
     const params = new URLSearchParams(location.search);
@@ -535,6 +535,10 @@
       const go = el("button", { type: "button", class: "link small" }, "open in Assignments");
       go.addEventListener("click", () => { state.view = "assignments"; state.f = { q: a.display }; state.open = new Set([a.id]); fillFilters(); render(); });
       meta.appendChild(go);
+      meta.append(" · ");
+      const where = el("button", { type: "button", class: "link small" }, "graph: where it is assigned");
+      where.addEventListener("click", () => openGraph("initiative", a.definitionId));
+      meta.appendChild(where);
       item.appendChild(meta);
       if (open) item.appendChild(membersBlock(a));
       list.appendChild(item);
@@ -554,6 +558,11 @@
     head.append(icon(n.kind), el("span", { class: "tree-kind" }, n.kind === "Group" ? "" : n.kind), el("h3", null, n.label));
     box.appendChild(head);
     if (n.scope) box.appendChild(el("p", { class: "muted small" }, n.scope));
+    if (n.kind !== "Group") {
+      const graph = el("button", { type: "button", class: "secondary" }, "Show as graph");
+      graph.addEventListener("click", () => openGraph("scope", n.id));
+      box.appendChild(graph);
+    }
     const title = (text) => {
       const h = el("div", { class: "tree-row" });
       h.append(el("img", { class: "az-icon", src: POLICY_ICON, alt: "", width: "18", height: "18" }),
@@ -598,6 +607,103 @@
     renderDetail();
   }
 
+  // ---- assignment graph (server-drawn SVG, policy_graph.py) ---------------------------------------------------
+
+  let graphZoom = 1;
+  let graphSvg = "";
+  let graphRequest = 0;
+
+  function graphExpand() { return (state.f.expand || "").split(",").filter(Boolean); }
+
+  function fillGraphPickers() {
+    const scope = $("g-scope");
+    if (!scope.options.length) {
+      const add = (nid, depth) => {
+        const n = tree.nodes[nid];
+        if (!n) return;
+        if (n.kind !== "Group") {
+          scope.appendChild(el("option", { value: nid }, "\u00a0\u00a0".repeat(depth) + n.label + " (" + n.kind.toLowerCase() + ")"));
+        }
+        (n.children || []).forEach((c) => add(c, n.kind === "Group" ? depth : depth + 1));
+      };
+      tree.roots.forEach((r) => add(r, 0));
+      const defs = new Map();
+      (rows.assignments || []).forEach((a) => {
+        const d = defs.get(a.definitionId) || { name: a.definition, count: 0, initiative: a.initiative };
+        d.count += 1;
+        defs.set(a.definitionId, d);
+      });
+      Array.from(defs.entries()).sort((x, y) => y[1].count - x[1].count || x[1].name.localeCompare(y[1].name))
+        .forEach(([key, d]) => $("g-def").appendChild(el("option", { value: key },
+          d.name + (d.initiative ? " (initiative)" : "") + " · " + d.count + " assignment" + (d.count === 1 ? "" : "s"))));
+    }
+    const lens = state.f.lens === "initiative" ? "initiative" : "scope";
+    $("g-lens").value = lens;
+    $("g-scope-wrap").hidden = lens !== "scope";
+    $("g-def-wrap").hidden = lens !== "initiative";
+    if (lens === "scope") { if (state.f.focus && tree.nodes[state.f.focus]) $("g-scope").value = state.f.focus; else state.f.focus = $("g-scope").value; }
+    else { if (state.f.focus) $("g-def").value = state.f.focus; if (!$("g-def").value || $("g-def").value !== state.f.focus) state.f.focus = $("g-def").value; }
+  }
+
+  function applyZoom() {
+    const svg = $("g-host").querySelector("svg");
+    if (!svg) return;
+    const w = Number(svg.getAttribute("width")) || 1000;
+    svg.style.width = Math.round(w * graphZoom) + "px";
+    svg.style.height = "auto";
+  }
+
+  async function renderGraph() {
+    fillGraphPickers();
+    writeUrl();
+    const lens = state.f.lens === "initiative" ? "initiative" : "scope";
+    const query = new URLSearchParams({ lens: lens, focus: state.f.focus || "", expand: graphExpand().join(",") });
+    const ticket = ++graphRequest;
+    $("g-status").textContent = "Drawing…";
+    let response, text;
+    try {
+      response = await fetch("/api/policy-graph.svg?" + query.toString(), { credentials: "same-origin" });
+      text = await response.text();
+    } catch (err) {
+      $("g-status").textContent = "The graph could not be loaded.";
+      return;
+    }
+    if (ticket !== graphRequest) return;   // a newer click is on its way
+    if (response.status === 401) { location.href = "/login?next=/policy"; return; }
+    if (!response.ok) { $("g-status").textContent = text || response.statusText; return; }
+    graphSvg = text;
+    $("g-host").innerHTML = text;   // drawn by ARG, every Azure-sourced value escaped (policy_graph.py, diagram.py)
+    applyZoom();
+    $("g-status").textContent = lens === "scope"
+      ? "Click a scope to focus it, ▸ on an initiative or policy to open what it holds, \"where else is it assigned?\" for the initiative view."
+      : "Click an assignment to open its policies, a scope to see how policy reaches it.";
+  }
+
+  function graphAction(target) {
+    const node = target.closest("[data-focus], [data-expand]");
+    if (!node || !$("g-host").contains(node)) return false;
+    if (node.hasAttribute("data-expand")) {
+      const id = node.getAttribute("data-expand");
+      const open = new Set(graphExpand());
+      if (open.has(id)) open.delete(id); else open.add(id);
+      state.f.expand = Array.from(open).join(",");
+    } else {
+      state.f.lens = node.getAttribute("data-lens") === "initiative" ? "initiative" : "scope";
+      state.f.focus = node.getAttribute("data-focus");
+      state.f.expand = "";
+      $("g-host").scrollTo({ top: 0, left: 0 });
+    }
+    renderGraph();
+    return true;
+  }
+
+  function openGraph(lens, focus) {
+    state.view = "graph";
+    state.f = Object.assign({}, state.f, { lens: lens, focus: focus, expand: "" });
+    fillFilters();
+    render();
+  }
+
   function render() {
     renderTiles();
     writeUrl();
@@ -607,10 +713,17 @@
     $("p-count").textContent = fmt(list.length) + " of " + fmt((rows[state.view] || []).length);
     const isIssues = state.view === "issues";
     const isTree = state.view === "tree";
+    const isGraph = state.view === "graph";
     $("p-issues-list").hidden = !isIssues;
     $("p-tree-view").hidden = !isTree;
-    $("p-table-wrap").hidden = isIssues || isTree;
-    document.querySelector(".pager").hidden = isTree;
+    $("p-graph-view").hidden = !isGraph;
+    $("p-table-wrap").hidden = isIssues || isTree || isGraph;
+    document.querySelector(".pager").hidden = isTree || isGraph;
+    if (isGraph) {
+      $("p-count").textContent = "";
+      renderGraph();
+      return;
+    }
     if (isTree) {
       $("p-count").textContent = "";
       if (state.f.node && tree.nodes[state.f.node]) state.selected = state.f.node;
@@ -732,6 +845,36 @@
   $("p-prev").addEventListener("click", () => { state.page -= 1; render(); });
   $("p-next").addEventListener("click", () => { state.page += 1; render(); });
   $("policy-refresh").addEventListener("click", refresh);
+  $("g-lens").addEventListener("change", () => {
+    if (!data) return;
+    state.f.lens = $("g-lens").value;
+    state.f.focus = state.f.lens === "initiative" ? $("g-def").value : (state.selected || $("g-scope").value);
+    state.f.expand = "";
+    renderGraph();
+  });
+  $("g-scope").addEventListener("change", () => { if (data) { state.f.focus = $("g-scope").value; state.f.expand = ""; renderGraph(); } });
+  $("g-def").addEventListener("change", () => { if (data) { state.f.focus = $("g-def").value; state.f.expand = ""; renderGraph(); } });
+  $("g-host").addEventListener("click", (e) => { if (data && graphAction(e.target)) e.preventDefault(); });
+  $("g-host").addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && data && graphAction(e.target)) e.preventDefault();
+  });
+  $("g-zoom-in").addEventListener("click", () => { graphZoom = Math.min(3, graphZoom * 1.25); applyZoom(); });
+  $("g-zoom-out").addEventListener("click", () => { graphZoom = Math.max(0.3, graphZoom / 1.25); applyZoom(); });
+  $("g-fit").addEventListener("click", () => {
+    const svg = $("g-host").querySelector("svg");
+    if (!svg) return;
+    graphZoom = Math.min(1, ($("g-host").clientWidth - 4) / (Number(svg.getAttribute("width")) || 1000));
+    applyZoom();
+  });
+  $("g-collapse").addEventListener("click", () => { if (data) { state.f.expand = ""; renderGraph(); } });
+  $("g-export").addEventListener("click", () => {
+    if (!graphSvg) return;
+    const a = el("a", { href: URL.createObjectURL(new Blob([graphSvg], { type: "image/svg+xml" })),
+      download: "policy-graph-" + (state.f.lens || "scope") + ".svg" });
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  });
   $("t-expand").addEventListener("click", () => { if (!data) return; state.treeOpen = new Set(Object.keys(tree.nodes)); renderTree(); });
   $("t-collapse").addEventListener("click", () => { if (!data) return; state.treeOpen = new Set(tree.roots); renderTree(); });
   $("t-hide-subs").addEventListener("change", () => {

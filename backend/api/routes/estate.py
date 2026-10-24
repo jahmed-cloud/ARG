@@ -11,7 +11,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -76,6 +76,9 @@ async def get_estate(db: AsyncSession = Depends(get_db), _: User = Depends(requi
     return JSONResponse(content={**body, "snapshot": jsonable(_meta(snapshot))})
 
 
+_ANALYSIS_CACHE: dict = {}   # snapshot id -> analyzer result (the graph view asks again on every click)
+
+
 async def _policy_analysis(db: AsyncSession) -> tuple:
     """(snapshot, analyzer result) of the newest completed inventory (scripts/subscription_analysis/policy_analyzer.py)."""
     from scripts.subscription_analysis.policy_analyzer import analyse
@@ -88,7 +91,11 @@ async def _policy_analysis(db: AsyncSession) -> tuple:
     if not policy.get("assignments"):
         raise HTTPException(status_code=404, detail="This inventory has no policy collection - refresh the inventory "
                                                     "(about 5 minutes).")
-    return snapshot, await asyncio.to_thread(analyse, snapshot.data, policy)
+    key = f"{snapshot.id}:{snapshot.completed_at}:{len(policy.get('assignments') or [])}"
+    if key not in _ANALYSIS_CACHE:
+        _ANALYSIS_CACHE.clear()   # only the newest snapshot is asked for
+        _ANALYSIS_CACHE[key] = await asyncio.to_thread(analyse, snapshot.data, policy)
+    return snapshot, _ANALYSIS_CACHE[key]
 
 
 @router.get("/policy")
@@ -99,6 +106,23 @@ async def estate_policy(db: AsyncSession = Depends(get_db), _: User = Depends(re
     return JSONResponse(content={**result, "snapshot": jsonable(_meta(snapshot))})
 
 
+@router.get("/policy-graph.svg")
+async def estate_policy_graph(lens: str = Query("scope", pattern="^(scope|initiative)$"),
+                              focus: str = Query("", max_length=600), expand: str = Query("", max_length=8000),
+                              db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """The Policy page's Graph view (policy_graph.py): how policy reaches a scope (lens=scope, focus = tree node id)
+    or where an initiative is assigned (lens=initiative, focus = definition id); expand = assignment ids opened."""
+    from scripts.subscription_analysis.policy_graph import render
+
+    _, result = await _policy_analysis(db)
+    opened = [x for x in expand.split(",") if x][:40]
+    try:
+        svg = await asyncio.to_thread(render, result, lens, focus, opened)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown scope or policy definition")
+    return Response(svg, media_type="image/svg+xml")
+
+
 @router.get("/policy.md", response_class=PlainTextResponse)
 async def estate_policy_markdown(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
     from scripts.subscription_analysis.policy_analyzer import markdown
@@ -107,6 +131,54 @@ async def estate_policy_markdown(db: AsyncSession = Depends(get_db), _: User = D
     stamp = (snapshot.completed_at or snapshot.started_at).strftime("%Y-%m-%d")
     return PlainTextResponse(markdown(result), media_type="text/markdown; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="policy-analysis-{stamp}.md"'})
+
+
+CVE_ID_PATTERN = r"^[Cc][Vv][Ee]-\d{4}-\d{4,7}$"
+
+
+async def _cve_facts(db: AsyncSession) -> list:
+    """What the newest inventory runs, as CVE-check facts (scripts/subscription_analysis/cve.py)."""
+    from scripts.subscription_analysis.cve import inventory_facts
+
+    snapshot = await _newest(db, select(EstateSnapshot).options(defer(EstateSnapshot.overview_markdown))
+                             .where(EstateSnapshot.status == COMPLETED))
+    compute = (snapshot.data or {}).get("compute") if snapshot is not None else None
+    if not compute or not (compute.get("machines") or compute.get("apps")):
+        raise HTTPException(status_code=404, detail="No Compute data yet - refresh the inventory first.")
+    return await asyncio.to_thread(inventory_facts, compute)
+
+
+@router.get("/cve/kev")
+async def estate_cve_kev(days: int = Query(90, ge=1, le=3650), db: AsyncSession = Depends(get_db),
+                         _: User = Depends(require_admin)) -> dict:
+    """Known-exploited CVEs (CISA KEV, fetched at most once a day) of the last `days` that concern products the estate
+    runs."""
+    from scripts.subscription_analysis.cve import fetch_kev, kev_in_estate
+
+    facts = await _cve_facts(db)
+    try:
+        kev = await asyncio.to_thread(fetch_kev, None)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=f"The CISA KEV catalog could not be loaded: {exc}")
+    return kev_in_estate(kev, facts, days)
+
+
+@router.get("/cve/{cve_id}")
+async def estate_cve_check(cve_id: str = Path(..., pattern=CVE_ID_PATTERN), db: AsyncSession = Depends(get_db),
+                           _: User = Depends(require_admin)) -> dict:
+    """Which VMs, Arc servers, SQL Server instances and App Service apps a CVE concerns (NVD, cached a day)."""
+    from scripts.subscription_analysis.cve import check, fetch_cve, fetch_kev
+
+    facts = await _cve_facts(db)
+    try:
+        record = await asyncio.to_thread(fetch_cve, cve_id, None)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=f"NVD could not be reached: {exc}")
+    try:
+        kev = await asyncio.to_thread(fetch_kev, None)
+    except RuntimeError:
+        kev = None
+    return await asyncio.to_thread(check, cve_id, record, facts, kev)
 
 
 @router.get("/compute")

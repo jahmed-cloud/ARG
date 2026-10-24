@@ -183,3 +183,125 @@ def test_os_scanner_reads_the_reported_os_covers_arc_and_warns_before_the_date()
            "agent_status": "Connected", "esu": "NotAssigned"}
     ending = scanner._finding(row, support(identify_os(row["os_name"], row["os_version"]), TODAY), True)
     assert ending.severity == SeverityLevel.MEDIUM and ending.title.startswith("OS support ends in 82 days")
+
+
+ENV_INTERNAL = "/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.app/managedenvironments/cae-internal"
+ENV_PUBLIC = "/subscriptions/sub-1/resourcegroups/rg/providers/microsoft.app/managedenvironments/cae-public"
+
+
+def _image_raw():
+    app = {"type": "microsoft.app/containerapps", "subscriptionId": "sub-1", "resourceGroup": "rg", "state": "Running"}
+    return {
+        "images": [
+            {**app, "id": "/ca/api", "name": "api", "image": "acr1.azurecr.io/team/api:1.4.1", "container": "api",
+             "fqdn": "api.cae-public.azurecontainerapps.io", "external": True, "environment": ENV_PUBLIC},
+            {**app, "id": "/ca/backend", "name": "backend", "image": "acr1.azurecr.io/team/api:1.4.0",
+             "container": "backend", "fqdn": "backend.internal.io", "external": True, "environment": ENV_INTERNAL},
+            {**app, "id": "/ca/worker", "name": "worker", "image": "php:8.3-apache", "container": "worker",
+             "fqdn": "worker.internal.cae-public.io", "external": False, "environment": ENV_PUBLIC},
+            {**app, "id": "/ca/quiet", "name": "quiet", "image": "acr1.azurecr.io/team/quiet@sha256:ABC",
+             "container": "quiet", "environment": ENV_PUBLIC},
+            {"id": "/job/nightly", "name": "nightly", "type": "microsoft.app/jobs", "subscriptionId": "sub-1",
+             "image": "mcr.microsoft.com/azure-cli:2.60.0", "container": "run"},
+            {"id": "/aci/web", "name": "web", "type": "microsoft.containerinstance/containergroups",
+             "subscriptionId": "sub-1", "image": "nginx", "container": "web", "ipType": "Public", "state": "Running"},
+            {"id": "/app/site", "name": "site", "type": "microsoft.web/sites", "subscriptionId": "sub-1",
+             "image": "acr1.azurecr.io/site:2", "container": "", "access": "Disabled", "pe": 1},
+        ],
+        "image_findings": [{"host": "acr1.azurecr.io", "repo": "team/api", "tags": '["1.4.1"]', "digest": "sha256:1",
+                            "packages": ["openssl", "libcurl4"], "high": 1}],
+        "environments": [{"id": ENV_INTERNAL, "internal": True}, {"id": ENV_PUBLIC, "internal": False}],
+    }
+
+
+def test_container_images_get_one_exposure_verdict_and_honest_scan_status():
+    images = {i["workload"]: i for i in compute.image_records(_image_raw(), {"sub-1": "Sub One"})}
+    assert images["api"]["exposed"] and images["api"]["exposure"] == "Internet (external ingress / public IP)"
+    assert images["api"]["url"] == "https://api.cae-public.azurecontainerapps.io"
+    # 'external' ingress inside a VNet-internal environment reaches the VNet, not the internet
+    assert not images["backend"]["exposed"] and images["backend"]["exposure"].startswith("VNet only")
+    assert images["worker"]["exposure"] == "Internal ingress only" and images["quiet"]["exposure"] == "No inbound endpoint"
+    assert images["nightly"]["exposure"] == "No inbound endpoint" and images["web"]["exposed"]
+    assert images["site"]["exposure"] == "Private endpoint" and not images["site"]["exposed"]
+    assert images["api"]["packages"] == ["libcurl4", "openssl"] and images["api"]["scan"] == compute.SCAN_FINDINGS
+    assert images["backend"]["scan"] == compute.SCAN_OTHER_TAGS                 # other tags of the repo have findings
+    assert images["quiet"]["scan"] == compute.SCAN_NONE and images["web"]["scan"] == compute.SCAN_OUTSIDE
+    assert images["web"]["repository"] == "library/nginx" and images["web"]["tag"] == "latest"
+    assert {i["workload"] for i in compute.image_records(_image_raw(), {})[:2]} == {"web", "api"}  # internet-facing first
+    payload = compute.finish({"machines": [], "sql": [], "apps": [], "images": list(images.values())})
+    s = payload["summary"]["images"]
+    assert (s["total"], s["exposed"], s["withFindings"], s["outsideAcr"]) == (7, 2, 1, 3)
+    assert "Containers: 7 (7 distinct images), 2 internet-facing" in compute.markdown(
+        {**payload, "summary": {**machine_inventory.summary([], []), **payload["summary"]}, "collected_at": ""})
+
+
+@pytest.mark.parametrize("ref, expected", [
+    ("acr.azurecr.io/team/api:1.4.1", ("acr.azurecr.io", "team/api", "1.4.1", "")),
+    ("nginx", ("docker.io", "library/nginx", "latest", "")),
+    ("grafana/grafana-enterprise:13.0", ("docker.io", "grafana/grafana-enterprise", "13.0", "")),
+    ("localhost:5000/app@sha256:ABC", ("localhost:5000", "app", "", "sha256:abc")),
+])
+def test_image_references_are_split_into_registry_repository_tag_and_digest(ref, expected):
+    img = compute.parse_image(ref)
+    assert (img["registry"], img["repository"], img["tag"], img["digest"]) == expected
+
+
+def test_web_endpoints_list_custom_domains_and_the_exposure_resource_graph_can_see():
+    from scripts.subscription_analysis.network import internal_environments, web_endpoint
+
+    site = web_endpoint("microsoft.web/sites", {"host": "app.azurewebsites.net", "pna": "Enabled", "pe": 0,
+                                                "hosts": ["app.azurewebsites.net", "Portal.Example.com"]})
+    assert site == {"host": "app.azurewebsites.net", "domains": ["portal.example.com"],
+                    "exposure": "Public app endpoint", "internet": True}
+    slot = web_endpoint("microsoft.web/sites/slots", {"host": "app-staging.azurewebsites.net", "pe": 1})
+    assert slot["exposure"] == "Private endpoint" and not slot["internet"]
+    swa = web_endpoint("microsoft.web/staticsites", {"host": "x.azurestaticapps.net", "hosts": ["docs.example.com"]})
+    assert swa["domains"] == ["docs.example.com"] and swa["internet"]
+    rows = [{"id": ENV_INTERNAL, "type": "microsoft.app/managedenvironments", "cfg": {"internal": True}},
+            {"id": ENV_PUBLIC, "type": "microsoft.app/managedenvironments", "cfg": {"internal": False}}]
+    internal = internal_environments(rows)
+    ca = {"fqdn": "api.x.azurecontainerapps.io", "ext": True, "env": ENV_INTERNAL.upper(),
+          "domains": [{"name": "api.example.com", "bindingType": "SniEnabled"}]}
+    vnet = web_endpoint("microsoft.app/containerapps", ca, internal)
+    assert vnet["domains"] == ["api.example.com"] and vnet["exposure"].startswith("VNet only") and not vnet["internet"]
+    assert web_endpoint("microsoft.app/containerapps", {**ca, "env": ENV_PUBLIC}, internal)["internet"]
+    assert web_endpoint("microsoft.app/containerapps", {}, internal)["exposure"] == "No inbound endpoint"
+    assert web_endpoint("microsoft.web/sites", {"fx": "PHP|8.3"}) is None        # collected before these fields
+    assert web_endpoint("microsoft.storage/storageaccounts", {"host": "x"}) is None
+
+
+def test_app_runtimes_carry_their_urls_and_slots_their_own_exposure():
+    slot = {"id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/sites/portal/slots/staging",
+            "name": "portal/staging", "type": "microsoft.web/sites/slots", "kind": "app,linux", "subscriptionId": "sub-1",
+            "cfg": {"fx": "PHP|8.3", "host": "portal-staging.azurewebsites.net", "pna": "Disabled", "pe": 0}}
+    app = {**slot, "id": slot["id"].rsplit("/slots", 1)[0], "name": "portal", "type": "microsoft.web/sites",
+           "cfg": {"fx": "PHP|8.3", "host": "portal.azurewebsites.net", "pna": "Enabled", "pe": 0,
+                   "hosts": ["portal.azurewebsites.net", "portal.example.com"]}}
+    apps = {a["name"]: a for a in compute.build_compute(_raw(), {}, [slot, app], [], TODAY)["apps"]}
+    assert apps["portal"]["urls"] == ["https://portal.example.com", "https://portal.azurewebsites.net"]
+    assert apps["portal"]["internet"] and apps["portal"]["domains"] == ["portal.example.com"]
+    assert apps["portal/staging"]["exposure"] == "Public access off" and not apps["portal/staging"]["internet"]
+
+
+def test_inventory_rows_carry_their_web_endpoint_into_estate_json(tmp_path):
+    site = {"id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/sites/portal", "name": "portal",
+            "type": "microsoft.web/sites", "kind": "app,linux", "subscriptionId": "sub-1", "resourceGroup": "rg",
+            "cfg": {"fx": "PHP|8.3", "host": "portal.azurewebsites.net", "pna": "Enabled", "pe": 0,
+                    "hosts": ["portal.azurewebsites.net", "portal.example.com"]}}
+    env = {"id": ENV_INTERNAL, "name": "cae-internal", "type": "microsoft.app/managedenvironments",
+           "subscriptionId": "sub-1", "resourceGroup": "rg", "cfg": {"internal": True}}
+    app = {"id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.App/containerApps/api", "name": "api",
+           "type": "microsoft.app/containerapps", "subscriptionId": "sub-1", "resourceGroup": "rg",
+           "cfg": {"fqdn": "api.internal.azurecontainerapps.io", "ext": True, "env": ENV_INTERNAL}}
+    inventory = {"generated_at": "2026-10-24T08:00:00+00:00", "source": "resource-graph",
+                 "subscriptions": [{"id": "sub-1", "name": "Sub One"}], "resources": [site, env, app]}
+    built = estate.build_estate(tmp_path, inventory)
+    by = {r["name"]: r for r in built["resources"]}
+    assert by["portal"]["endpoint"]["domains"] == ["portal.example.com"] and by["portal"]["endpoint"]["internet"]
+    assert by["api"]["endpoint"]["exposure"].startswith("VNet only") and by["cae-internal"]["endpoint"] is None
+    wire = {r["name"]: r for r in estate.compact(built)["resources"]}
+    assert wire["portal"]["ep"] == {"h": "portal.azurewebsites.net", "d": ["portal.example.com"],
+                                    "x": "Public app endpoint", "i": 1}
+    assert "i" not in wire["api"]["ep"] and "ep" not in wire["cae-internal"]
+    assert "| Web endpoints (apps, slots, static web apps, container apps) / with a custom domain | 2 / 1 |" in \
+        estate.render_estate_markdown(built)

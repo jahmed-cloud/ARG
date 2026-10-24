@@ -1,5 +1,5 @@
 // ARG local portal - Compute: operating system versions, end of support, vulnerability-scan coverage, pending
-// security updates, outdated packages, CVEs, SQL Server instances and App Service runtimes (compute.json).
+// security updates, outdated packages, CVEs, SQL Server instances, App Service runtimes and containers (compute.json).
 // All data is rendered with textContent / DOM nodes (never innerHTML); no inline scripts (CSP: script-src 'self').
 (function () {
   "use strict";
@@ -32,14 +32,23 @@
     apps: [
       { key: "name", label: "App" }, { key: "kind", label: "Kind" }, { key: "runtime", label: "Runtime" },
       { key: "support", label: "Support", sortKey: "supportRank" }, { key: "supportEnds", label: "Support ends" },
-      { key: "exposure", label: "Network exposure" }, { key: "state", label: "State" },
+      { key: "exposure", label: "Network exposure" }, { key: "urlLabel", label: "Hostname" }, { key: "state", label: "State" },
+      { key: "subscription", label: "Subscription" }, { key: "resourceGroup", label: "Resource group" },
+    ],
+    images: [
+      { key: "name", label: "Workload / container" }, { key: "kind", label: "Runs in" }, { key: "image", label: "Image" },
+      { key: "registryLabel", label: "Registry" }, { key: "exposure", label: "Network exposure" },
+      { key: "scan", label: "Defender scan" }, { key: "packageCount", label: "Outdated packages", num: true },
+      { key: "high", label: "High", num: true }, { key: "state", label: "State" },
       { key: "subscription", label: "Subscription" }, { key: "resourceGroup", label: "Resource group" },
     ],
   };
-  const TITLES = { machines: "Machines", sql: "SQL Server instances", apps: "App Service runtimes" };
+  const TITLES = { machines: "Machines", sql: "SQL Server instances", apps: "App Service runtimes", images: "Containers" };
+  const EXPANDS = ["machines", "images"];
+  const urlLabel = (urls) => (urls && urls.length ? urls[0].replace(/^https:\/\//, "") + (urls.length > 1 ? " (+" + (urls.length - 1) + ")" : "") : "");
 
   let data = null;
-  let rows = { machines: [], sql: [], apps: [] };
+  let rows = { machines: [], sql: [], apps: [], images: [] };
   let lastRows = [];
   const state = { view: "machines", f: {}, sort: { key: "", dir: 1 }, page: 0, open: new Set() };
 
@@ -85,11 +94,16 @@
         s.resourceGroup].join(" ").toLowerCase(),
     }));
     const apps = (d.apps || []).map((a) => Object.assign({}, a, {
-      supportRank: rank(a.support),
-      haystack: [a.name, a.kind, a.runtime, a.stack, a.version, a.supportNote, a.subscription, a.resourceGroup, a.exposure]
-        .join(" ").toLowerCase(),
+      supportRank: rank(a.support), urlLabel: urlLabel(a.urls),
+      haystack: [a.name, a.kind, a.runtime, a.stack, a.version, a.supportNote, a.subscription, a.resourceGroup, a.exposure,
+        (a.urls || []).join(" ")].join(" ").toLowerCase(),
     }));
-    return { machines: machines, sql: sql, apps: apps };
+    const images = (d.images || []).map((i) => Object.assign({}, i, {
+      packageCount: (i.packages || []).length || null, high: i.high || null,
+      haystack: [i.name, i.kind, i.image, i.registry, i.registryLabel, i.tag, i.exposure, i.scan, i.url,
+        (i.packages || []).join(" "), i.subscription, i.resourceGroup].join(" ").toLowerCase(),
+    }));
+    return { machines: machines, sql: sql, apps: apps, images: images };
   }
 
   async function load() {
@@ -135,7 +149,8 @@
 
   function readUrl() {
     const params = new URLSearchParams(location.search);
-    if (["machines", "sql", "apps"].includes(params.get("view"))) state.view = params.get("view");
+    if (["machines", "sql", "apps", "images", "cve"].includes(params.get("view"))) state.view = params.get("view");
+    if (params.get("cve")) state.cve = params.get("cve");
     FILTERS.forEach((k) => { if (params.get(k)) state.f[k] = params.get(k); });
   }
 
@@ -143,6 +158,7 @@
     const params = new URLSearchParams();
     if (state.view !== "machines") params.set("view", state.view);
     FILTERS.forEach((k) => { if (state.f[k]) params.set(k, state.f[k]); });
+    if (state.view === "cve" && state.cve) params.set("cve", state.cve);
     const query = params.toString();
     history.replaceState(null, "", location.pathname + (query ? "?" + query : ""));
   }
@@ -164,12 +180,12 @@
   }
 
   function fillFilters() {
-    const list = rows[state.view];
+    const list = rows[state.view] || rows.machines;
     options($("c-sub"), countBy(list, (r) => r.subscription), "All subscriptions");
-    const familyKey = state.view === "machines" ? (r) => r.family || "Not identified"
-      : state.view === "sql" ? (r) => r.product : (r) => r.stack;
-    options($("c-family"), countBy(list, familyKey), state.view === "apps" ? "All runtimes" : "All products");
-    options($("c-support"), countBy(list, (r) => r.support).sort((a, b) => rank(a[0]) - rank(b[0])), "Any support status",
+    const images = state.view === "images";
+    options($("c-family"), countBy(list, familyOf), state.view === "apps" ? "All runtimes" : images ? "All registries" : "All products");
+    if (images) options($("c-support"), countBy(list, (r) => r.scan), "Any Defender scan status");
+    else options($("c-support"), countBy(list, (r) => r.support).sort((a, b) => rank(a[0]) - rank(b[0])), "Any support status",
       (v) => SUPPORT_LABELS[v] || v);
     options($("c-env"), countBy(rows.machines, (r) => r.env), "All environments");
     $("c-q").value = state.f.q || "";
@@ -179,12 +195,23 @@
     $("c-scanner").value = state.f.scanner || "";
     $("c-critical").checked = state.f.critical === "1";
     const machineOnly = state.view !== "machines";
-    ["c-kind", "c-state", "c-exposure", "c-scanner", "c-env", "c-critical"].forEach((id) => { $(id).disabled = machineOnly; });
+    ["c-kind", "c-scanner", "c-env", "c-critical"].forEach((id) => { $(id).disabled = machineOnly; });
+    ["c-state", "c-exposure"].forEach((id) => { $(id).disabled = machineOnly && !images; });
+    const label = (id, text) => { const node = $(id).parentNode.firstChild; if (node && node.nodeType === 3) node.textContent = text + " "; };
+    label("c-family", state.view === "apps" ? "Runtime" : images ? "Registry" : "OS family / product");
+    label("c-support", images ? "Defender scan" : "Support");
+    const exposureText = images ? ["Any", "Internet-facing", "Not internet-facing"] : ["Any", "Public IP (running)", "No public IP"];
+    Array.from($("c-exposure").options).forEach((o, i) => { o.textContent = exposureText[i] || o.textContent; });
     document.querySelectorAll(".view-switch .tab").forEach((tab) => {
       const active = tab.dataset.view === state.view;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-pressed", active ? "true" : "false");
     });
+  }
+
+  function familyOf(r) {
+    return state.view === "machines" ? r.family || "Not identified" : state.view === "sql" ? r.product
+      : state.view === "images" ? r.registryLabel : r.stack;
   }
 
   function matches(r) {
@@ -194,10 +221,13 @@
       if (!terms.every((t) => r.haystack.includes(t))) return false;
     }
     if (f.sub && r.subscription !== f.sub) return false;
-    if (f.support && r.support !== f.support) return false;
-    if (f.family) {
-      const value = state.view === "machines" ? (r.family || "Not identified") : state.view === "sql" ? r.product : r.stack;
-      if (value !== f.family) return false;
+    if (f.support && (state.view === "images" ? r.scan : r.support) !== f.support) return false;
+    if (f.family && familyOf(r) !== f.family) return false;
+    if (state.view === "images") {
+      if (f.state === "running" && !r.running) return false;
+      if (f.state === "idle" && r.running) return false;
+      if (f.exposure === "public" && !r.exposed) return false;
+      if (f.exposure === "none" && r.exposed) return false;
     }
     if (state.view === "machines") {
       if (f.kind && r.kind !== f.kind) return false;
@@ -228,6 +258,7 @@
     const sup = s.support || {};
     const sql = s.sql || {};
     const apps = s.apps || {};
+    const images = s.images || {};
     const tiles = $("compute-tiles");
     tiles.replaceChildren();
     const tile = (value, label, note, onClick, active) => {
@@ -256,6 +287,12 @@
       state.view === "sql" && state.f.support === "ended");
     tile(apps.ended, "App runtimes past end of support", fmt(apps.total) + " apps · " + fmt(apps.ending) + " ending",
       reset("apps", "support", "ended"), state.view === "apps" && state.f.support === "ended");
+    if (images.total) {
+      tile(images.exposed, "Internet-facing containers", fmt(images.total) + " containers · " + fmt(images.distinct) + " images",
+        reset("images", "exposure", "public"), state.view === "images" && state.f.exposure === "public");
+      tile(images.withFindings, "Containers with outdated packages", "Defender, images in Azure Container Registry",
+        reset("images", "support", "outdated packages"), state.view === "images" && state.f.support === "outdated packages");
+    }
   }
 
   function supportCell(r) {
@@ -318,6 +355,27 @@
     return td;
   }
 
+  function imageDetail(i, span) {
+    const td = el("td", { colspan: span });
+    const ul = el("ul", { class: "suggestions" });
+    [
+      "Image: " + i.image + (i.digest ? " (pinned to " + i.digest.slice(0, 19) + "…)" : ""),
+      "Registry: " + i.registryLabel + (i.registry !== i.registryLabel ? " (" + i.registry + ")" : ""),
+      "Network exposure: " + i.exposure + (i.url ? " · " + i.url : ""),
+      "Defender scan: " + i.scan + ({
+        "no Defender findings": " - up to date, or not scanned: Defender for Containers / CSPM scans images in Azure Container Registry and reports only outdated packages",
+        "not in Azure Container Registry": " - Defender does not scan this registry; pull it through Azure Container Registry to get it scanned",
+        "no findings for this tag": " - other tags of this repository have findings, this one has none",
+      }[i.scan] || ""),
+      "State: " + (i.state || "-"),
+    ].forEach((f) => ul.appendChild(el("li", null, f)));
+    td.appendChild(ul);
+    const box = detailList("Packages Defender reports as outdated", i.packages);
+    if (box) td.appendChild(box);
+    td.appendChild(el("div", { class: "muted small" }, i.id));
+    return td;
+  }
+
   function cell(r, c) {
     if (c.key === "support") return supportCell(r);
     const value = r[c.key];
@@ -329,7 +387,8 @@
     const { key, dir } = state.sort;
     if (!key) {
       return list.slice().sort((a, b) => (state.view === "machines" ? (b.criticalPath ? 1 : 0) - (a.criticalPath ? 1 : 0) : 0)
-        || a.supportRank - b.supportRank || String(a.name).localeCompare(String(b.name)));
+        || (state.view === "images" ? (b.exposed ? 1 : 0) - (a.exposed ? 1 : 0) || (b.packageCount || 0) - (a.packageCount || 0) : 0)
+        || (a.supportRank || 0) - (b.supportRank || 0) || String(a.name).localeCompare(String(b.name)));
     }
     return list.slice().sort((a, b) => {
       const x = a[key], y = b[key];
@@ -348,13 +407,173 @@
         "with vulnerability assessment). A CVE ID cannot be matched; search the affected product and version instead " +
         "(for example php, openssl 3.0, nginx).";
     }
-    if (q) return "Matches name, operating system and version, image, agents, pending update names, outdated package names, CVE IDs and SQL Server versions; App runtimes also match the runtime and version.";
+    if (q && state.view === "images") return "Matches workload, container, image, registry, tag, exposure, Defender scan status and outdated package names.";
+    if (q) return "Matches name, operating system and version, image, agents, pending update names, outdated package names, CVE IDs and SQL Server versions; App runtimes also match the runtime, version and hostnames.";
     return "Tip: search a product and version (php, openssl, Windows Server 2016, SQL Server 2016) to find every machine, SQL instance or app that runs it.";
+  }
+
+  // ---- CVE check (/api/cve/<id>, /api/cve/kev - scripts/subscription_analysis/cve.py) ---------------------------
+
+  const VERDICT_PILL = { "impacted": "sev-critical", "potentially impacted": "sev-high", "not affected": "sev-low" };
+  let kevFor = null;
+  let lastCve = null;
+
+  async function getJson(url) {
+    const response = await fetch(url, { credentials: "same-origin" });
+    if (response.status === 401) { location.href = "/login?next=/compute"; throw new Error("signed out"); }
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || response.statusText);
+    return body;
+  }
+
+  async function loadKev() {
+    const days = $("kev-days").value;
+    if (kevFor === days) return;
+    kevFor = days;
+    $("kev-status").textContent = "Loading the CISA catalog…";
+    const table = $("kev-table");
+    let data;
+    try {
+      data = await getJson("/api/cve/kev?days=" + encodeURIComponent(days));
+    } catch (err) {
+      $("kev-status").textContent = err.message;
+      kevFor = null;
+      return;
+    }
+    $("kev-status").textContent = fmt(data.rows.length) + " of the " + fmt(data.total) + " known-exploited CVEs (catalog " +
+      (data.catalogVersion || "?") + ") were added in this period and concern products this estate runs. KEV names the " +
+      "product, not the versions - Check compares the versions.";
+    const head = el("tr");
+    ["Added", "CVE", "Vendor / product", "Vulnerability", "Resources", "Internet-facing", "Ransomware", "Due", ""]
+      .forEach((h) => head.appendChild(el("th", { scope: "col" }, h)));
+    table.querySelector("thead").replaceChildren(head);
+    const body = table.querySelector("tbody");
+    body.replaceChildren();
+    data.rows.forEach((r) => {
+      const tr = el("tr");
+      const go = el("button", { type: "button", class: "secondary" }, "Check");
+      go.addEventListener("click", () => { $("cve-id").value = r.cve; runCve(r.cve); });
+      tr.append(el("td", null, r.dateAdded), el("td", null, r.cve), el("td", null, r.vendor + " / " + r.product),
+        el("td", { title: r.description || "" }, r.name), el("td", { class: "num" }, fmt(r.resources) + " (" + r.kinds.join(", ") + ")"),
+        el("td", { class: "num" }, fmt(r.exposed)), el("td", null, r.ransomware), el("td", null, r.dueDate));
+      const td = el("td");
+      td.appendChild(go);
+      tr.appendChild(td);
+      body.appendChild(tr);
+    });
+    if (!data.rows.length) {
+      const tr = el("tr");
+      tr.appendChild(el("td", { colspan: "9", class: "empty-state" }, "No known-exploited CVE of this period concerns a product this estate runs."));
+      body.appendChild(tr);
+    }
+  }
+
+  async function runCve(id) {
+    const cveId = String(id || "").trim().toUpperCase();
+    if (!/^CVE-\d{4}-\d{4,7}$/.test(cveId)) { $("cve-status").textContent = "Enter a CVE ID like CVE-2024-3094."; return; }
+    state.cve = cveId;
+    writeUrl();
+    $("cve-status").textContent = "Looking up " + cveId + " in NVD…";
+    $("cve-result").replaceChildren();
+    $("cve-csv").disabled = true;
+    let res;
+    try {
+      res = await getJson("/api/cve/" + encodeURIComponent(cveId));
+    } catch (err) {
+      $("cve-status").textContent = err.message;
+      return;
+    }
+    lastCve = res;
+    $("cve-status").textContent = "";
+    renderCve(res);
+  }
+
+  function renderCve(res) {
+    const box = $("cve-result");
+    box.replaceChildren();
+    const card = el("div", { class: "card breakdown cve-card" });
+    const head = el("div", { class: "toolbar" });
+    head.appendChild(el("h3", null, res.cve));
+    if (res.severity) head.appendChild(el("span", { class: "pill " + ({ CRITICAL: "sev-critical", HIGH: "sev-high", MEDIUM: "sev-medium" }[res.severity] || "sev-low") },
+      res.severity.toLowerCase() + (res.score ? " " + res.score : "")));
+    if (res.kev) head.appendChild(el("span", { class: "pill sev-critical", title: res.kev.requiredAction || "" },
+      "exploited in the wild (KEV, added " + res.kev.dateAdded + ")"));
+    card.appendChild(head);
+    if (!res.found) {
+      card.appendChild(el("p", null, res.note));
+      box.appendChild(card);
+      return;
+    }
+    card.appendChild(el("p", { class: "small muted" }, "NVD status " + (res.status || "?") + " · published " +
+      String(res.published || "").slice(0, 10) + (res.products.length ? " · affects " + res.products.slice(0, 8).join(", ") +
+      (res.products.length > 8 ? " …" : "") : "")));
+    card.appendChild(el("p", null, res.description));
+    if (res.kev) card.appendChild(el("p", { class: "small" }, "CISA: " + (res.kev.requiredAction || "") + " Due " + res.kev.dueDate + "."));
+    if (res.note) card.appendChild(el("p", { class: "small low-util" }, res.note));
+    const counts = el("div", { class: "tree-row" });
+    [["impacted", "sev-critical"], ["potentially impacted", "sev-high"], ["not affected", "sev-low"]].forEach(([k, cls]) =>
+      counts.appendChild(el("span", { class: "pill " + cls }, fmt((res.counts || {})[k] || 0) + " " + k)));
+    card.appendChild(counts);
+    box.appendChild(card);
+    if (!res.results.length) {
+      box.appendChild(el("p", { class: "muted" }, "Nothing in this inventory runs an affected product."));
+      return;
+    }
+    const wrap = el("div", { class: "table-wrap" });
+    const table = el("table", { class: "estate" });
+    const headRow = el("tr");
+    ["Verdict", "Resource", "Kind", "Product / version", "Why", "Fixed in", "Internet-facing", "URL", "Subscription"]
+      .forEach((h) => headRow.appendChild(el("th", { scope: "col" }, h)));
+    table.appendChild(el("thead")).appendChild(headRow);
+    const body = el("tbody");
+    res.results.forEach((r) => {
+      const tr = el("tr");
+      const verdict = el("td");
+      verdict.appendChild(el("span", { class: "pill " + (VERDICT_PILL[r.verdict] || "sev-info") }, r.verdict));
+      tr.append(verdict, el("td", { title: r.id }, r.name), el("td", null, r.kind),
+        el("td", null, r.label + (r.version && !String(r.label).includes(r.version) ? " · " + r.version : "")),
+        el("td", null, r.reason), el("td", null, r.fixed || ""), el("td", null, r.exposed ? "yes" : ""));
+      const url = el("td", { title: (r.urls || []).join("\n") });
+      if ((r.urls || []).length) url.appendChild(el("a", { href: r.urls[0], target: "_blank", rel: "noopener noreferrer" }, urlLabel(r.urls)));
+      tr.append(url, el("td", null, r.subscription || ""));
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    wrap.appendChild(table);
+    box.appendChild(wrap);
+    $("cve-csv").disabled = false;
+  }
+
+  function cveCsv() {
+    if (!lastCve || !lastCve.results) return;
+    const columns = ["verdict", "name", "kind", "label", "version", "reason", "fixed", "exposed", "urls", "subscription", "id"];
+    const escape = (v) => {
+      let text = v === undefined || v === null ? "" : String(v);
+      if (/^[=+\-@]/.test(text)) text = "'" + text; // no formula injection when opened in Excel
+      return /[",\n;]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+    };
+    const value = (r, c) => (Array.isArray(r[c]) ? r[c].join(" ") : r[c]);
+    const lines = [columns.join(",")].concat(lastCve.results.map((r) => columns.map((c) => escape(value(r, c))).join(",")));
+    const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = el("a", { href: URL.createObjectURL(blob), download: lastCve.cve + "-impact.csv" });
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
   function render() {
     renderTiles();
     writeUrl();
+    const isCve = state.view === "cve";
+    $("cve-panel").hidden = !isCve;
+    $("c-table-card").hidden = isCve;
+    document.querySelector("#c-filters .filter-grid").hidden = isCve;
+    $("c-hint").hidden = isCve;
+    if (isCve) {
+      loadKev();
+      if (state.cve && (!lastCve || lastCve.cve !== state.cve)) { $("cve-id").value = state.cve; runCve(state.cve); }
+      return;
+    }
     $("c-hint").textContent = hint();
     const columns = COLUMNS[state.view];
     const list = sorted(rows[state.view].filter(matches));
@@ -377,17 +596,19 @@
       tbody.appendChild(tr);
       return;
     }
+    const expands = EXPANDS.includes(state.view);
     slice.forEach((r) => {
-      const tr = el("tr", state.view === "machines" ? { class: "clickable", tabindex: "0", "aria-expanded": state.open.has(r.id) ? "true" : "false" } : null);
+      const key = state.view === "images" ? r.id + "|" + r.name : r.id;
+      const tr = el("tr", expands ? { class: "clickable", tabindex: "0", "aria-expanded": state.open.has(key) ? "true" : "false" } : null);
       columns.forEach((c) => tr.appendChild(cell(r, c)));
       tbody.appendChild(tr);
-      if (state.view !== "machines") return;
-      const toggle = () => { if (state.open.has(r.id)) state.open.delete(r.id); else state.open.add(r.id); render(); };
+      if (!expands) return;
+      const toggle = () => { if (state.open.has(key)) state.open.delete(key); else state.open.add(key); render(); };
       tr.addEventListener("click", toggle);
       tr.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
-      if (state.open.has(r.id)) {
+      if (state.open.has(key)) {
         const detail = el("tr", { class: "detail" });
-        detail.appendChild(machineDetail(r, columns.length));
+        detail.appendChild(state.view === "images" ? imageDetail(r, columns.length) : machineDetail(r, columns.length));
         tbody.appendChild(detail);
       }
     });
@@ -400,15 +621,18 @@
         "criticalPath", "state", "env", "subscription", "resourceGroup", "location", "id"],
       sql: ["name", "host", "product", "edition", "build", "service", "support", "supportEnds", "supportNote", "esuLabel",
         "status", "license", "subscription", "resourceGroup", "id"],
-      apps: ["name", "kind", "runtime", "support", "supportEnds", "supportNote", "exposure", "state", "subscription",
+      apps: ["name", "kind", "runtime", "support", "supportEnds", "supportNote", "exposure", "urls", "state", "subscription",
         "resourceGroup", "id"],
+      images: ["name", "workload", "kind", "image", "registry", "repository", "tag", "digest", "exposure", "url", "scan",
+        "packages", "high", "state", "subscription", "resourceGroup", "id"],
     }[state.view];
     const escape = (v) => {
       let text = v === undefined || v === null ? "" : String(v);
       if (/^[=+\-@]/.test(text)) text = "'" + text; // no formula injection when opened in Excel
       return /[",\n;]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
     };
-    const lines = [columns.join(",")].concat(lastRows.map((r) => columns.map((c) => escape(r[c])).join(",")));
+    const value = (r, c) => (Array.isArray(r[c]) ? r[c].join(" ") : r[c]);
+    const lines = [columns.join(",")].concat(lastRows.map((r) => columns.map((c) => escape(value(r, c))).join(",")));
     const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
     const a = el("a", { href: URL.createObjectURL(blob), download: "compute-" + state.view + ".csv" });
     document.body.appendChild(a);
@@ -469,5 +693,8 @@
   $("c-prev").addEventListener("click", () => { state.page -= 1; render(); });
   $("c-next").addEventListener("click", () => { state.page += 1; render(); });
   $("compute-refresh").addEventListener("click", refresh);
+  $("cve-form").addEventListener("submit", (e) => { e.preventDefault(); if (data) runCve($("cve-id").value); });
+  $("kev-days").addEventListener("change", () => { if (data) loadKev(); });
+  $("cve-csv").addEventListener("click", cveCsv);
   load();
 })();

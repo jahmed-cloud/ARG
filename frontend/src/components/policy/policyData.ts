@@ -4,7 +4,7 @@
  * CSV. No React in here.
  */
 
-export type PolicyView = 'issues' | 'tree' | 'assignments' | 'subscriptions' | 'policies' | 'exemptions';
+export type PolicyView = 'issues' | 'tree' | 'graph' | 'assignments' | 'subscriptions' | 'policies' | 'exemptions';
 export type Row = Record<string, any>;   // eslint-disable-line @typescript-eslint/no-explicit-any
 
 export interface Issue {
@@ -36,13 +36,15 @@ export interface PolicyAnalysis {
   exemptions: Row[];
 }
 
-export const VIEWS: PolicyView[] = ['issues', 'tree', 'assignments', 'subscriptions', 'policies', 'exemptions'];
+export const VIEWS: PolicyView[] = ['issues', 'tree', 'graph', 'assignments', 'subscriptions', 'policies', 'exemptions'];
 export const VIEW_LABELS: Record<PolicyView, string> = {
-  issues: 'Issues', tree: 'Tree', assignments: 'Assignments', subscriptions: 'Subscriptions', policies: 'Policies',
+  issues: 'Issues', tree: 'Tree', graph: 'Graph', assignments: 'Assignments', subscriptions: 'Subscriptions', policies: 'Policies',
   exemptions: 'Exemptions',
 };
 export const FILTER_KEYS = ['view', 'q', 'scope', 'effect', 'source', 'category', 'enforcement', 'status', 'issues',
-  'hidesubs', 'node'];
+  'hidesubs', 'node', 'lens', 'focus', 'expand'];
+/** URL keys of the Graph view - not filters (Clear keeps them out of the count). */
+export const GRAPH_KEYS = ['lens', 'focus', 'expand'];
 /** The views each facet filter applies to. */
 export const APPLIES: Record<string, PolicyView[]> = {
   scope: ['assignments', 'exemptions'], effect: ['assignments', 'subscriptions', 'policies'],
@@ -52,7 +54,7 @@ export const APPLIES: Record<string, PolicyView[]> = {
 
 export interface Column { key: string; label: string; num?: boolean; pct?: boolean }
 
-export const COLUMNS: Record<Exclude<PolicyView, 'issues' | 'tree'>, Column[]> = {
+export const COLUMNS: Record<Exclude<PolicyView, 'issues' | 'tree' | 'graph'>, Column[]> = {
   assignments: [
     { key: 'display', label: 'Assignment' }, { key: 'scopeText', label: 'Scope' }, { key: 'definition', label: 'Definition' },
     { key: 'typeLabel', label: 'Type' }, { key: 'policies', label: 'Policies', num: true }, { key: 'effectsText', label: 'Effects' },
@@ -98,6 +100,7 @@ export const effectClass = (effect: string) => {
 export function prepare(d: PolicyAnalysis): Record<PolicyView, Row[]> {
   return {
     tree: [],
+    graph: [],
     issues: d.issues.map((i) => ({
       ...i, id: i.key, haystack: [i.title, i.detail, i.fix, i.items.join(' ')].join(' ').toLowerCase(),
     })),
@@ -227,7 +230,7 @@ const csv = (columns: string[], rows: Row[]) =>
   '﻿' + [columns.join(',')].concat(rows.map((r) => columns.map((c) => csvCell(r[c])).join(','))).join('\r\n');
 
 export function toCsv(rows: Row[], view: PolicyView): string {
-  const columns = view === 'tree'
+  const columns = view === 'tree' || view === 'graph'
     ? ['kind', 'label', 'parent', 'assigned', 'inherited', 'assignedBelow', 'subscriptions', 'notEnforced', 'issues', 'assignments', 'scope']
     : view === 'issues'
       ? ['severity', 'title', 'count', 'detail', 'fix']

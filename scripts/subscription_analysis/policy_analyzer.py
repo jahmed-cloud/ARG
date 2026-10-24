@@ -299,7 +299,8 @@ def analyse(data: Dict[str, Any], policy: Optional[Dict[str, Any]], today: Optio
                   else "expires soon" if expires <= soon else "active")
         target = by_id.get(e.get("assignment") or "")
         exemption_rows.append({"id": e.get("id") or "", "display": e.get("display") or "", "category": e.get("category") or "",
-                               "scopeKind": kind, "scopeLabel": label,
+                               "scopeKind": kind, "scopeLabel": label, "scope": scope.lower(),
+                               "assignmentId": e.get("assignment") or "",
                                "assignment": target["display"] if target else (e.get("assignment") or "").rsplit("/", 1)[-1],
                                "policies": e.get("references") or 0, "expires": expires or None, "status": status})
 

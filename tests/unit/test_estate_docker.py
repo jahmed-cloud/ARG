@@ -1,6 +1,6 @@
 """Admin Estate in the Docker stack: database findings + live inventory -> snapshot, worker refresh, admin-only API."""
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -239,7 +239,8 @@ def completed(**kw):
 @pytest.mark.parametrize("method,path", [("get", "/estate"), ("get", "/estate/status"),
                                          ("get", "/estate/overview.md"), ("post", "/estate/refresh"),
                                          ("get", "/estate/compute"), ("get", "/estate/policy"),
-                                         ("get", "/estate/policy.md")])
+                                         ("get", "/estate/policy.md"), ("get", "/estate/policy-graph.svg"),
+                                         ("get", "/estate/cve/kev"), ("get", "/estate/cve/CVE-2099-0101")])
 def test_estate_is_admin_only(role, method, path):
     assert getattr(client(AsyncDb(), role), method)(path).status_code == 403
 
@@ -339,3 +340,23 @@ def test_compute_and_policy_open_for_admins_only(role):
             "compute": {"machines": [{"name": "vm-1"}], "apps": [], "sql": [], "summary": {"machines": 1}}}
     assert client(AsyncDb(completed(data=data)), role).get("/estate/compute").status_code == 200
     assert client(AsyncDb(completed(data=data)), role).get("/estate/policy").json()["tree"]["roots"]
+    graph = client(AsyncDb(completed(data=data)), role).get("/estate/policy-graph.svg?lens=scope&focus=sub:aaaa")
+    assert graph.status_code == 200 and "How Azure Policy reaches sub-prod" in graph.text
+    assert client(AsyncDb(completed(data=data)), role).get("/estate/policy-graph.svg?lens=other").status_code == 422
+
+
+
+def test_cve_check_reads_the_newest_inventory(monkeypatch):
+    from scripts.subscription_analysis import cve
+    from tests.unit.test_cve_check import COMPUTE, match, record
+
+    monkeypatch.setattr(cve, "fetch_cve", lambda cve_id, cache=None: record(
+        match("cpe:2.3:o:paloaltonetworks:pan-os:*:*:*:*:*:*:*:*", versionStartIncluding="11.1.0", versionEndExcluding="11.1.3")))
+    monkeypatch.setattr(cve, "fetch_kev", lambda cache=None: {"vulnerabilities": [
+        {"cveID": "CVE-K", "vendorProject": "Palo Alto Networks", "product": "PAN-OS", "dateAdded": date.today().isoformat()}]})
+    data = {"format": 2, "resources": [], "suggestions": [], "compute": COMPUTE}
+    body = client(AsyncDb(completed(data=data))).get("/estate/cve/CVE-2026-1234").json()
+    assert body["results"][0]["name"] == "fw" and body["results"][0]["verdict"] == "impacted"
+    assert client(AsyncDb(completed(data=data))).get("/estate/cve/kev").json()["rows"][0]["cve"] == "CVE-K"
+    assert client(AsyncDb(completed(data=data))).get("/estate/cve/bad-id").status_code == 422
+    assert client(AsyncDb(completed())).get("/estate/cve/CVE-2026-1234").status_code == 404     # no Compute data

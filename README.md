@@ -265,15 +265,17 @@ are skipped in this mode.
 
 ### Estate, architecture and analysis
 - **Estate** (local portal and, for admins, the Docker UI): every resource across all connected subscriptions with
-  filters, usage profiles (vCPU, RAM, CPU / memory 30 d), cost, suggestions, CSV export and a markdown overview;
+  filters, usage profiles (vCPU, RAM, CPU / memory 30 d), cost, web endpoints, suggestions, CSV export and a markdown overview;
   the worker refreshes it after each scan (`ESTATE_REFRESH_AFTER_SCAN`)
 - **Compute**: every VM and Azure Arc server with its operating system and end of support, public IP, vulnerability
   scanner coverage, pending security updates, outdated packages, CVEs and SQL Server instances, plus the runtime of
-  every App Service app; a search across software, packages and CVE IDs and a *critical path* filter (internet-facing
-  with a known weakness)
+  every App Service app and container; a search across software, packages and CVE IDs, a *critical path* filter
+  (internet-facing with a known weakness) and a **CVE check** that matches NVD's affected versions and CISA's
+  known-exploited catalog to the inventory (only the CVE ID leaves your network)
 - **Policy**: what Azure Policy enforces across the tenant - issues, the assignment tree by scope (where an assignment
   is made and where it applies, with Microsoft's icons), every assignment with the effect of each of its policies,
-  the policy in effect per subscription, policies in force, exemptions and a markdown report
+  the policy in effect per subscription, policies in force, exemptions, a graph of how policy reaches a scope and a
+  markdown report
 - **Architecture**: network and landing-zone diagrams drawn with Microsoft's Azure icons, and a comparison of the
   tenant's management groups and policy with the Azure Landing Zones reference (pinned ALZ library)
 - **Analysis** page in the Docker UI: the same 5-part analysis as the local report, written after each scan

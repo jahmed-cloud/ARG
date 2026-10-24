@@ -29,6 +29,7 @@
   <div class="view-switch" role="group" aria-label="Policy view">
     <button type="button" class="tab active" data-view="issues" aria-pressed="true">Issues</button>
     <button type="button" class="tab" data-view="tree" aria-pressed="false">Tree</button>
+    <button type="button" class="tab" data-view="graph" aria-pressed="false">Graph</button>
     <button type="button" class="tab" data-view="assignments" aria-pressed="false">Assignments</button>
     <button type="button" class="tab" data-view="subscriptions" aria-pressed="false">Subscriptions</button>
     <button type="button" class="tab" data-view="policies" aria-pressed="false">Policies</button>
@@ -67,6 +68,25 @@
     </div>
   </div>
   <div id="p-issues-list"></div>
+  <div id="p-graph-view" hidden>
+    <div class="toolbar graph-toolbar">
+      <label>View <select id="g-lens">
+        <option value="scope">Scope - how policy reaches it</option>
+        <option value="initiative">Initiative - where it is assigned</option>
+      </select></label>
+      <label id="g-scope-wrap">Scope <select id="g-scope"></select></label>
+      <label id="g-def-wrap">Initiative / policy <select id="g-def"></select></label>
+      <div class="graph-zoom" role="group" aria-label="Zoom">
+        <button id="g-zoom-out" type="button" class="secondary" aria-label="Zoom out">−</button>
+        <button id="g-fit" type="button" class="secondary">Fit</button>
+        <button id="g-zoom-in" type="button" class="secondary" aria-label="Zoom in">+</button>
+      </div>
+      <button id="g-collapse" type="button" class="secondary">Close all policies</button>
+      <button id="g-export" type="button" class="secondary">Download SVG</button>
+    </div>
+    <p id="g-status" class="small muted" role="status"></p>
+    <div id="g-host" class="graph-host" aria-label="Policy assignment graph"></div>
+  </div>
   <div id="p-tree-view" hidden>
     <div class="toolbar tree-toolbar">
       <button id="t-expand" type="button" class="secondary">Expand all</button>

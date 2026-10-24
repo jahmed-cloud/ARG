@@ -89,6 +89,8 @@ interface NavItem {
   label: string;
   path: string;
   icon: React.ReactNode;
+  // One line on hover: what the page answers.
+  description: string;
   badge?: number;
   group: NavGroup;
   // Tenant-wide or write-only pages: admins and contributors only (hidden for owners, readers and auditors).
@@ -98,22 +100,22 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Overview", path: "/dashboard", icon: <Dashboard />, group: "WORKSPACE" },
-  { label: "Scans", path: "/scans", icon: <SearchOutlined />, group: "WORKSPACE" },
-  { label: "Findings", path: "/findings", icon: <BugReport />, group: "WORKSPACE" },
-  { label: "Cost Savings", path: "/costs", icon: <AttachMoney />, group: "WORKSPACE" },
-  { label: "Estate", path: "/estate", icon: <ViewQuilt />, group: "ESTATE", adminOnly: true },
-  { label: "Compute", path: "/compute", icon: <Dns />, group: "ESTATE", adminOnly: true },
-  { label: "Architecture", path: "/architecture", icon: <Hub />, group: "ESTATE", adminOnly: true },
-  { label: "Identity", path: "/identity", icon: <Person />, group: "ASSESSMENT", operatorsOnly: true },
-  { label: "Governance", path: "/governance", icon: <Policy />, group: "ASSESSMENT" },
-  { label: "Policy", path: "/policy", icon: <Gavel />, group: "ASSESSMENT", adminOnly: true },
-  { label: "Security", path: "/security", icon: <Security />, group: "ASSESSMENT" },
-  { label: "Terraform Drift", path: "/drift", icon: <CompareArrows />, group: "ASSESSMENT" },
-  { label: "Analysis", path: "/analysis", icon: <MenuBook />, group: "ASSESSMENT" },
-  { label: "Reports", path: "/reports", icon: <Description />, group: "OPERATIONS" },
-  { label: "Remediation", path: "/remediation", icon: <Build />, group: "OPERATIONS", operatorsOnly: true },
-  { label: "Subscriptions", path: "/subscriptions", icon: <CloudQueue />, group: "OPERATIONS" },
+  { label: "Overview", path: "/dashboard", description: "Posture, spend and the latest scan at a glance", icon: <Dashboard />, group: "WORKSPACE" },
+  { label: "Scans", path: "/scans", description: "Run scans and follow their progress", icon: <SearchOutlined />, group: "WORKSPACE" },
+  { label: "Findings", path: "/findings", description: "Every finding with its dossier, scripts and guidance", icon: <BugReport />, group: "WORKSPACE" },
+  { label: "Cost Savings", path: "/costs", description: "Savings by finding, resource and subscription", icon: <AttachMoney />, group: "WORKSPACE" },
+  { label: "Estate", path: "/estate", description: "Every resource, its usage, cost and web endpoints", icon: <ViewQuilt />, group: "ESTATE", adminOnly: true },
+  { label: "Compute", path: "/compute", description: "Operating systems, support dates, patches, containers and CVEs", icon: <Dns />, group: "ESTATE", adminOnly: true },
+  { label: "Architecture", path: "/architecture", description: "Tenant, network and landing-zone diagrams", icon: <Hub />, group: "ESTATE", adminOnly: true },
+  { label: "Identity", path: "/identity", description: "Entra ID hygiene: guests, apps, secrets and roles", icon: <Person />, group: "ASSESSMENT", operatorsOnly: true },
+  { label: "Governance", path: "/governance", description: "Tags, locks, policy findings and what governs a resource", icon: <Policy />, group: "ASSESSMENT" },
+  { label: "Policy", path: "/policy", description: "Assignments by scope, effects, compliance, exemptions and graph", icon: <Gavel />, group: "ASSESSMENT", adminOnly: true },
+  { label: "Security", path: "/security", description: "Network exposure, encryption and Defender posture", icon: <Security />, group: "ASSESSMENT" },
+  { label: "Terraform Drift", path: "/drift", description: "Resources that differ from Terraform state", icon: <CompareArrows />, group: "ASSESSMENT" },
+  { label: "Analysis", path: "/analysis", description: "The 5-part subscription analysis and backlog", icon: <MenuBook />, group: "ASSESSMENT" },
+  { label: "Reports", path: "/reports", description: "Generated reports and exports", icon: <Description />, group: "OPERATIONS" },
+  { label: "Remediation", path: "/remediation", description: "Fix scripts and their status", icon: <Build />, group: "OPERATIONS", operatorsOnly: true },
+  { label: "Subscriptions", path: "/subscriptions", description: "Connected subscriptions and credentials", icon: <CloudQueue />, group: "OPERATIONS" },
 ];
 
 export function AppLayout() {
@@ -209,7 +211,7 @@ export function AppLayout() {
     const active = location.pathname.startsWith(item.path);
     return (
       <ListItem key={item.path} disablePadding sx={{ mb: 0.25 }}>
-        <Tooltip title={compact ? item.label : ""} placement="right">
+        <Tooltip title={compact ? `${item.label} - ${item.description}` : item.description} placement="right" enterDelay={500}>
           <ListItemButton
             aria-label={item.label}
             aria-current={active ? "page" : undefined}

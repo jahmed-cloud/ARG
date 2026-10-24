@@ -20,16 +20,16 @@
       <details class="nav-menu{% if in_estate %} current{% endif %}">
         <summary>Estate</summary>
         <div class="nav-list">
-          <a href="/estate" {% if path.startswith('/estate') %}aria-current="page"{% endif %}>Inventory</a>
-          <a href="/compute" {% if path.startswith('/compute') %}aria-current="page"{% endif %}>Compute</a>
-          <a href="/architecture" {% if path.startswith('/architecture') and not landing %}aria-current="page"{% endif %}>Architecture</a>
+          <a href="/estate" {% if path.startswith('/estate') %}aria-current="page"{% endif %}>Inventory<small>All resources, their usage, cost and suggestions</small></a>
+          <a href="/compute" {% if path.startswith('/compute') %}aria-current="page"{% endif %}>Compute<small>Operating systems, support dates, patches, CVEs, containers</small></a>
+          <a href="/architecture" {% if path.startswith('/architecture') and not landing %}aria-current="page"{% endif %}>Architecture<small>Tenant and network diagrams</small></a>
         </div>
       </details>
       <details class="nav-menu{% if in_governance %} current{% endif %}">
         <summary>Governance</summary>
         <div class="nav-list">
-          <a href="/policy" {% if path.startswith('/policy') %}aria-current="page"{% endif %}>Policy</a>
-          <a href="/architecture?view=landing" {% if landing %}aria-current="page"{% endif %}>Landing zone</a>
+          <a href="/policy" {% if path.startswith('/policy') %}aria-current="page"{% endif %}>Policy<small>Assignments by scope, effects, compliance, exemptions</small></a>
+          <a href="/architecture?view=landing" {% if landing %}aria-current="page"{% endif %}>Landing zone<small>Compared with the Azure landing zone reference</small></a>
         </div>
       </details>
       <a href="/reports/README.md" {% if path.startswith('/reports') %}aria-current="page"{% endif %}>Reports</a>

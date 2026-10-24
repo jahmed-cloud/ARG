@@ -179,6 +179,7 @@ def test_estate_page_and_api(client, tmp_path):
     _login(client)
     fake_runner(None, SUB["id"], tmp_path, lambda *a: None)
     page = client.get("/estate")
+    assert 'id="f-exp"' in page.text                                       # web exposure filter
     assert page.status_code == 200 and "/static/estate.js" in page.text and "<script>" not in page.text
     assert "Junaid Ahmed" in page.text and "https://github.com/jahmed-cloud/ARG" in page.text
     data = client.get("/api/estate", headers={"accept-encoding": "gzip"})
@@ -195,6 +196,7 @@ def test_compute_page_and_api(client, tmp_path):
     page = client.get("/compute")
     assert page.status_code == 200 and "/static/compute.js" in page.text and "<script>" not in page.text
     assert 'href="/compute" aria-current="page"' in page.text
+    assert 'data-view="images"' in page.text and 'data-view="cve"' in page.text   # Containers and CVE check tabs
     assert client.get("/api/compute").status_code == 404                  # before the first live refresh
     (tmp_path / "_estate").mkdir(exist_ok=True)
     (tmp_path / "_estate" / "compute.json").write_text(json.dumps({"machines": [], "summary": {"machines": 0}}),
@@ -222,6 +224,10 @@ def test_policy_page_analysis_and_markdown(client, tmp_path):
     md = client.get("/api/policy.md")
     assert md.text.startswith("# Azure Policy analysis") and "attachment" in md.headers["content-disposition"]
     assert client.get("/static/policy.js").status_code == 200
+    graph = client.get("/api/policy-graph.svg", params={"lens": "scope", "focus": "sub:bbbb"})
+    assert graph.status_code == 200 and graph.headers["content-type"].startswith("image/svg")
+    assert "How Azure Policy reaches sub-dev" in graph.text
+    assert client.get("/api/policy-graph.svg", params={"focus": "sub:nope"}).status_code == 404
     icon = client.get("/azure-icons/Management-Groups.svg")      # Microsoft's icon, unchanged, behind the login
     assert icon.status_code == 200 and icon.headers["content-type"].startswith("image/svg")
     from pathlib import Path
@@ -560,3 +566,26 @@ def test_menu_groups_estate_and_governance_and_marks_the_current_page(client):
     assert current("/architecture") == ({"Estate"}, ["/architecture"])
     assert current("/") == (set(), ["/"])
     assert client.get("/static/nav.js").status_code == 200
+
+
+def test_cve_check_routes(client, tmp_path, monkeypatch):
+    from scripts.subscription_analysis import cve
+    from tests.unit.test_cve_check import COMPUTE, match, record
+
+    monkeypatch.setattr(cve, "fetch_cve", lambda cve_id, cache=None: record(
+        match("cpe:2.3:a:php:php:*:*:*:*:*:*:*:*", versionStartIncluding="8.3.0", versionEndExcluding="8.3.20")))
+    monkeypatch.setattr(cve, "fetch_kev", lambda cache=None: {"catalogVersion": "x", "vulnerabilities": []})
+    assert client.get("/api/cve/CVE-2099-0101").status_code == 401
+    _login(client)
+    assert client.get("/api/cve/CVE-2099-0101").status_code == 404          # no Compute data yet
+    (tmp_path / "_estate").mkdir(exist_ok=True)
+    (tmp_path / "_estate" / "compute.json").write_text(json.dumps(COMPUTE), encoding="utf-8")
+    body = client.get("/api/cve/cve-2099-0101").json()
+    assert body["cve"] == "CVE-2099-0101" and body["results"][0]["name"] == "portal"
+    assert client.get("/api/cve/not-a-cve").status_code == 400
+    assert client.get("/api/cve/kev").json()["rows"] == []
+
+    def down(*a, **k):
+        raise RuntimeError("dns")
+    monkeypatch.setattr(cve, "fetch_cve", down)
+    assert client.get("/api/cve/CVE-2099-0101").status_code == 503

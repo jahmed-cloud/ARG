@@ -105,5 +105,10 @@
 .ws-tree-kind{font:10px 'Consolas',monospace;letter-spacing:.06em;color:var(--muted);text-transform:uppercase}
 .ws-az-icon{width:18px;height:18px;flex:none;display:inline-block}
 .ws-assignment{border:1px solid var(--line);border-radius:2px;padding:8px 10px;margin-bottom:8px}
+.ws-graph{overflow:auto;max-height:78vh;background:#f4f7ef;border:1px solid var(--line);border-radius:4px;margin-bottom:6px}
+.ws-graph svg{display:block}
+.ws-graph .node{cursor:pointer}
+.ws-graph .node:focus{outline:none}
+.ws-graph .node:focus rect.box{stroke:#284d3c;stroke-width:2.5}
 @media(max-width:1000px){.ws-split{grid-template-columns:1fr}.ws-split>.ws-panel:last-child{position:static;max-height:none}}
 @media(max-width:700px){.ws-metric{padding:0 14px}.ws-strip{grid-template-columns:1fr 1fr;gap:18px 0}.ws-metric:nth-child(odd){border-left:0;padding-left:0}.ws-facts{grid-template-columns:1fr}.dossier{padding:20px 16px}.ws-grid{grid-template-columns:1fr}}

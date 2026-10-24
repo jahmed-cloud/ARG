@@ -14,13 +14,13 @@ import { useSnackbar } from 'notistack';
 import { useApi, ApiError } from '../hooks/useApi';
 import { useMoney } from '../hooks/useCurrency';
 import {
-  CPU_BANDS, FILTER_KEYS, Estate, Filters, PAGE_SIZE, RawEstate, Resource, SnapshotMeta, Suggestion,
-  View, activityBand, countBy, cpuBand, cpuProfile, expand, fmt, hasCpu, resourceMatches, sevRank, suggestionMatches,
-  toCsv,
+  CPU_BANDS, ENDPOINT_CAVEAT, FILTER_KEYS, Estate, Filters, PAGE_SIZE, RawEstate, Resource, SnapshotMeta, Suggestion,
+  View, activityBand, countBy, cpuBand, cpuProfile, expLabel, expand, exposureEntries, fmt, hasCpu, resourceMatches,
+  sevRank, suggestionMatches, toCsv,
 } from '../components/estate/estateData';
 import { FindingDossier } from '../components/findings/FindingDossier';
 import {
-  SEVERITY_TONE, WsEmpty, WsFacts, WsHeading, WsMetric, WsPage, WsPanel, WsSection, WsStrip,
+  SEVERITY_TONE, SafeLink, WsEmpty, WsFacts, WsHeading, WsMetric, WsPage, WsPanel, WsSection, WsStrip,
 } from '../components/workspace/Workspace';
 
 interface EstateStatus { running: boolean; latest: SnapshotMeta | null; available: SnapshotMeta | null }
@@ -196,6 +196,7 @@ export const EstatePage: React.FC = () => {
       sub: by('sub', (x) => x.subscriptionId),
       region: countBy(res('region'), (r) => r.location || '(none)'),
       env: countBy(res('env'), (r) => r.env),
+      exp: exposureEntries(res('exp')),
       stype: countBy(sug('stype'), (s) => s.type),
       sev: countBy(sug('sev'), (s) => s.severity).sort((a, b) => sevRank(a[0]) - sevRank(b[0])),
     };
@@ -299,6 +300,13 @@ export const EstatePage: React.FC = () => {
                   ]} />
                 </WsPanel>
               )}
+              {exposureEntries(estate.resources).length > 0 && (
+                <WsPanel eyebrow="Web endpoints" title="Network exposure">
+                  <Bars active={filters.exp} onPick={(v) => update({ exp: v || null, view: null })}
+                    rows={exposureEntries(estate.resources).map(([k, n]) => ({ label: expLabel(k), value: n, text: fmt(n), filter: k }))} />
+                  <p className="ws-muted" style={{ fontSize: 11, lineHeight: 1.6, margin: '12px 0 0' }}>{ENDPOINT_CAVEAT}</p>
+                </WsPanel>
+              )}
               {telemetry.tag_coverage && telemetry.tag_coverage.most_missed.length > 0 && (
                 <WsPanel eyebrow="Tags" title="Most missed tags">
                   <Bars rows={telemetry.tag_coverage.most_missed.slice(0, 8).map((t) => ({ label: t.tag, value: t.resources, text: fmt(t.resources) }))} />
@@ -320,12 +328,15 @@ export const EstatePage: React.FC = () => {
             {facets && (
               <div className="ws-filters">
                 <label>Search<input type="search" value={filters.q ?? ''} onChange={(e) => setFilter('q', e.target.value)}
-                  placeholder="Name, group, tag, size…" /></label>
+                  placeholder="Name, group, tag, size, hostname…" /></label>
                 <FilterSelect label="Category" value={filters.category ?? ''} entries={facets.category} all="All" onChange={(v) => setFilter('category', v)} />
                 <FilterSelect label="Type" value={filters.type ?? ''} entries={facets.type} all="All" onChange={(v) => setFilter('type', v)} />
                 <FilterSelect label="Subscription" value={filters.sub ?? ''} entries={facets.sub} all="All" labelFn={subName} onChange={(v) => setFilter('sub', v)} />
                 {view === 'resources' && <FilterSelect label="Region" value={filters.region ?? ''} entries={facets.region} all="All" onChange={(v) => setFilter('region', v)} />}
                 {view === 'resources' && <FilterSelect label="Environment" value={filters.env ?? ''} entries={facets.env} all="All" onChange={(v) => setFilter('env', v)} />}
+                {view === 'resources' && facets.exp.length > 0 && (
+                  <FilterSelect label="Web exposure" value={filters.exp ?? ''} entries={facets.exp} all="All" labelFn={expLabel} onChange={(v) => setFilter('exp', v)} />
+                )}
                 <FilterSelect label="Suggestion type" value={filters.stype ?? ''} entries={facets.stype} all="All" onChange={(v) => setFilter('stype', v)} />
                 <FilterSelect label="Severity" value={filters.sev ?? ''} entries={facets.sev} all="All" onChange={(v) => setFilter('sev', v)} />
                 <label>Hygiene<select value={filters.hyg ?? ''} onChange={(e) => setFilter('hyg', e.target.value)}>
@@ -413,6 +424,20 @@ export const EstatePage: React.FC = () => {
                 ['OS / runtime', resource.os], ['State', resource.state], ['Kind', resource.kind], ['Managed by', resource.managedBy],
               ]} />
             </WsSection>
+            {resource.endpoint && (
+              <WsSection number={++sectionNo} title="Web endpoint">
+                <WsFacts rows={[
+                  ['Hostname', resource.endpoint.host ? <SafeLink href={`https://${resource.endpoint.host}`}>{resource.endpoint.host}</SafeLink> : 'no hostname'],
+                  ['Custom domains', resource.endpoint.domains.length
+                    ? <>{resource.endpoint.domains.map((d, i) => <React.Fragment key={d}>{i > 0 && ', '}<SafeLink href={`https://${d}`}>{d}</SafeLink></React.Fragment>)}</>
+                    : null],
+                  ['Network exposure', resource.endpoint.exposure || 'not known'],
+                ]} />
+                {resource.endpoint.internet && /app endpoint/i.test(resource.endpoint.exposure) && (
+                  <p className="ws-text ws-muted" style={{ marginTop: 10 }}>{ENDPOINT_CAVEAT}</p>
+                )}
+              </WsSection>
+            )}
             {(hasCpu(resource) || activityBand(resource)) && (
               <WsSection number={++sectionNo} title="Usage, last 30 days">
                 <p className="ws-text">{cpuProfile(resource) || activityBand(resource) || 'No metrics.'}</p>

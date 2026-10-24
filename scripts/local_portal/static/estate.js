@@ -5,7 +5,12 @@
 
   const PAGE_SIZE = 100;
   const SEVERITIES = ["critical", "high", "medium", "low", "info"];
-  const FILTER_KEYS = ["q", "category", "type", "size", "sub", "region", "env", "state", "has", "stype", "sev", "hyg", "ext", "cpu", "act"];
+  const FILTER_KEYS = ["q", "category", "type", "size", "sub", "region", "env", "state", "exp", "has", "stype", "sev", "hyg", "ext", "cpu", "act"];
+  // Web endpoints (App Service apps / slots, Static Web Apps, Container Apps): exposure as Resource Graph sees it
+  const CUSTOM_DOMAIN = "custom";
+  const expLabel = (v) => (v === CUSTOM_DOMAIN ? "With a custom domain" : v);
+  const ENDPOINT_CAVEAT = "Resource Graph does not show App Service access restrictions, Front Door / Application " +
+    "Gateway in front of the app or sign-in: a public endpoint is reachable at network level, not necessarily open to everyone.";
   const RESOURCE_COLUMNS = [
     { key: "name", label: "Name" }, { key: "typeLabel", label: "Type" }, { key: "size", label: "Size / SKU" },
     { key: "vcpu", label: "vCPU", num: true, compute: true }, { key: "ramGB", label: "RAM (GB)", num: true, compute: true },
@@ -93,6 +98,8 @@
         burstHours: r.burst === undefined ? null : r.burst, memPeakHour: r.memHr === undefined ? null : r.memHr,
         activity: r.act === undefined ? null : r.act, usage: r.use || "", idle: !!r.idle, dormant: !!r.dor,
         nva: !!r.nva,
+        endpoint: r.ep ? { host: r.ep.h || "", domains: r.ep.d || [], exposure: r.ep.x || "", internet: !!r.ep.i } : null,
+        host: r.ep ? r.ep.h || "" : "", domains: r.ep ? (r.ep.d || []).join(" ") : "", webExposure: r.ep ? r.ep.x || "" : "",
       };
     });
     const suggestions = (data.suggestions || []).map((s) => {
@@ -144,7 +151,8 @@
     estate.resources.forEach((r) => {
       r._key = r.id.toLowerCase();
       const tags = Object.entries(r.tags || {}).map(([k, v]) => k + "=" + v).join(" ");
-      r._text = [r.name, r.resourceGroup, r.typeLabel, r.size, r.config, r.os, r.state, r.kind, r.subscription, tags].join(" ").toLowerCase();
+      r._text = [r.name, r.resourceGroup, r.typeLabel, r.size, r.config, r.os, r.state, r.kind, r.subscription, tags,
+        r.host, r.domains].join(" ").toLowerCase();
     });
     const source = estate.source === "resource-graph"
       ? "live Resource Graph inventory from " + String(estate.inventory_at || "").slice(0, 16).replace("T", " ") + " UTC"
@@ -173,6 +181,10 @@
     if (f.region && skip !== "region" && (r.location || "(none)") !== f.region) return false;
     if (f.env && skip !== "env" && r.env !== f.env) return false;
     if (f.state && skip !== "state" && (r.state || "(none)") !== f.state) return false;
+    if (f.exp && skip !== "exp") {
+      if (!r.endpoint) return false;
+      if (f.exp === CUSTOM_DOMAIN ? !r.endpoint.domains.length : r.endpoint.exposure !== f.exp) return false;
+    }
     if (f.has && skip !== "has") {
       if (f.has === "any" && !r.suggestions) return false;
       if (f.has === "none" && r.suggestions) return false;
@@ -191,7 +203,7 @@
   // Tag / naming findings are on almost every resource: hidden unless asked for (checkbox or suggestion type).
   const visibleSuggestion = (s, f) => !s.hygiene || !!f.hyg || (f.stype && f.stype === s.type);
 
-  const RESOURCE_FILTERS = ["category", "type", "size", "region", "env", "state", "has"];
+  const RESOURCE_FILTERS = ["category", "type", "size", "region", "env", "state", "exp", "has"];
   function suggestionMatches(s, f, skip) {
     if (!visibleSuggestion(s, f)) return false;
     if (f.q && skip !== "q" && !(s.title + " " + s.resourceName + " " + s.type + " " + s.subscription).toLowerCase().includes(f.q.toLowerCase())) return false;
@@ -262,6 +274,8 @@
           (r) => (key === "size" ? r.size : key === "region" ? r.location : r[key]) || "(none)"), null, "Any");
       });
     }
+    fillSelect("f-exp", "exp", exposureEntries(estate.resources.filter((r) => resourceMatches(r, state.f, "exp"))), expLabel,
+      "All resources");
     const pick = (r) => (byResource.get(r._key) || []).filter((s) => visibleSuggestion(s, state.f));
     const suggestionPool = res ? base("stype").flatMap((r) => byResource.get(r._key) || []) : sugg("stype");
     fillSelect("f-stype", "stype", countBy(suggestionPool, (s) => s.type), null, "All suggestion types");
@@ -272,6 +286,14 @@
     $("f-has").disabled = !res;
     $("f-hyg").checked = !!state.f.hyg;
     $("f-ext").checked = !!state.f.ext;
+  }
+
+  // Exposure of the web endpoints among these resources, plus how many answer on a custom domain.
+  function exposureEntries(list) {
+    const web = list.filter((r) => r.endpoint);
+    const entries = countBy(web, (r) => r.endpoint.exposure || undefined);
+    const custom = web.filter((r) => r.endpoint.domains.length).length;
+    return custom ? entries.concat([[CUSTOM_DOMAIN, custom]]) : entries;
   }
 
   // ---- tiles and breakdowns ------------------------------------------------
@@ -295,10 +317,11 @@
     });
   }
 
-  function panel(title, entries, key, labelFn) {
+  function panel(title, entries, key, labelFn, note) {
     if (!entries.length) return null;
     const box = el("div", { class: "card breakdown" });
     box.appendChild(el("h3", null, title));
+    if (note) box.appendChild(el("p", { class: "muted small" }, note));
     const max = entries[0][1] || 1;
     const list = el("ul");
     entries.slice(0, 12).forEach(([value, count]) => {
@@ -334,6 +357,7 @@
       panel("By region", countBy(current, (r) => r.location || "(none)"), "region"),
       panel("By subscription", countBy(current, (r) => r.subscriptionId), "sub", subName),
       panel("By environment", countBy(current, (r) => r.env), "env"),
+      panel("Web endpoints - network exposure", exposureEntries(current), "exp", expLabel, ENDPOINT_CAVEAT),
       panel("Suggestions on these resources", countBy(current.flatMap((r) => (byResource.get(r._key) || [])
         .filter((s) => visibleSuggestion(s, state.f))), (s) => s.type), "stype"),
     ] : [
@@ -456,6 +480,7 @@
         r.nva ? "network virtual appliance: vendor-sized, ~100 % memory is normal" : null,
       ].filter(Boolean).join(" · ") + " - last 30 days, Azure Monitor"));
     }
+    if (r.endpoint) td.appendChild(endpointLine(r.endpoint));
     const links = el("p", { class: "small" });
     const portal = el("a", { href: "https://portal.azure.com/#resource" + r.id, target: "_blank", rel: "noopener" }, "Open in Azure portal");
     links.appendChild(portal);
@@ -496,6 +521,22 @@
     }
     detail.appendChild(td);
     tr.after(detail);
+  }
+
+  // Hostname, custom domains and exposure of a web app, slot, static web app or container app.
+  function endpointLine(ep) {
+    const line = el("p", { class: "small" });
+    line.appendChild(el("strong", null, "Endpoint: "));
+    const names = ep.domains.concat(ep.host ? [ep.host] : []);
+    names.forEach((n, i) => {
+      if (i) line.append(", ");
+      line.appendChild(el("a", { href: "https://" + n, target: "_blank", rel: "noopener noreferrer" }, n));
+      if (n !== ep.host) line.append(" (custom domain)");
+    });
+    if (!names.length) line.append("no hostname");
+    line.append(" · " + (ep.exposure || "exposure not known"));
+    if (ep.internet && /app endpoint/i.test(ep.exposure)) line.appendChild(el("span", { class: "muted", title: ENDPOINT_CAVEAT }, " ⓘ"));
+    return line;
   }
 
   function suggestionRow(s) {
@@ -583,7 +624,7 @@
 
   function csv() {
     const columns = state.view === "resources"
-      ? ["name", "typeLabel", "category", "size", "vcpu", "ramGB", "cpuAvg", "cpuPeakHour", "cpuP95", "cpuMax", "burstHours", "memAvg", "usage", "activity", "idle", "config", "os", "state", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
+      ? ["name", "typeLabel", "category", "size", "vcpu", "ramGB", "cpuAvg", "cpuPeakHour", "cpuP95", "cpuMax", "burstHours", "memAvg", "usage", "activity", "idle", "config", "os", "state", "host", "domains", "webExposure", "env", "location", "subscription", "resourceGroup", "cost30", "currency", "suggestions", "maxSeverity", "id"]
       : ["severity", "ref", "title", "type", "resourceName", "typeLabel", "category", "subscription", "savings", "savingsCurrency", "savingsUsd", "wave", "resourceId"];
     const escape = (v) => {
       let text = v === undefined || v === null ? "" : String(v);
@@ -639,7 +680,7 @@
       timer = setTimeout(() => setFilter("q", e.target.value.trim()), 200);
     });
     [["f-category", "category"], ["f-type", "type"], ["f-size", "size"], ["f-sub", "sub"], ["f-region", "region"],
-     ["f-env", "env"], ["f-state", "state"], ["f-has", "has"], ["f-stype", "stype"], ["f-sev", "sev"]].forEach(([id, key]) => {
+     ["f-env", "env"], ["f-state", "state"], ["f-exp", "exp"], ["f-has", "has"], ["f-stype", "stype"], ["f-sev", "sev"]].forEach(([id, key]) => {
       $(id).addEventListener("change", (e) => setFilter(key, e.target.value));
     });
     $("f-hyg").addEventListener("change", (e) => setFilter("hyg", e.target.checked ? "1" : ""));

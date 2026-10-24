@@ -5,6 +5,31 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### CVE check, containers, web endpoints and policy graph - 2026-10-24
+- **CVE check** (Compute > CVE check, local portal and Docker UI, admins; `scripts/subscription_analysis/cve.py`):
+  which VM, Arc server, SQL Server instance, App Service app or container a CVE concerns - NVD's affected versions (one
+  CVE per request, cached a day) and CISA's Known Exploited Vulnerabilities catalog (once a day) matched to the
+  inventory, with impacted / potentially impacted / not affected, the reason and the fixed version; recently exploited
+  CVEs for products the estate runs, each with a Check button. Only the CVE ID is sent; no CVE database is mirrored.
+  Appliance firmware: FortiOS, FortiWeb and PAN-OS. Routes: `GET /estate/cve/<id>`, `GET /estate/cve/kev`.
+- **Containers** (Compute > Containers): every container of Container Apps, Container Apps jobs, Container Instances
+  and App Service custom containers - image, registry, tag / digest, network exposure, state and the packages Defender
+  reports outdated in that exact image. An Azure Container Registry image without findings is "no Defender findings"
+  (up to date or not scanned), not "scanned".
+- **One exposure verdict** (`network.container_exposure`, `network.web_endpoint`) for the inventory, Compute and the
+  CVE check: a Container App with external ingress in a VNet-internal environment is VNet only, not internet-facing;
+  deployment slots get their own exposure; apps with public access off are not counted as internet-facing.
+- **Web endpoints in the Estate inventory**: App Service apps and slots, Static Web Apps and Container Apps carry their
+  hostname and custom domains - in the resource dossier, searchable, a *Web exposure* filter and breakdown, CSV columns.
+- **Policy graph** (Policy > Graph): how policy reaches a scope (parent chain, initiatives where they are assigned,
+  inheritance, exclusions, what is in effect) or where an initiative is assigned, drawn server-side with the Azure icons
+  (`policy_graph.py`, `GET /estate/policy-graph.svg`); tree scopes and assignments open it directly. Tree scopes name
+  the initiatives assigned on them.
+- **Menus**: one-line descriptions for every page (local portal menu, Docker sidebar on hover). Fixed: the local
+  portal menu showed "BE" instead of its chevron.
+- Tests: `test_cve_check.py`, plus container, web endpoint and graph cases in the Compute, Policy, Estate and portal
+  tests.
+
 ### Compute, Policy and grouped menus - 2026-10-22
 - **Compute** (local portal `/compute`, Docker UI *Compute*, admins): every VM and Azure Arc server with the
   operating system it reports, end of support (`scanners/base/lifecycle.py`), public IP, vulnerability scanner,

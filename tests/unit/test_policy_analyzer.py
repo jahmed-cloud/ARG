@@ -190,3 +190,50 @@ def test_assignment_tree_places_assignments_and_counts_what_reaches_each_scope()
     assert "    - **Landing zones** (management group) - 2 assigned, 1 inherited" in text
     assert "ASC Default [initiative Microsoft cloud security benchmark, 2 policies]" in text
     assert "Allowed locations [policy Allowed locations]" in text
+
+
+def test_graph_scope_lens_shows_the_chain_inheritance_exclusions_and_what_is_in_effect():
+    from scripts.subscription_analysis import policy_graph
+
+    r = result()
+    svg = policy_graph.render(r, "scope", "sub:bbbb")
+    assert svg.startswith("<svg") and "How Azure Policy reaches sub-dev" in svg
+    for scope in ("Tenant Root Group", "Contoso", "Landing zones", "sub-dev"):
+        assert scope in svg
+    assert svg.count('data-focus="mg:') >= 3 and 'data-lens="scope"' in svg
+    # the Contoso assignment excludes sub-dev: drawn red, dashed, to where it stops
+    assert "excluded at sub-dev" in svg and "✕ excluded" in svg and 'stroke-dasharray="6 4"' in svg
+    assert "In effect on this subscription" in svg
+    assert "ic-management-groups" in svg and "ic-subscriptions" in svg and "ic-policy" in svg   # the Azure icons
+    assert "<script" not in svg and "href=" not in svg.replace('href="#', "").replace('href="data:', "")
+
+
+def test_graph_node_opens_with_its_facts_and_policies_grouped_by_effect():
+    from scripts.subscription_analysis import policy_graph
+
+    r = result()
+    bench = next(a for a in r["assignments"] if a["display"] == "ASC Default")
+    closed = policy_graph.render(r, "scope", "sub:aaaa")
+    assert "▸ show policies" in closed and "[Deprecated]: Old control" not in closed
+    opened = policy_graph.render(r, "scope", "sub:aaaa", [bench["id"]])
+    assert "▾ hide policies" in opened and "Managed identity: SystemAssigned" in opened
+    assert "Deny (1)" in opened and "Audit (1)" in opened and "[Deprecated]: Old control [deprecated]" in opened
+    assert "where else is it assigned? ›" in opened and 'data-lens="initiative"' in opened
+
+
+def test_graph_initiative_lens_shows_every_assignment_and_what_it_reaches():
+    import pytest
+
+    from scripts.subscription_analysis import policy_graph
+
+    r = result()
+    loc = next(a for a in r["assignments"] if a["display"] == "Allowed locations")
+    svg = policy_graph.render(r, "initiative", loc["definitionId"], ["definition"])
+    assert "Where Allowed locations is assigned" in svg and "2 assignment(s)" in svg
+    assert "in effect on 1 subscription(s)" in svg            # Contoso minus the excluded sub-dev
+    assert "✕ excluded: sub-dev" in svg and "Deny (1)" in svg
+    with pytest.raises(KeyError):
+        policy_graph.render(r, "initiative", "/providers/x/unknown")
+    with pytest.raises(KeyError):
+        policy_graph.render(r, "scope", "sub:nope")
+    assert "Tenant Root Group" in policy_graph.render(r)      # default focus: the tenant root

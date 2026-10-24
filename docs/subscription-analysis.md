@@ -506,10 +506,10 @@ deep-dive page shows the area's costliest resources.
 The **Estate** page:
 - **Tiles** per category and **breakdowns** (by type, size/SKU, average CPU band, region, subscription, environment,
   suggestion type) that follow the current filters; click any entry to filter on it.
-- **Filters:** search (name, resource group, tag, size), category, type, size / SKU, subscription, region,
-  environment, state, "with actionable / critical-high / no suggestions", suggestion type and severity.
-- **Resources** view: sortable, paged table; click a row for the full ID, tags, Azure portal and report links and its
-  suggestions. **Suggestions** view: every finding across the estate (including subscription-level ones such as
+- **Filters:** search (name, resource group, tag, size, hostname), category, type, size / SKU, subscription, region,
+  environment, state, web exposure, "with actionable / critical-high / no suggestions", suggestion type and severity.
+- **Resources** view: sortable, paged table; click a row for the full ID, tags, Azure portal and report links, the
+  web endpoint (below) and its suggestions. **Suggestions** view: every finding across the estate (including subscription-level ones such as
   missing budgets), sortable by severity and estimated saving.
 - **Hygiene vs actionable:** tag and naming findings (`missing_required_tags`, `naming_convention_violation`,
   `tag_key_typo`) sit on almost every resource, so they are counted separately and hidden unless you tick
@@ -522,6 +522,26 @@ The **Estate** page:
 
 Suggestions and cost come from the latest report of each subscription; subscriptions that were never analysed
 still appear in the inventory, without suggestions.
+
+**Web endpoints.** App Service apps and deployment slots, Static Web Apps and Container Apps carry the hostnames they
+answer on - the platform hostname (`*.azurewebsites.net`, `*.azurecontainerapps.io`, ...) and every custom domain -
+and their network exposure, from the same Resource Graph refresh (`network.web_endpoint`). Search a hostname
+(`portal.example.com`) to find the resource behind it; the *Web exposure* filter and breakdown list the endpoints by
+exposure and those with a custom domain; CSV exports add `host`, `domains` and `webExposure`. Exposure, one verdict
+shared with the Compute view and the CVE check:
+
+| Exposure | Meaning |
+|---|---|
+| Public app endpoint | App Service / Static Web App with public network access on and no private-endpoint-only setup |
+| Private endpoint / Public access off | Reachable only through a private endpoint / not at all from outside |
+| Internet (external ingress / public IP) | Container App with external ingress in an environment that is not VNet-internal; Container Instance with a public IP |
+| VNet only (internal environment / private IP) | Container App with *external* ingress in a VNet-internal environment (it reaches the VNet, not the internet); Container Instance with a private IP |
+| Internal ingress only / No inbound endpoint | Container App reachable inside its environment only / no ingress (also Container Apps jobs) |
+
+Resource Graph does not show App Service access restrictions, Front Door / Application Gateway in front of an app or
+sign-in, so a public app endpoint is reachable at network level - not necessarily open to everyone. Check access
+restrictions with `az webapp config access-restriction show -g <rg> -n <app>`. The overview counts web endpoints and
+those with a custom domain; it deliberately shows no "internet-facing" headline number.
 
 ### Architecture diagrams
 
@@ -596,7 +616,8 @@ locally in `reports/_estate/policy.json` (about 1 MB for 200 assignments) and in
 ### Compute view
 
 **Compute** (local portal `/compute`, Docker UI *Compute*, admins) lists every VM and Azure Arc server with what it
-runs and how well it is looked after, plus the language runtime of every App Service app. It is collected with the
+runs and how well it is looked after, plus the language runtime and hostnames of every App Service app and every
+container the estate runs. It is collected with the
 estate refresh (`scripts/subscription_analysis/compute.py`, `scanners/compute/machine_inventory.py`; about 15 s of
 read-only Resource Graph queries) and stored as `reports/_estate/compute.json` / under the Docker snapshot's
 `compute` key (`GET /estate/compute`).
@@ -614,10 +635,42 @@ read-only Resource Graph queries) and stored as `reports/_estate/compute.json` /
 
 **Critical path** = running, a public IP and a known weakness (OS past end of support, pending security updates,
 outdated packages Defender rates high, critical / high CVEs). The search box matches names, OS and version, image,
-agents, pending update and package names, CVE IDs and SQL Server versions; the *App runtimes* view matches runtime and
-version (`php`, `node 18`). A CVE ID only matches machines whose scanner reports CVEs - without Defender vulnerability
+agents, pending update and package names, CVE IDs and SQL Server versions; the *App runtimes* view matches runtime,
+version and hostnames (`php`, `node 18`, `portal.example.com`). A CVE ID only matches machines whose scanner reports CVEs - without Defender vulnerability
 assessment, search the affected product and version instead. Installed software and running services need Change
 Tracking (Azure Monitor agent); the view counts where it is deployed.
+
+**Containers** (Compute > Containers): one row per container of every Container App, Container Apps job, Container
+Instance and App Service custom container (init containers included) - workload, image, registry (Azure Container
+Registry, Docker Hub, MCR, GitHub, ...), tag or digest, the network exposure of the workload (the Web endpoints
+verdict above), state and the packages Defender reports outdated in exactly that image (registry, repository and tag
+or digest). Defender scan status: **outdated packages**; **no findings for this tag** (other tags of the repository
+have findings, so Defender scans it); **no Defender findings** (an Azure Container Registry image without findings:
+up to date or not scanned - Defender reports only unhealthy images, so Resource Graph cannot tell which);
+**not in Azure Container Registry** (Defender does not scan it). Click a row for the image, URL, scan note and
+packages.
+
+**CVE check** (Compute > CVE check, `scripts/subscription_analysis/cve.py`): enter a CVE ID to see which VMs, Arc
+servers, SQL Server instances, App Service apps and containers it concerns, with the URL of each app and container. Two public sources, read-only and cached - a full CVE
+database mirror is deliberately not kept (about 250,000 records behind a rate-limited API, and ARG rarely knows exact
+patch levels, so it would add load, not precision):
+
+| Source | Used for | Load |
+|---|---|---|
+| NVD CVE API 2.0, one CVE per request | the affected products and version ranges (CPE) of the CVE checked | one request per check, cached a day |
+| CISA Known Exploited Vulnerabilities catalog | the CVE's exploited-in-the-wild flag, and the list of recently exploited CVEs for products this estate runs (30 / 90 / 365 days) | one ~1.7 MB JSON a day |
+
+Matched against the Compute inventory: the Windows build each machine reports (compared exactly with the fixed build NVD
+lists), Linux distribution releases and the kernel, FortiOS / FortiWeb / PAN-OS firmware, SQL Server version and build, App Service
+runtimes (branch only - App Service patches them; the check names the command that shows the patch level), the product
+and tag of official container images (`php:8.3-apache` = PHP branch 8.3, `php:8.3.12-fpm` = exactly 8.3.12,
+`wordpress:6.5-php8.3` = WordPress 6.5 and PHP 8.3; a branch tag moves with every release, so the version is the one
+pulled at the last deployment) and packages with a pending security update or a Defender finding (machines and
+container images). Verdicts: **impacted** (exact version in an affected range),
+**potentially impacted** (product and branch match, patch level not known), **not affected**. A CVE NVD has not analysed
+yet is matched by the products its description names. Only the CVE ID is sent. Cache: `reports/_estate/cve-cache/`
+locally, in memory in Docker. Routes: local `/api/cve/<id>`, `/api/cve/kev`; Docker `GET /estate/cve/<id>`,
+`GET /estate/cve/kev` (admins).
 
 The same data drives three findings per subscription (`machine_security_scanner`):
 `internet_facing_machine_unpatched`, `machine_vulnerability_scan_missing` (one per subscription, with the Defender for
@@ -634,6 +687,7 @@ estate refresh (the same one the Landing zone view uses) and the management-grou
 |---|---|
 | Issues | Assignments not enforced (DoNotEnforce with Deny / remediating policies); DeployIfNotExists / Modify without a managed identity (remediation cannot run); deprecated policies in force; preview policies enforcing; exemptions without an end date or expired; redundant assignments (same definition and parameters already assigned above); assignments with every policy disabled; Deny policies with non-compliant resources; subscriptions without a Deny guardrail or the Microsoft cloud security benchmark; custom definitions nobody assigns - each with the fix |
 | Tree | The management-group hierarchy down to subscriptions and resource groups, with Microsoft's management group / subscription / resource group icons: each scope with the assignments made on it (and their effects), how many reach it from above (excluded scopes left out), subscriptions and assignments below. Searching an assignment or policy marks where it is assigned and where it is in effect; a scope opens its own and its inherited assignments, grouped by the scope they come from |
+| Graph | One picture of how policy works (`policy_graph.py`, drawn as SVG with the Azure icons like the architecture diagrams; zoom, SVG export). *Scope view*: the chain of parent scopes of a management group, subscription or resource group, every initiative / policy hanging off the scope it is assigned on, inheritance down to the scope in focus, exclusions (notScopes) red and dashed to where they stop, and what is in effect there (enforced policies by effect, compliance, exemptions, the scopes below). *Initiative view*: every assignment of one initiative or policy and what each reaches (subscriptions in effect, excluded scopes). Any initiative or policy node opens in place: assignment facts (scope, enforcement, managed identity, compliance, excluded scopes, exemptions, issues) and every policy it holds grouped by the effect it runs with, with non-compliant resources. Click a scope to focus it; "where else is it assigned?" switches to the initiative view |
 | Assignments | Every assignment (management group, subscription, resource group): definition, policies, effects (deny / remediate / audit / disabled), enforcement, managed identity, non-compliant resources and compliance %, exemptions, excluded scopes; a row opens its policies with the effect each runs with and its non-compliant count |
 | Subscriptions | The policy in effect on each subscription - inherited through its management groups and assigned directly, minus excluded scopes; the strongest effect per policy; compliance |
 | Policies | Every policy in force once: category, source, effects, where it is assigned, non-compliant resources |

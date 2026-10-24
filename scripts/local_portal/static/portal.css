@@ -248,10 +248,10 @@ main.with-sidebar > * { min-width: 0; }
 .nav-menu { position: relative; }
 .nav-menu summary { list-style: none; cursor: pointer; color: inherit; padding: 4px 0; display: inline-flex; align-items: center; gap: 5px; }
 .nav-menu summary::-webkit-details-marker { display: none; }
-.nav-menu summary::after { content: "BE"; font-size: 0.75em; color: var(--muted); }
+.nav-menu summary::after { content: "\25BE"; font-size: 0.75em; color: var(--muted); }
 .nav-menu.current summary { font-weight: 600; text-decoration: underline; text-underline-offset: 6px; }
 .nav-menu summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.nav-list { position: absolute; top: 100%; left: -10px; z-index: 50; min-width: 180px; margin-top: 6px; padding: 4px 0;
+.nav-list { position: absolute; top: 100%; left: -10px; z-index: 50; min-width: 250px; margin-top: 6px; padding: 4px 0;
   background: var(--card); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 18px rgba(31, 41, 51, 0.12); }
 .main-nav .nav-list a { display: block; padding: 7px 14px; color: var(--text); white-space: nowrap; }
 .main-nav .nav-list a:hover, .main-nav .nav-list a:focus-visible { background: var(--bg); text-decoration: none; }
@@ -298,3 +298,26 @@ main.with-sidebar > * { min-width: 0; }
 .chip.def, .chip.def-initiative { max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
 .chip.def-initiative { font-weight: 600; }
 @media (max-width: 1000px) { .tree-layout { grid-template-columns: 1fr; } .tree-detail { position: static; max-height: none; } }
+
+/* Menu entries carry a one-line description */
+.main-nav .nav-list a small { display: block; margin-top: 1px; max-width: 300px; white-space: normal; font-size: 0.78em;
+  font-weight: 400; color: var(--muted); }
+
+/* Policy graph - the SVG is drawn by policy_graph.py; a click on a node is a new request */
+.graph-toolbar { align-items: flex-end; }
+.graph-toolbar label { display: flex; flex-direction: column; gap: 3px; font-size: 0.8em; color: var(--muted); }
+.graph-toolbar select { max-width: 420px; }
+.graph-zoom { display: inline-flex; gap: 4px; }
+.graph-host { overflow: auto; max-height: 78vh; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.graph-host svg { display: block; }
+.graph-host .node { cursor: pointer; }
+.graph-host .node:focus { outline: none; }
+.graph-host .node:focus rect.box { stroke: var(--primary); stroke-width: 2.5; }
+.tree-legend { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* CVE check */
+.cve-input { display: flex; flex-direction: column; gap: 3px; font-size: 0.8em; color: var(--muted); }
+.cve-input input { min-width: 260px; font-size: 1rem; }
+.cve-card { margin: 10px 0; border-left: 3px solid var(--primary); }
+.kev-head { margin-top: 18px; }
+.kev-head h3 { margin: 0; flex: 1; font-size: 1em; }

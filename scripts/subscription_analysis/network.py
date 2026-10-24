@@ -14,6 +14,10 @@ exposed every PaaS service and app is. Read-only Resource Graph queries, run wit
   subnet of App Service / Functions / Logic Apps Standard, Logic Apps Consumption access control.
 
 exposure() classifies a PaaS item; the classification is shared by the diagrams and the overview telemetry.
+container_exposure() classifies Container Apps, jobs and Container Instances, web_endpoint() gives a web app's
+hostnames and its exposure - one verdict for the Inventory, the Compute view and the CVE check. Resource Graph does
+not show App Service access restrictions, Front Door / Application Gateway in front or sign-in: a public app endpoint
+has a public endpoint, it is not necessarily open to everyone.
 """
 
 import re
@@ -118,7 +122,7 @@ resources
 
 SUBNET_ID = re.compile(r"/subscriptions/[^/]+/resourcegroups/[^/]+/providers/microsoft\.network/virtualnetworks/"
                        r"[^/]+/subnets/[^/\"']+", re.IGNORECASE)
-APP_TYPES = ("microsoft.web/sites", "microsoft.logic/workflows", "microsoft.web/staticsites")
+APP_TYPES = ("microsoft.web/sites", "microsoft.web/sites/slots", "microsoft.logic/workflows", "microsoft.web/staticsites")
 
 
 def subnet_ids(value: Any) -> List[str]:
@@ -240,11 +244,18 @@ def merge_network(parts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
 
 OPEN, RESTRICTED, PRIVATE, CLOSED, APP_PUBLIC, UNVERIFIED = ("open", "restricted", "private", "closed",
                                                                "app-public", "unverified")
+INTERNET, VNET_ONLY, INTERNAL_INGRESS, NO_INGRESS = "internet", "vnet-only", "internal-ingress", "no-ingress"
 EXPOSURE_LABELS = {
     OPEN: "Open to all networks", UNVERIFIED: "Public endpoint, rules not in Resource Graph",
     RESTRICTED: "Restricted (firewall / VNet rules)", PRIVATE: "Private endpoint", CLOSED: "Public access off",
-    APP_PUBLIC: "Public app endpoint",
+    APP_PUBLIC: "Public app endpoint", INTERNET: "Internet (external ingress / public IP)",
+    VNET_ONLY: "VNet only (internal environment / private IP)", INTERNAL_INGRESS: "Internal ingress only",
+    NO_INGRESS: "No inbound endpoint",
 }
+INTERNET_FACING = (OPEN, UNVERIFIED, APP_PUBLIC, INTERNET)
+# platform hostnames - every other name an app answers on is a custom domain
+PLATFORM_HOSTS = (".azurewebsites.net", ".azurestaticapps.net", ".azurecontainerapps.io", ".appserviceenvironment.net",
+                  ".azurecontainer.io")
 # firewall rules of these live in child resources Resource Graph does not return
 RULES_NOT_VISIBLE = ("microsoft.servicebus/namespaces", "microsoft.eventhub/namespaces", "microsoft.cache/redis")
 
@@ -266,3 +277,51 @@ def exposure(item: Dict[str, Any]) -> str:
     if item.get("type") in RULES_NOT_VISIBLE:
         return UNVERIFIED
     return OPEN
+
+
+def container_exposure(rtype: str, fqdn: Any = None, external: Any = None, internal_environment: bool = False,
+                       ip_type: Any = None) -> str:
+    """Container App: ingress (fqdn), external or internal, in a VNet-internal environment or not; Container Instance:
+    public or private IP; a Container Apps job takes no inbound traffic."""
+    rtype = (rtype or "").lower()
+    if rtype == "microsoft.app/containerapps":
+        if not fqdn:
+            return NO_INGRESS
+        if not external:
+            return INTERNAL_INGRESS
+        return VNET_ONLY if internal_environment else INTERNET   # 'external' in an internal environment = the VNet
+    if rtype == "microsoft.containerinstance/containergroups":
+        kind = str(ip_type or "").lower()
+        return INTERNET if kind == "public" else VNET_ONLY if kind == "private" else NO_INGRESS
+    return NO_INGRESS
+
+
+def internal_environments(rows: Iterable[Dict[str, Any]]) -> set:
+    """IDs (lower case) of the VNet-internal Container Apps environments among estate rows (cfg.internal)."""
+    return {(r.get("id") or "").lower() for r in rows or []
+            if (r.get("type") or "").lower() == "microsoft.app/managedenvironments"
+            and isinstance(r.get("cfg"), dict) and r["cfg"].get("internal")}
+
+
+def web_endpoint(rtype: str, cfg: Optional[Dict[str, Any]], internal: Iterable[str] = ()) -> Optional[Dict[str, Any]]:
+    """Hostname, custom domains and exposure of an App Service app / slot, Static Web App or Container App from its
+    estate row details (estate.RESOURCE_DETAILS 'cfg'); None for other types or rows collected before these fields."""
+    rtype, c = (rtype or "").lower(), cfg if isinstance(cfg, dict) else {}
+    if rtype == "microsoft.app/containerapps":
+        host = str(c.get("fqdn") or "")
+        names = [d.get("name") if isinstance(d, dict) else d for d in c.get("domains") or []]
+        key = container_exposure(rtype, host, c.get("ext"), str(c.get("env") or "").lower() in set(internal))
+    elif rtype in ("microsoft.web/sites", "microsoft.web/sites/slots", "microsoft.web/staticsites"):
+        host = str(c.get("host") or "")
+        names = list(c.get("hosts") or [])
+        if not host and not names:
+            return None
+        key = exposure({"type": rtype, "public": c.get("pna") or "", "pe": c.get("pe") or 0})
+    else:
+        return None
+    if not host and key == NO_INGRESS:
+        return {"host": "", "domains": [], "exposure": EXPOSURE_LABELS[key], "internet": False}
+    host = host.lower()
+    domains = sorted({str(n).lower() for n in names if n and str(n).lower() != host
+                      and not str(n).lower().endswith(PLATFORM_HOSTS)})
+    return {"host": host, "domains": domains, "exposure": EXPOSURE_LABELS[key], "internet": key in INTERNET_FACING}

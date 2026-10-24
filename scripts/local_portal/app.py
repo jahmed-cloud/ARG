@@ -480,6 +480,23 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
             return JSONResponse({"detail": NO_POLICY}, status_code=404)
         return result
 
+    @app.get("/api/policy-graph.svg")
+    async def api_policy_graph(lens: str = "scope", focus: str = "", expand: str = ""):
+        """The Policy page's Graph view (policy_graph.py): how policy reaches a scope, or where an initiative is
+        assigned; expand = assignment IDs whose policies are shown."""
+        from scripts.subscription_analysis.policy_graph import INITIATIVE, SCOPE, render
+
+        result = await asyncio.to_thread(policy_analysis)
+        if result is None:
+            return PlainTextResponse(NO_POLICY, status_code=404)
+        opened = [x for x in expand.split(",") if x][:40]
+        try:
+            svg = await asyncio.to_thread(render, result, INITIATIVE if lens == INITIATIVE else SCOPE, focus[:600],
+                                          opened)
+        except KeyError:
+            return PlainTextResponse("Unknown scope or policy definition", status_code=404)
+        return Response(svg, media_type="image/svg+xml")
+
     @app.get("/api/policy.md")
     async def api_policy_markdown():
         from scripts.subscription_analysis.policy_analyzer import markdown
@@ -560,6 +577,47 @@ def create_app(*, reports_dir: Path, username: str, password: str, azure: Option
             return JSONResponse({"detail": "No Compute data yet - press Refresh inventory (about 5 minutes); the "
                                            "estate refresh collects it."}, status_code=404)
         return FileResponse(path, media_type="application/json")
+
+    # -- CVE check (cve.py): CISA KEV once a day, NVD one CVE at a time, matched to the Compute inventory ----------
+
+    def cve_inputs():
+        from scripts.subscription_analysis.cve import inventory_facts
+        from scripts.subscription_analysis.estate import ESTATE_DIR, load_compute
+
+        compute = load_compute(reports_dir)
+        return (inventory_facts(compute) if compute else None), reports_dir / ESTATE_DIR / "cve-cache"
+
+    @app.get("/api/cve/kev")
+    async def api_cve_kev(days: int = 90):
+        from scripts.subscription_analysis.cve import fetch_kev, kev_in_estate
+
+        facts, cache = await asyncio.to_thread(cve_inputs)
+        if facts is None:
+            return JSONResponse({"detail": "No Compute data yet - refresh the inventory first."}, status_code=404)
+        try:
+            kev = await asyncio.to_thread(fetch_kev, cache)
+        except RuntimeError as exc:
+            return JSONResponse({"detail": f"The CISA KEV catalog could not be loaded: {exc}"}, status_code=503)
+        return kev_in_estate(kev, facts, max(1, min(days, 3650)))
+
+    @app.get("/api/cve/{cve_id}")
+    async def api_cve_check(cve_id: str):
+        from scripts.subscription_analysis.cve import CVE_ID, check, fetch_cve, fetch_kev
+
+        if not CVE_ID.match(cve_id.strip()):
+            return JSONResponse({"detail": "Enter a CVE ID like CVE-2024-3094."}, status_code=400)
+        facts, cache = await asyncio.to_thread(cve_inputs)
+        if facts is None:
+            return JSONResponse({"detail": "No Compute data yet - refresh the inventory first."}, status_code=404)
+        try:
+            record = await asyncio.to_thread(fetch_cve, cve_id, cache)
+        except RuntimeError as exc:
+            return JSONResponse({"detail": f"NVD could not be reached: {exc}"}, status_code=503)
+        try:
+            kev = await asyncio.to_thread(fetch_kev, cache)
+        except RuntimeError:
+            kev = None   # the check stands without the exploited-in-the-wild flag
+        return await asyncio.to_thread(check, cve_id, record, facts, kev)
 
     @app.get("/api/estate/status")
     async def api_estate_status():

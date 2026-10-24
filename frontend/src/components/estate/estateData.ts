@@ -8,7 +8,7 @@
 export const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 export const PAGE_SIZE = 100;
 export const FILTER_KEYS = [
-  'q', 'category', 'type', 'size', 'sub', 'region', 'env', 'state', 'has', 'stype', 'sev', 'hyg', 'ext', 'cpu', 'act',
+  'q', 'category', 'type', 'size', 'sub', 'region', 'env', 'state', 'exp', 'has', 'stype', 'sev', 'hyg', 'ext', 'cpu', 'act',
 ] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
 export type Filters = Partial<Record<FilterKey, string>>;
@@ -42,6 +42,7 @@ interface RawResource {
   vcpu?: number; ram?: number; cpu?: number; cpuMax?: number; mem?: number; sub?: number; cpuHr?: number;
   cpu95?: number; burst?: number; memHr?: number; act?: number; use?: string; idle?: number; dor?: number;
   nva?: number; cost?: number; cur?: string; n?: number; h?: number; sev?: string;
+  ep?: { h?: string; d?: string[]; x?: string; i?: number };
 }
 
 interface RawSuggestion {
@@ -71,7 +72,21 @@ export interface Resource {
   memAvg: number | null; subResource: boolean; cpuPeakHour: number | null; cpuP95: number | null;
   burstHours: number | null; memPeakHour: number | null; activity: number | null; usage: string; idle: boolean;
   dormant: boolean; nva: boolean; text: string;
+  endpoint: Endpoint | null; host: string; domains: string; webExposure: string;
 }
+
+/* Web endpoint of an App Service app / slot, Static Web App or Container App (network.web_endpoint). */
+export interface Endpoint {
+  host: string;
+  domains: string[];
+  exposure: string;
+  internet: boolean;
+}
+
+export const CUSTOM_DOMAIN = 'custom';
+export const expLabel = (v: string) => (v === CUSTOM_DOMAIN ? 'With a custom domain' : v);
+export const ENDPOINT_CAVEAT = 'Resource Graph does not show App Service access restrictions, Front Door / Application Gateway in '
+  + 'front of the app or sign-in: a public endpoint is reachable at network level, not necessarily open to everyone.';
 
 export interface Suggestion {
   findingId: string; title: string; severity: string; type: string; wave: number | null; hygiene: boolean;
@@ -111,10 +126,12 @@ export function expand(data: RawEstate): Estate {
       subResource: !!r.sub, cpuPeakHour: num(r.cpuHr), cpuP95: num(r.cpu95), burstHours: num(r.burst),
       memPeakHour: num(r.memHr), activity: num(r.act), usage: r.use || '', idle: !!r.idle, dormant: !!r.dor,
       nva: !!r.nva, text: '',
+      endpoint: r.ep ? { host: r.ep.h || '', domains: r.ep.d || [], exposure: r.ep.x || '', internet: !!r.ep.i } : null,
+      host: r.ep?.h || '', domains: (r.ep?.d || []).join(' '), webExposure: r.ep?.x || '',
     };
     const tagText = Object.entries(tags).map(([k, v]) => `${k}=${v}`).join(' ');
     res.text = [res.name, res.resourceGroup, res.typeLabel, res.size, res.config, res.os, res.state, res.kind,
-      res.subscription, tagText].join(' ').toLowerCase();
+      res.subscription, tagText, res.host, res.domains].join(' ').toLowerCase();
     return res;
   });
   const suggestions: Suggestion[] = (data.suggestions || []).map((s) => {
@@ -179,6 +196,10 @@ export function resourceMatches(e: Estate, r: Resource, f: Filters, skip?: Filte
   if (f.region && skip !== 'region' && (r.location || '(none)') !== f.region) return false;
   if (f.env && skip !== 'env' && r.env !== f.env) return false;
   if (f.state && skip !== 'state' && (r.state || '(none)') !== f.state) return false;
+  if (f.exp && skip !== 'exp') {
+    if (!r.endpoint) return false;
+    if (f.exp === CUSTOM_DOMAIN ? !r.endpoint.domains.length : r.endpoint.exposure !== f.exp) return false;
+  }
   if (f.has && skip !== 'has') {
     if (f.has === 'any' && !r.suggestions) return false;
     if (f.has === 'none' && r.suggestions) return false;
@@ -194,7 +215,7 @@ export function resourceMatches(e: Estate, r: Resource, f: Filters, skip?: Filte
   return true;
 }
 
-const RESOURCE_ONLY: FilterKey[] = ['size', 'region', 'env', 'state', 'has'];
+const RESOURCE_ONLY: FilterKey[] = ['size', 'region', 'env', 'state', 'exp', 'has'];
 
 export function suggestionMatches(e: Estate, s: Suggestion, f: Filters, skip?: FilterKey): boolean {
   if (!visibleSuggestion(s, f)) return false;
@@ -223,6 +244,14 @@ export function countBy<T>(items: T[], fn: (x: T) => string | null | undefined):
     counts.set(k, (counts.get(k) || 0) + 1);
   });
   return Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+// Exposure of the web endpoints among these resources, plus how many answer on a custom domain.
+export function exposureEntries(list: Resource[]): [string, number][] {
+  const web = list.filter((r) => r.endpoint);
+  const entries = countBy(web, (r) => r.endpoint!.exposure || null);
+  const custom = web.filter((r) => r.endpoint!.domains.length).length;
+  return custom ? entries.concat([[CUSTOM_DOMAIN, custom]]) : entries;
 }
 
 // ---- columns, sorting, CSV ---------------------------------------------------------------------
@@ -317,7 +346,8 @@ export function cellText(r: Resource, c: Column): string {
 }
 
 const RESOURCE_CSV = ['name', 'typeLabel', 'category', 'size', 'vcpu', 'ramGB', 'cpuAvg', 'cpuPeakHour', 'cpuP95', 'cpuMax',
-  'burstHours', 'memAvg', 'usage', 'activity', 'idle', 'config', 'os', 'state', 'env', 'location', 'subscription',
+  'burstHours', 'memAvg', 'usage', 'activity', 'idle', 'config', 'os', 'state', 'host', 'domains', 'webExposure', 'env',
+  'location', 'subscription',
   'resourceGroup', 'cost30', 'currency', 'suggestions', 'maxSeverity', 'id'];
 const SUGGESTION_CSV = ['severity', 'title', 'type', 'resourceName', 'typeLabel', 'category', 'subscription', 'savingsUsd',
   'wave', 'resourceId', 'findingId'];

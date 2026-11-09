@@ -629,6 +629,16 @@ For bugs or feature requests, open an issue on [GitHub](https://github.com/jahme
 
 ---
 
+## Support the Project
+
+ARG is free and open source. If it helps you, you can support it:
+
+- **Sponsor** the work on [GitHub Sponsors](https://github.com/sponsors/jahmed-cloud).
+- **Star** the [repository](https://github.com/jahmed-cloud/ARG) so other Azure engineers can find it.
+- **Contribute** fixes, scanners or docs - see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
@@ -649,6 +659,9 @@ Azure Resource Guardian was designed and built by **Junaid Ahmed**.
 - GitHub: [github.com/jahmed-cloud](https://github.com/jahmed-cloud) · [ARG repository](https://github.com/jahmed-cloud/ARG)
 - Docker Hub: [hub.docker.com/repositories/jahmed22](https://hub.docker.com/repositories/jahmed22)
 - Email: [iam@jahmed.cloud](mailto:iam@jahmed.cloud)
+- Sponsor: [github.com/sponsors/jahmed-cloud](https://github.com/sponsors/jahmed-cloud)
+
+Built by Junaid Ahmed — [jahmed.cloud](https://jahmed.cloud)
 
 This same information is also available in-app under **Settings → About**.
 

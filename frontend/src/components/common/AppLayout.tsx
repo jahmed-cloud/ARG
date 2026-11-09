@@ -59,6 +59,7 @@ import {
   Dns,
   Gavel,
   ExpandMore,
+  Favorite,
   Menu as MenuIcon,
 } from "@mui/icons-material";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
@@ -67,6 +68,7 @@ import { useApi } from "../../hooks/useApi";
 import { useCurrencyChoice } from "../../hooks/useCurrency";
 import { useCanOperate, useIsAdmin } from "../../hooks/useRoles";
 import { RouteBoundary } from "./RouteBoundary";
+import { AUTHOR, EXTERNAL_LINK } from "../../config/author";
 
 const SIDEBAR_EXPANDED = 224;
 const SIDEBAR_COLLAPSED = 64;
@@ -387,6 +389,25 @@ export function AppLayout() {
         {/* Bottom nav */}
         <Box sx={{ p: 0.5, borderTop: `1px solid ${alpha("#b8d9ba", 0.1)}` }}>
           <ListItem disablePadding sx={{ mb: 0.25 }}>
+            <Tooltip title={compact ? "Sponsor ARG (opens GitHub Sponsors)" : ""} placement="right">
+              <ListItemButton
+                component="a"
+                href={AUTHOR.sponsor}
+                {...EXTERNAL_LINK}
+                aria-label="Sponsor ARG on GitHub Sponsors (opens in a new tab)"
+                sx={{ borderRadius: 1.5, minHeight: 42, px: 1.5, "&:hover": { bgcolor: alpha("#b8d9ba", 0.08) } }}
+              >
+                <ListItemIcon sx={{ minWidth: compact ? 0 : 36, color: "#e8a0b4", "& svg": { fontSize: 20 } }}>
+                  <Favorite />
+                </ListItemIcon>
+                {!compact && (
+                  <ListItemText primary="Sponsor" primaryTypographyProps={{ fontSize: 13, color: alpha("#fff", 0.6) }} />
+                )}
+              </ListItemButton>
+            </Tooltip>
+          </ListItem>
+
+          <ListItem disablePadding sx={{ mb: 0.25 }}>
             <Tooltip title={compact ? "Settings" : ""} placement="right">
               <ListItemButton
                 aria-label="Settings"
@@ -595,6 +616,28 @@ export function AppLayout() {
         {/* Page content */}
         <Box id="main-content" tabIndex={-1} sx={{ flex: 1, minWidth: 0, overflow: "auto", p: { xs: 2, sm: 3, lg: 4 }, width: "100%", maxWidth: 1800, mx: "auto" }}>
           <RouteBoundary><Outlet /></RouteBoundary>
+        </Box>
+
+        <Box
+          component="footer"
+          sx={{
+            px: { xs: 2, sm: 3 },
+            py: 2,
+            textAlign: "center",
+            fontSize: 12,
+            color: alpha("#fff", 0.45),
+            borderTop: `1px solid ${alpha("#b8d9ba", 0.08)}`,
+          }}
+        >
+          Built by {AUTHOR.name} ·{" "}
+          <Box
+            component="a"
+            href={AUTHOR.website}
+            {...EXTERNAL_LINK}
+            sx={{ color: "#b8d9ba", textDecoration: "none", "&:hover": { textDecoration: "underline" } }}
+          >
+            {AUTHOR.websiteLabel}
+          </Box>
         </Box>
       </Box>
     </Box>

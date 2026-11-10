@@ -354,6 +354,140 @@ docker compose -f docker-compose.hub.yml up -d
 # The admin account is created automatically on first startup - no manual command needed.
 ```
 
+### Example docker-compose.yml
+
+Prefer to copy and paste? Save this as `docker-compose.yml` next to your `.env` and run `docker compose up -d`.
+It is the same stack as [docker-compose.hub.yml](docker-compose.hub.yml): PostgreSQL, Redis, the API, two scan
+workers, the scheduler and the web UI on port 3000.
+
+<details>
+<summary>docker-compose.yml</summary>
+
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-arg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-arg}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arg}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arg-network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arg-network
+
+  backend:
+    image: jahmed22/azure-resource-guardian-backend:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - arg-network
+
+  worker:
+    image: jahmed22/azure-resource-guardian-worker:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks:
+      - arg-network
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+
+  beat:
+    image: jahmed22/azure-resource-guardian-worker:latest
+    restart: unless-stopped
+    command: celery -A workers.scan_worker beat --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-arg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arg}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - arg-network
+
+  frontend:
+    image: jahmed22/azure-resource-guardian-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - arg-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  arg-network:
+    driver: bridge
+```
+
+</details>
+
+Minimal `.env` for it (generate your own values; see [.env.example](.env.example) for every setting):
+
+```bash
+# SECRET_KEY:     python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+# ENCRYPTION_KEY: python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
+POSTGRES_PASSWORD=change-me
+SECRET_KEY=change-me
+ENCRYPTION_KEY=change-me
+ADMIN_USERNAME=admin
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=change-me
+```
+
 ### Pull a specific version
 
 ```bash

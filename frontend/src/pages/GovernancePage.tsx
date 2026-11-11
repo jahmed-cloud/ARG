@@ -24,9 +24,9 @@ const STAT_LABELS: { key: keyof GovernanceStats; label: string }[] = [
   { key: 'missing_tags', label: 'Missing Required Tags' },
   { key: 'naming_violations', label: 'Naming Violations' },
   { key: 'policy_violations', label: 'Azure Policy Gaps' },
-  { key: 'region_violations', label: 'Region Restriction Violations' },
+  { key: 'region_violations', label: 'Monitoring Gaps' },
   { key: 'unlocked_resources', label: 'Unlocked Production Resources' },
-  { key: 'caf_violations', label: 'CAF Alignment Violations' },
+  { key: 'caf_violations', label: 'Tag Quality Problems' },
 ];
 
 export const GovernancePage: React.FC = () => {

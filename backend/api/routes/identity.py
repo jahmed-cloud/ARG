@@ -86,6 +86,12 @@ async def _get_scan_coverage(db: AsyncSession) -> tuple[bool, datetime | None]:
     return graph_scan_completed, last_scan_at
 
 
+# The finding types the identity scanners emit (the old names matched nothing, so the tiles stayed at 0).
+EXPIRED_CREDENTIAL_TYPES = ("expired_app_secret", "expired_app_certificate")
+STANDING_ACCESS_TYPES = ("excessive_subscription_owners", "service_principal_privileged_role",
+                         "standing_user_access_administrator")
+
+
 @router.get("/stats", response_model=IdentityStats)
 async def get_identity_stats(
     db: AsyncSession = Depends(get_db),
@@ -119,21 +125,22 @@ async def get_identity_stats(
         deductions = (
             counts.get("permanent_global_admin", 0) * 15
             + counts.get("mfa_not_enabled", 0) * 5
-            + counts.get("expired_app_credential", 0) * 3
-            + counts.get("stale_guest_user", 0) * 1
-            + counts.get("dormant_user", 0) * 1
+            + sum(counts.get(t, 0) for t in EXPIRED_CREDENTIAL_TYPES) * 3
+            + sum(counts.get(t, 0) for t in STANDING_ACCESS_TYPES) * 3
+            + counts.get("guest_never_signed_in", 0) * 1
+            + counts.get("dormant_member_user", 0) * 1
         )
         score = max(0, 100 - deductions)
         coverage_message = None
 
     return IdentityStats(
         total_findings=total,
-        stale_guest_users=counts.get("stale_guest_user", 0),
-        dormant_users=counts.get("dormant_user", 0),
+        stale_guest_users=counts.get("guest_never_signed_in", 0),
+        dormant_users=counts.get("dormant_member_user", 0),
         mfa_not_enabled=counts.get("mfa_not_enabled", 0),
         permanent_global_admins=counts.get("permanent_global_admin", 0),
-        expired_app_credentials=counts.get("expired_app_credential", 0),
-        never_used_service_principals=counts.get("never_used_service_principal", 0),
+        expired_app_credentials=sum(counts.get(t, 0) for t in EXPIRED_CREDENTIAL_TYPES),
+        never_used_service_principals=sum(counts.get(t, 0) for t in STANDING_ACCESS_TYPES),
         identity_score=score,
         graph_scan_completed=graph_scan_completed,
         last_identity_scan_at=last_scan_at,
@@ -181,7 +188,8 @@ async def list_identity_findings(
                 # the user/app principal name/ID; the resource join below
                 # will usually be null and is included only for consistency
                 # with other finding list endpoints.
-                "display_name": f.resource.resource_name if f.resource else None,
+                "display_name": (f.resource.resource_name if f.resource
+                                 else (f.evidence or {}).get("entra_display_name")),
                 "evidence": f.evidence or {},
                 "first_detected_at": f.first_detected_at,
                 "last_detected_at": f.last_detected_at,

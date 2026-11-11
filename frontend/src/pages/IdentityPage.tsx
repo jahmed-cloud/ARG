@@ -62,12 +62,12 @@ const SEVERITY_COLORS: Record<string, string> = {
 };
 
 const STAT_LABELS: { key: keyof IdentityStats; label: string }[] = [
-  { key: 'stale_guest_users', label: 'Stale Guest Users' },
+  { key: 'stale_guest_users', label: 'Guests Who Never Signed In' },
   { key: 'dormant_users', label: 'Dormant Users' },
   { key: 'mfa_not_enabled', label: 'MFA Not Enabled' },
   { key: 'permanent_global_admins', label: 'Permanent Global Admins' },
   { key: 'expired_app_credentials', label: 'Expired App Credentials' },
-  { key: 'never_used_service_principals', label: 'Unused Service Principals' },
+  { key: 'never_used_service_principals', label: 'Standing Privileged Access' },
 ];
 
 export const IdentityPage: React.FC = () => {

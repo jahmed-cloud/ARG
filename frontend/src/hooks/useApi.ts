@@ -40,7 +40,9 @@ export function useApi() {
         let detail = `Request failed (${res.status})`;
         try {
           const body = await res.json();
-          detail = body.detail ?? detail;
+          detail = Array.isArray(body.detail)
+            ? body.detail.map((d: { msg?: string }) => d.msg ?? '').join('; ')
+            : body.detail ?? detail;
         } catch {
           // response wasn't JSON — keep generic message
         }

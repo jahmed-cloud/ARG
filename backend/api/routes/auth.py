@@ -29,6 +29,7 @@ from backend.core.config import settings
 from backend.api.dependencies.database import get_db
 from backend.api.dependencies.auth import get_current_user
 from backend.models.models import AuditLog, RefreshToken, User, UserRole
+from backend.services import login_throttle
 from backend.services.entra_access import identity_from_claims, refresh_owner_grants, sync_entra_access
 from backend.utils.mailer import send_email
 
@@ -42,7 +43,7 @@ router = APIRouter()
 
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=100)
-    password: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1, max_length=256)   # bcrypt reads 72 bytes; no megabyte bodies
 
 
 class TokenResponse(BaseModel):
@@ -158,6 +159,33 @@ async def log_audit(
     await db.commit()
 
 
+_DUMMY_HASH = bcrypt.hashpw(b"arg-no-such-user", bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS)).decode()
+
+
+def client_address(request: Request) -> str | None:
+    """The caller's address. X-Forwarded-For is believed only from a private peer (ARG's own nginx container)."""
+    import ipaddress
+
+    peer = request.client.host if request.client else None
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
+    try:
+        if peer and forwarded and ipaddress.ip_address(peer).is_private:
+            return str(ipaddress.ip_address(forwarded))
+    except ValueError:
+        pass
+    return peer
+
+
+async def _failed_login(db: AsyncSession, request: Request, username: str, address: str | None,
+                        user_id: str | None, error: str) -> None:
+    """Count the failure and audit it; the lockout itself is audited once, when it starts."""
+    locked = await login_throttle.record_failure(username, address)
+    await log_audit(db, "auth.login_locked" if locked else "auth.login_failed", user_id,
+                    f"Failed sign-in for {username[:100]!r} from {address}"
+                    + (f" - locked for {settings.LOCKOUT_DURATION_MINUTES} minutes" if locked else ""),
+                    request, outcome="failure", error=error)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -178,6 +206,13 @@ async def login(
     - Identical error messages for missing user vs wrong password (prevents user enumeration)
     - Account lockout after MAX_LOGIN_ATTEMPTS failures
     """
+    address = client_address(request)
+    locked_for = await login_throttle.retry_after(credentials.username, address)
+    if locked_for:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Too many failed sign-in attempts. Try again later.",
+                            headers={"Retry-After": str(locked_for)})
+
     # Find user by username OR email
     result = await db.execute(
         select(User).where(
@@ -195,9 +230,8 @@ async def login(
     )
 
     if not user or not user.hashed_password:
-        await log_audit(db, "auth.login_failed", None,
-                       f"Login attempt for unknown user: {credentials.username}",
-                       request, outcome="failure", error="user_not_found")
+        verify_password(credentials.password, _DUMMY_HASH)   # same response time as a real account
+        await _failed_login(db, request, credentials.username, address, None, "user_not_found")
         raise INVALID_CREDS
 
     if not user.is_active:
@@ -210,10 +244,9 @@ async def login(
         )
 
     if not verify_password(credentials.password, user.hashed_password):
-        await log_audit(db, "auth.login_failed", user.id,
-                       f"Wrong password for user: {user.username}",
-                       request, outcome="failure", error="wrong_password")
+        await _failed_login(db, request, credentials.username, address, user.id, "wrong_password")
         raise INVALID_CREDS
+    await login_throttle.clear(credentials.username, address)
 
     # Generate tokens
     access_token = create_access_token(user.id, user.username, user.role.value)

@@ -73,6 +73,18 @@ const STATUS_COLORS: Record<string, string> = {
   false_positive: '#607D8B',
 };
 
+// One row per issue: the fix is the same on every resource, so it is shown once.
+interface IssueGroup {
+  finding_type: string;
+  label: string;
+  severity: string;
+  count: number;
+  resources: number;
+  monthly_savings_usd: number;
+  remediation_steps: string | null;
+  prevent_with_policy: string[];
+}
+
 interface FindingItem {
   id: string;
   finding_type: string;
@@ -84,7 +96,7 @@ interface FindingItem {
   resource_type: string | null;
   subscription_id: string | null;
   resource_group: string | null;
-  estimated_monthly_saving: number | null;
+  estimated_monthly_savings_usd: number | null;
   detected_at: string;
 }
 
@@ -115,6 +127,11 @@ export const FindingsPage: React.FC = () => {
   // so the dropdown only ever offers groups that genuinely have data.
   const [resourceGroupOptions, setResourceGroupOptions] = useState<string[]>([]);
 
+  const [view, setView] = useState<'issues' | 'list'>('issues');
+  const [groups, setGroups] = useState<IssueGroup[]>([]);
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = useState('');
+
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkAnchor, setBulkAnchor] = useState<null | HTMLElement>(null);
 
@@ -129,6 +146,7 @@ export const FindingsPage: React.FC = () => {
       if (subscriptionFilter) params.set('subscription_id', subscriptionFilter);
       if (tenantFilter) params.set('tenant_id', tenantFilter);
       if (resourceGroupFilter) params.set('resource_group', resourceGroupFilter);
+      if (typeFilter) params.set('finding_type', typeFilter);
       params.set('page', String(page));
       params.set('page_size', String(pageSize));
 
@@ -150,11 +168,28 @@ export const FindingsPage: React.FC = () => {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [severityFilter, statusFilter, search, subscriptionFilter, tenantFilter, resourceGroupFilter, page]);
+  }, [severityFilter, statusFilter, search, subscriptionFilter, tenantFilter, resourceGroupFilter, typeFilter, page]);
 
   useEffect(() => {
     fetchFindings();
   }, [fetchFindings]);
+
+  useEffect(() => {
+    if (view !== 'issues') return;
+    const params = new URLSearchParams();
+    statusFilter.forEach((s) => params.append('status', s));
+    if (subscriptionFilter) params.set('subscription_id', subscriptionFilter);
+    api.get(`/findings/groups?${params.toString()}`)
+      .then((data) => setGroups(data.groups))
+      .catch((e) => setError(e instanceof ApiError ? e.message : 'Failed to load issues'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, statusFilter, subscriptionFilter]);
+
+  const showType = (findingType: string) => {
+    setPage(1);
+    setTypeFilter(findingType);
+    setView('list');
+  };
 
   useEffect(() => {
     // Subscription/tenant lists are small and don't change while
@@ -181,6 +216,7 @@ export const FindingsPage: React.FC = () => {
     setSubscriptionFilter('');
     setTenantFilter('');
     setResourceGroupFilter('');
+    setTypeFilter('');
   };
 
   const hasActiveFilters =
@@ -190,7 +226,8 @@ export const FindingsPage: React.FC = () => {
     !!search ||
     !!subscriptionFilter ||
     !!tenantFilter ||
-    !!resourceGroupFilter;
+    !!resourceGroupFilter ||
+    !!typeFilter;
 
   const toggleSeverity = (sev: string) => {
     setPage(1);
@@ -249,9 +286,17 @@ export const FindingsPage: React.FC = () => {
         <Typography variant="h5" sx={{ fontWeight: 700 }}>
           Findings
         </Typography>
-        <Typography variant="body2" sx={{ color: alpha('#fff', 0.5) }}>
-          {total.toLocaleString()} total
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Typography variant="body2" sx={{ color: alpha('#fff', 0.5) }}>
+            {view === 'issues' ? `${groups.length} issues · ${total.toLocaleString()} findings` : `${total.toLocaleString()} total`}
+          </Typography>
+          <Button size="small" variant={view === 'issues' ? 'contained' : 'outlined'} onClick={() => setView('issues')}>
+            By issue
+          </Button>
+          <Button size="small" variant={view === 'list' ? 'contained' : 'outlined'} onClick={() => setView('list')}>
+            All findings
+          </Button>
+        </Box>
       </Box>
 
       {/* Filters */}
@@ -302,7 +347,7 @@ export const FindingsPage: React.FC = () => {
 
         <TextField
           size="small"
-          placeholder="Search title, description, resource name…"
+          placeholder="Search title or description…"
           value={search}
           onChange={(e) => {
             setPage(1);
@@ -414,7 +459,76 @@ export const FindingsPage: React.FC = () => {
         </Alert>
       )}
 
-      <Card>
+      {view === 'issues' && (
+        <Card sx={{ mb: 2.5 }}>
+          {groups.length === 0 ? (
+            <Box sx={{ p: 6, textAlign: 'center' }}>
+              <Typography variant="body1" sx={{ color: alpha('#fff', 0.5) }}>No issues for this status.</Typography>
+            </Box>
+          ) : (
+            <TableContainer sx={{ overflowX: 'auto' }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Severity</TableCell>
+                    <TableCell>Issue</TableCell>
+                    <TableCell align="right">Resources</TableCell>
+                    <TableCell align="right">Savings/mo</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {groups.map((g) => (
+                    <React.Fragment key={g.finding_type}>
+                      <TableRow hover>
+                        <TableCell>
+                          <Chip size="small" label={g.severity.toUpperCase()} sx={{
+                            bgcolor: alpha(SEVERITY_COLORS[g.severity] ?? '#9E9E9E', 0.15),
+                            color: SEVERITY_COLORS[g.severity] ?? '#9E9E9E', fontWeight: 700, fontSize: 11 }} />
+                        </TableCell>
+                        <TableCell>{g.label}</TableCell>
+                        <TableCell align="right">{g.count}</TableCell>
+                        <TableCell align="right">
+                          {g.monthly_savings_usd ? money(g.monthly_savings_usd, { decimals: 2 }) : '—'}
+                        </TableCell>
+                        <TableCell align="right">
+                          <Button size="small" aria-expanded={openGroup === g.finding_type}
+                            onClick={() => setOpenGroup(openGroup === g.finding_type ? null : g.finding_type)}>
+                            {openGroup === g.finding_type ? 'Hide fix' : 'Show fix'}
+                          </Button>
+                          <Button size="small" onClick={() => showType(g.finding_type)}>View {g.count}</Button>
+                        </TableCell>
+                      </TableRow>
+                      {openGroup === g.finding_type && (
+                        <TableRow>
+                          <TableCell colSpan={5} sx={{ bgcolor: alpha('#b8d9ba', 0.04) }}>
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', color: alpha('#fff', 0.8) }}>
+                              {g.remediation_steps ? moneyText(g.remediation_steps) : 'Open a finding for its steps.'}
+                            </Typography>
+                            {g.prevent_with_policy.length > 0 && (
+                              <Typography variant="body2" sx={{ mt: 1.5, color: '#b8d9ba' }}>
+                                Prevent it with Azure Policy: {g.prevent_with_policy.join('; ')}
+                              </Typography>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </Card>
+      )}
+
+      {view === 'list' && typeFilter && (
+        <Alert severity="info" sx={{ mb: 2 }} onClose={() => setTypeFilter('')}>
+          Showing one issue: {typeFilter.replace(/_/g, ' ')}
+        </Alert>
+      )}
+
+      {view === 'list' && <Card>
         {loading ? (
           <Box sx={{ p: 2 }}>
             {Array.from({ length: 8 }).map((_, i) => (
@@ -492,7 +606,7 @@ export const FindingsPage: React.FC = () => {
                     />
                   </TableCell>
                   <TableCell align="right">
-                    {f.estimated_monthly_saving ? money(f.estimated_monthly_saving, { decimals: 2 }) : '—'}
+                    {f.estimated_monthly_savings_usd ? money(f.estimated_monthly_savings_usd, { decimals: 2 }) : '—'}
                   </TableCell>
                   <TableCell align="right">
                     {f.status === 'open' ? (
@@ -511,9 +625,9 @@ export const FindingsPage: React.FC = () => {
           </Table>
           </TableContainer>
         )}
-      </Card>
+      </Card>}
 
-      {totalPages > 1 && (
+      {view === 'list' && totalPages > 1 && (
         <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2.5 }}>
           <Pagination count={totalPages} page={page} onChange={(_, p) => setPage(p)} color="primary" />
         </Box>

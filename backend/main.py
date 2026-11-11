@@ -130,7 +130,7 @@ app = FastAPI(
     lifespan=lifespan,
     contact={
         "name": "ARG Open Source",
-        "url": "https://github.com/your-org/azure-resource-guardian",
+        "url": "https://github.com/jahmed-cloud/ARG",
     },
     license_info={
         "name": "MIT License",

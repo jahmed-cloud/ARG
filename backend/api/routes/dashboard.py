@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.dependencies.database import get_db
 from backend.services.access import AccessScope, get_access_scope
 from backend.models.models import (
-    CostSaving, EntraFinding, Finding, FindingStatus,
+    Finding, FindingStatus,
     ResourceInventory, ScanJob, ScanResult, ScanStatus, Subscription,
     ScoreSnapshot, SeverityLevel
 )
@@ -322,40 +322,22 @@ async def _get_finding_stats(db: AsyncSession, sub_id: Optional[str], access: Ac
 
 
 async def _get_cost_stats(db: AsyncSession, sub_id: Optional[str], access: AccessScope) -> dict:
-    # Total potential monthly savings
-    monthly_result = await db.scalar(
-        select(func.sum(CostSaving.estimated_monthly_savings_usd))
-        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id, access))
-    ) or 0.0
+    # Savings come from open findings - the same rule as the Costs page (structural moves are not counted).
+    from backend.api.routes.costs import STRUCTURAL_FINDING_TYPES
 
-    annual_result = await db.scalar(
-        select(func.sum(CostSaving.estimated_annual_savings_usd))
-        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id, access))
-    ) or 0.0
-
-    # Top 10 savings opportunities
+    saving = and_(Finding.status == FindingStatus.OPEN, Finding.estimated_monthly_savings_usd > 0,
+                  Finding.finding_type.notin_(STRUCTURAL_FINDING_TYPES), _scope(Finding, sub_id, access))
+    monthly_result = await db.scalar(select(func.sum(Finding.estimated_monthly_savings_usd)).where(saving)) or 0.0
+    annual_result = monthly_result * 12
     top_10_result = await db.execute(
-        select(
-            CostSaving.resource_name,
-            CostSaving.resource_type,
-            CostSaving.resource_group,
-            CostSaving.opportunity_type,
-            CostSaving.estimated_monthly_savings_usd,
-            CostSaving.action_required,
-        )
-        .where(CostSaving.is_actioned.is_(False), _scope(CostSaving, sub_id, access))
-        .order_by(CostSaving.estimated_monthly_savings_usd.desc())
-        .limit(10)
+        select(ResourceInventory.resource_name, ResourceInventory.resource_type, ResourceInventory.resource_group,
+               Finding.finding_type, Finding.estimated_monthly_savings_usd, Finding.title)
+        .outerjoin(ResourceInventory, Finding.resource_id == ResourceInventory.id)
+        .where(saving).order_by(Finding.estimated_monthly_savings_usd.desc()).limit(10)
     )
     top_10 = [
-        {
-            "resource_name": row[0],
-            "resource_type": row[1],
-            "resource_group": row[2],
-            "opportunity_type": row[3],
-            "monthly_savings_usd": round(row[4] or 0, 2),
-            "action": row[5],
-        }
+        {"resource_name": row[0], "resource_type": row[1], "resource_group": row[2], "opportunity_type": row[3],
+         "monthly_savings_usd": round(row[4] or 0, 2), "action": row[5]}
         for row in top_10_result.all()
     ]
 
@@ -479,10 +461,8 @@ async def _get_entra_stats(db: AsyncSession, sub_id: Optional[str], access: Acce
     if not access.tenant:
         return {"open": 0}  # Entra findings are tenant-wide: admins and contributors only
     open_count = await db.scalar(
-        select(func.count()).select_from(EntraFinding).where(
-            EntraFinding.status == FindingStatus.OPEN,
-            EntraFinding.tenant_id.in_(select(Subscription.tenant_id).where(Subscription.id.in_(_subscription_ids(sub_id)))) if sub_id else true()
-        )
+        select(func.count()).select_from(Finding).where(
+            Finding.category == "identity", Finding.status == FindingStatus.OPEN, _scope(Finding, sub_id, access))
     ) or 0
     return {"open": open_count}
 

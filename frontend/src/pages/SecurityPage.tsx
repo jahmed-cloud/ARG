@@ -17,10 +17,10 @@ interface SecurityStats {
 }
 
 const STAT_LABELS: { key: keyof SecurityStats; label: string }[] = [
-  { key: 'public_endpoints', label: 'Public Endpoints Exposed' },
+  { key: 'public_endpoints', label: 'Open to the Internet' },
   { key: 'disabled_defender_plans', label: 'Defender Plans Disabled' },
-  { key: 'missing_backups', label: 'Missing Backup Configuration' },
-  { key: 'expired_certificates', label: 'Expired Certificates' },
+  { key: 'missing_backups', label: 'Data Protection Off' },
+  { key: 'expired_certificates', label: 'Unsupported or Unpatched' },
   { key: 'missing_diagnostics', label: 'Missing Diagnostic Settings' },
 ];
 

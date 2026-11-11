@@ -25,8 +25,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
-from sqlalchemy import delete, select, func, and_, or_, update
+from pydantic import BaseModel, Field
+from sqlalchemy import case, delete, select, func, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -162,6 +162,10 @@ class FindingDetail(FindingListItem):
 class FindingStatusUpdate(BaseModel):
     status: str  # acknowledged | suppressed | false_positive | open | resolved
     reason: str | None = None  # used as suppression_reason when status == suppressed
+
+
+class BulkStatusUpdate(FindingStatusUpdate):
+    finding_ids: list[UUID] = Field(..., min_length=1, max_length=500)
 
 
 class FindingStats(BaseModel):
@@ -347,10 +351,13 @@ async def list_findings(
 ) -> dict:
     """List findings with filtering, pagination, and resource details joined in."""
     filters = [scope.findings()]
-    if severity:
-        filters.append(Finding.severity.in_(severity))
-    if status:
-        filters.append(Finding.status.in_(status))
+    try:   # an unknown value is a 400, not a database error
+        if severity:
+            filters.append(Finding.severity.in_([SeverityLevel(s) for s in severity]))
+        if status:
+            filters.append(Finding.status.in_([FindingStatus(s) for s in status]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if category:
         filters.append(Finding.category == category)
     if subscription_id:
@@ -384,8 +391,12 @@ async def list_findings(
         base_query = base_query.where(and_(*filters))
         count_query = count_query.where(and_(*filters))
 
-    order_col = Finding.last_detected_at.desc() if sort_desc else Finding.last_detected_at.asc()
-    base_query = base_query.order_by(order_col).offset((page - 1) * page_size).limit(page_size)
+    # Most severe first, then the largest saving, then the oldest: what to act on, not what was scanned last.
+    rank = case(*[(Finding.severity == level, i) for i, level in enumerate(SeverityLevel)], else_=9)
+    order = (rank, Finding.estimated_monthly_savings_usd.desc().nulls_last(), Finding.first_detected_at.asc())
+    if not sort_desc:
+        order = (Finding.last_detected_at.asc(),)
+    base_query = base_query.order_by(*order).offset((page - 1) * page_size).limit(page_size)
 
     result = await db.execute(base_query)
     findings = result.scalars().all()
@@ -554,6 +565,51 @@ async def reset_findings(
     return {"findings_deleted": findings_deleted, "estate_snapshots_deleted": snapshots_deleted}
 
 
+@router.get("/groups", response_model=dict)
+async def finding_groups(
+    db: AsyncSession = Depends(get_db),
+    scope: AccessScope = Depends(get_access_scope),
+    status: list[str] = Query(["open"]),
+    subscription_id: UUID | None = Query(None),
+) -> dict:
+    """
+    Findings grouped by issue (finding type): how many resources, the saving, and the fix - shown once per issue
+    because the steps are the same on every resource. Where a built-in Azure Policy prevents the issue, it is named.
+    """
+    from scripts.subscription_analysis.insights import GUARDRAILS, label
+
+    try:
+        filters = [scope.findings(), Finding.status.in_([FindingStatus(s) for s in status])]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if subscription_id:
+        filters.append(Finding.subscription_id == subscription_id)
+    rank = case(*[(Finding.severity == level, i) for i, level in enumerate(SeverityLevel)], else_=9)
+    totals = (await db.execute(
+        select(Finding.finding_type, func.count(Finding.id), func.count(func.distinct(Finding.resource_id)),
+               func.coalesce(func.sum(Finding.estimated_monthly_savings_usd), 0.0), func.min(rank))
+        .where(and_(*filters)).group_by(Finding.finding_type))).all()
+    # the most severe finding of each type carries the text shown for the group
+    samples = {f.finding_type: f for f in (await db.execute(
+        select(Finding).where(and_(*filters)).distinct(Finding.finding_type)
+        .order_by(Finding.finding_type, rank))).scalars().all()}
+    severities = [s.value for s in SeverityLevel]
+    groups = []
+    for finding_type, count, resources, saving, worst in totals:
+        sample = samples.get(finding_type)
+        groups.append({
+            "finding_type": finding_type, "label": label(finding_type),
+            "category": sample.category if sample else None,
+            "severity": severities[worst] if worst is not None and worst < len(severities) else "info",
+            "count": count, "resources": resources or count, "monthly_savings_usd": round(float(saving or 0), 2),
+            "remediation_steps": sample.remediation_steps if sample else None,
+            "example_id": str(sample.id) if sample else None,
+            "prevent_with_policy": list(GUARDRAILS.get(finding_type, ())),
+        })
+    groups.sort(key=lambda g: (severities.index(g["severity"]), -g["monthly_savings_usd"], -g["count"]))
+    return {"groups": groups, "total_findings": sum(g["count"] for g in groups)}
+
+
 @router.get("/{finding_id}", response_model=FindingDetail)
 async def get_finding(
     finding_id: UUID,
@@ -636,8 +692,7 @@ async def update_finding_status(
 
 @router.post("/bulk-status", response_model=dict)
 async def bulk_update_status(
-    finding_ids: list[UUID],
-    body: FindingStatusUpdate,
+    body: BulkStatusUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_analyst),
 ) -> dict:
@@ -645,8 +700,7 @@ async def bulk_update_status(
     allowed = {"acknowledged", "suppressed", "false_positive", "open", "resolved"}
     if body.status not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
-    if len(finding_ids) > 500:
-        raise HTTPException(status_code=400, detail="Cannot bulk-update more than 500 findings at once")
+    finding_ids = body.finding_ids
 
     update_data: dict = {"status": FindingStatus(body.status)}
     now = datetime.now(timezone.utc)

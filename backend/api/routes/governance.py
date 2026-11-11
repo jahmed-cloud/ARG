@@ -20,11 +20,16 @@ router = APIRouter(tags=["governance"])
 
 # Findings from scanners/governance/policy_scanners.py (plus the legacy generic type).
 POLICY_FINDING_TYPES = (
-    "policy_violation", "no_policy_assignments", "policy_assignments_not_enforced", "policy_exemption_no_expiry",
+    "no_policy_assignments", "policy_assignments_not_enforced", "policy_exemption_no_expiry",
     "policy_exemption_expired", "policy_exemption_orphaned", "policy_exemption_whole_initiative",
     "policy_remediation_never_run", "policy_definition_mode_skips_containers",
     "allowed_locations_skip_resource_groups", "resource_types_without_policy", "resource_type_denied_by_policy",
 )
+
+
+MONITORING_TYPES = ("service_health_alert_missing", "app_insights_classic_mode", "app_insights_workspace_missing",
+                    "log_analytics_restrictive_daily_cap", "log_analytics_workspace_sprawl")
+TAG_QUALITY_TYPES = ("tag_key_typo", "environment_tag_name_mismatch")
 
 
 class GovernanceStats(BaseModel):
@@ -65,9 +70,9 @@ async def get_governance_stats(
         missing_tags=counts.get("missing_required_tags", 0),
         naming_violations=counts.get("naming_convention_violation", 0),
         policy_violations=sum(counts.get(t, 0) for t in POLICY_FINDING_TYPES),
-        region_violations=counts.get("region_restriction_violation", 0),
+        region_violations=sum(counts.get(t, 0) for t in MONITORING_TYPES),
         unlocked_resources=counts.get("missing_resource_lock", 0),
-        caf_violations=counts.get("caf_alignment_violation", 0),
+        caf_violations=sum(counts.get(t, 0) for t in TAG_QUALITY_TYPES),
     )
 
 

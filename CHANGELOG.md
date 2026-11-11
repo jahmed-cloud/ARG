@@ -5,6 +5,31 @@ Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### One finding per issue - 2026-11-11
+- **No duplicate findings**: findings are stored by a fingerprint (resource ID in any casing, or tenant + Entra
+  object, plus the finding type; migration `c9f4a1b7d305`). A re-scan updates the row, so acknowledged / suppressed
+  / false-positive status survives. Entra ID findings are stored once per tenant, not once per subscription.
+- **Less duplicate work**: Entra ID scanners run once per tenant and scan; settings are read once per job.
+- **Findings on a resource that should be removed are folded into that finding** (`evidence.covers`); it takes the
+  highest severity among them. Not applied where a person dismissed the removal.
+- **Expired app secrets / certificates**: one finding per app.
+- **Scan totals**: resources are counted once (were summed per scanner: 735 for a subscription of 17); findings are
+  counted after merging. Online and offline now report the same numbers.
+- **Shorter text**: network-exposure findings name only the problem in the title; prerequisites appear once.
+- **Findings page**: "By issue" view (one row per issue, the fix shown once, the Azure Policy that prevents it);
+  ordered by severity, then saving; the Savings column and the bulk actions work (wrong field name, wrong request
+  body). `GET /findings/groups`.
+- **Overview**: potential savings and identity issues come from findings (they read tables nothing writes).
+- **Stat tiles** count finding types the scanners emit; tiles nothing fed were renamed to what is measured.
+  Identity score counts expired credentials, dormant users, guests and standing access (old type names matched
+  nothing).
+- **Security**: login lockout (`MAX_LOGIN_ATTEMPTS`, `LOCKOUT_DURATION_MINUTES`, per account and address, HTTP 429);
+  same response time for unknown users; security headers and a Content-Security-Policy on every nginx response
+  (index.html had none); the Docker Hub compose file binds PostgreSQL and the API to this machine only; Terraform
+  state uploads above 1 MB pass nginx.
+- New: `CONTEXT.md`, `TASK.md`.
+
+
 ### CVE check, containers, web endpoints and policy graph - 2026-10-24
 - **CVE check** (Compute > CVE check, local portal and Docker UI, admins; `scripts/subscription_analysis/cve.py`):
   which VM, Arc server, SQL Server instance, App Service app or container a CVE concerns - NVD's affected versions (one

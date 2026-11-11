@@ -57,6 +57,7 @@ class StaleGuestUserScanner(BaseScanner):
     category       = ScannerCategory.IDENTITY
     severity       = SeverityLevel.MEDIUM
     requires_graph = True
+    tenant_wide    = True
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         if not context.graph_client:
@@ -233,6 +234,7 @@ class DormantUserScanner(BaseScanner):
     category       = ScannerCategory.IDENTITY
     severity       = SeverityLevel.HIGH
     requires_graph = True
+    tenant_wide    = True
 
     DEFAULT_THRESHOLD_DAYS = 90
 
@@ -434,6 +436,7 @@ class MFANotEnabledScanner(BaseScanner):
     category       = ScannerCategory.IDENTITY
     severity       = SeverityLevel.HIGH
     requires_graph = True
+    tenant_wide    = True
 
     async def scan(self, context: ScanContext) -> ScanOutput:
         if not context.graph_client:
@@ -565,6 +568,7 @@ class PermanentGlobalAdminScanner(BaseScanner):
     category       = ScannerCategory.IDENTITY
     severity       = SeverityLevel.CRITICAL
     requires_graph = True
+    tenant_wide    = True
 
     GLOBAL_ADMIN_ROLE_ID = "62e90394-69f5-4237-9190-012177145e10"  # Well-known constant
 
@@ -701,6 +705,7 @@ class ExpiredAppCredentialScanner(BaseScanner):
     category       = ScannerCategory.IDENTITY
     severity       = SeverityLevel.HIGH
     requires_graph = True
+    tenant_wide    = True
 
     WARN_DAYS_BEFORE_EXPIRY = 30
 
@@ -720,125 +725,157 @@ class ExpiredAppCredentialScanner(BaseScanner):
             app_id = app.get("id", "")
             display_name = app.get("displayName", "Unknown")
             app_client_id = app.get("appId", "")
+            portal = ("https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/"
+                      f"appId/{app_client_id}")
 
-            # Check password credentials (client secrets)
-            for secret in app.get("passwordCredentials", []):
-                end_dt = secret.get("endDateTime")
-                if not end_dt:
-                    continue
-                expiry = datetime.fromisoformat(str(end_dt).replace("Z", "+00:00"))
-                days_until_expiry = (expiry - now).days
-                is_expired = days_until_expiry < 0
+            # One finding per app and credential kind: an app with four expired secrets is one rotation, not four.
+            secrets = self._due(app.get("passwordCredentials", []), now)
+            if secrets:
+                worst = secrets[0]["days_until_expiry"]
+                findings.append(self.make_entra_finding(
+                    finding_type="expired_app_secret",
+                    title=f"{self._headline(secrets, 'App secret', 'app secrets')}: {display_name}",
+                    description=(
+                        f"Application '{display_name}' (App ID: {app_client_id}) has "
+                        f"{self._summary(secrets, 'client secret')}: "
+                        + "; ".join(f"'{s['name'] or 'unnamed'}' {s['status']}" for s in secrets)
+                        + ". Workloads still presenting an expired secret fail to authenticate."
+                    ),
+                    object_id=app_id,
+                    object_type="application",
+                    display_name=display_name,
+                    severity=(SeverityLevel.CRITICAL if worst < 0 else
+                              SeverityLevel.HIGH if worst <= 7 else SeverityLevel.MEDIUM),
+                    remediation_steps=(
+                        "1. Create a new client secret for the application\n"
+                        "2. Update every workload that uses the old secret\n"
+                        "3. Verify sign-in with the new secret in each environment\n"
+                        "4. Remove the expired secrets listed above\n"
+                        "5. Workloads running in Azure: switch to a managed identity or workload identity "
+                        "federation, which have no secret to expire"
+                    ),
+                    evidence={
+                        "credential_type": "client_secret",
+                        "credentials": secrets,
+                        "expiry_date": secrets[0]["expiry_date"],
+                        "days_until_expiry": worst,
+                        "secret_name": secrets[0]["name"],
+                        "app_id": app_client_id,
+                    },
+                    azure_cli_script=(
+                        f"# Step 1: Create a new client secret\n"
+                        f"az ad app credential reset --id \"{app_client_id}\" "
+                        f"--append --display-name \"ARG-renewed-$(date +%Y%m%d)\"\n"
+                        f"# Step 2: Update your application config with the new secret value above\n"
+                        f"# Step 3: Remove old expired secrets via the portal:\n"
+                        f"# {portal}"
+                    ),
+                    powershell_script=(
+                        f"# Step 1: Create a new client secret\n"
+                        f"$secret = Add-MgApplicationPassword -ApplicationId \"{app_id}\" "
+                        f"-PasswordCredential @{{DisplayName='ARG-renewed-{{}}'.Replace('{{}}', (Get-Date -Format 'yyyyMMdd'))}}\n"
+                        f"Write-Host \"New secret value (save now - only shown once):\" $secret.SecretText\n"
+                        f"# Step 2: Update your application config with the new secret value\n"
+                        f"# Step 3: Remove old expired secrets via the portal:\n"
+                        f"# {portal}"
+                    ),
+                ))
 
-                if is_expired or days_until_expiry <= self.WARN_DAYS_BEFORE_EXPIRY:
-                    severity = SeverityLevel.CRITICAL if is_expired else (
-                        SeverityLevel.HIGH if days_until_expiry <= 7 else SeverityLevel.MEDIUM
-                    )
-                    status = "EXPIRED" if is_expired else f"expires in {days_until_expiry} days"
-                    findings.append(self.make_entra_finding(
-                        finding_type="expired_app_secret",
-                        title=f"App secret {status}: {display_name}",
-                        description=(
-                            f"Application '{display_name}' (App ID: {app_client_id}) has a client secret "
-                            f"that {status}. Secret hint: '{secret.get('displayName', secret.get('hint', 'N/A'))}'. "
-                            f"Applications relying on this secret will fail to authenticate."
-                        ),
-                        object_id=app_id,
-                        object_type="application",
-                        display_name=display_name,
-                        severity=severity,
-                        remediation_steps=(
-                            "1. Create a new client secret for the application\n"
-                            "2. Update all applications/services using this secret\n"
-                            "3. Verify new secret works in all environments\n"
-                            "4. Remove the expired/old secret\n"
-                            "5. Consider using Managed Identities to eliminate secrets entirely"
-                        ),
-                        evidence={
-                            "credential_type": "client_secret",
-                            "expiry_date": str(end_dt),
-                            "days_until_expiry": days_until_expiry,
-                            "secret_name": secret.get("displayName", ""),
-                            "app_id": app_client_id,
-                        },
-                        azure_cli_script=(
-                            f"# Step 1: Create a new client secret\n"
-                            f"az ad app credential reset --id \"{app_client_id}\" "
-                            f"--append --display-name \"ARG-renewed-$(date +%Y%m%d)\"\n"
-                            f"# Step 2: Update your application config with the new secret value above\n"
-                            f"# Step 3: Remove old expired secrets via the portal:\n"
-                            f"# https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/appId/{app_client_id}"
-                        ),
-                        powershell_script=(
-                            f"# Step 1: Create a new client secret\n"
-                            f"$secret = Add-MgApplicationPassword -ApplicationId \"{app_id}\" "
-                            f"-PasswordCredential @{{DisplayName='ARG-renewed-{{}}'.Replace('{{}}', (Get-Date -Format 'yyyyMMdd'))}}\n"
-                            f"Write-Host \"New secret value (save now - only shown once):\" $secret.SecretText\n"
-                            f"# Step 2: Update your application config with the new secret value\n"
-                            f"# Step 3: Remove old expired secrets via the portal:\n"
-                            f"# https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/appId/{app_client_id}"
-                        ),
-                    ))
-
-            # Check key credentials (certificates)
-            for cert in app.get("keyCredentials", []):
-                end_dt = cert.get("endDateTime")
-                if not end_dt:
-                    continue
-                expiry = datetime.fromisoformat(str(end_dt).replace("Z", "+00:00"))
-                days_until_expiry = (expiry - now).days
-                is_expired = days_until_expiry < 0
-
-                if is_expired or days_until_expiry <= self.WARN_DAYS_BEFORE_EXPIRY:
-                    severity = SeverityLevel.CRITICAL if is_expired else SeverityLevel.HIGH
-                    status = "EXPIRED" if is_expired else f"expires in {days_until_expiry} days"
-                    findings.append(self.make_entra_finding(
-                        finding_type="expired_app_certificate",
-                        title=f"App certificate {status}: {display_name}",
-                        description=(
-                            f"Application '{display_name}' has a certificate that {status}. "
-                            f"Certificate type: {cert.get('type', 'Unknown')}."
-                        ),
-                        object_id=app_id,
-                        object_type="application",
-                        display_name=display_name,
-                        severity=severity,
-                        remediation_steps=(
-                            "1. Generate a new certificate (self-signed or from CA)\n"
-                            "2. Upload the new certificate to the app registration\n"
-                            "3. Update dependent services to use the new certificate\n"
-                            "4. Remove the expired certificate from the app registration"
-                        ),
-                        evidence={
-                            "credential_type": "certificate",
-                            "expiry_date": str(end_dt),
-                            "days_until_expiry": days_until_expiry,
-                            "cert_type": cert.get("type", ""),
-                            "key_id": str(cert.get("keyId", "")),
-                        },
-                        azure_cli_script=(
-                            f"# Upload a new certificate to the app registration\n"
-                            f"# (generate the cert first with openssl or your PKI)\n"
-                            f"az ad app credential reset --id \"{app_client_id}\" "
-                            f"--cert @/path/to/new-cert.pem --append\n"
-                            f"# Then remove the old expired certificate via the portal:\n"
-                            f"# https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/appId/{app_client_id}"
-                        ),
-                        powershell_script=(
-                            f"# Upload a new certificate to the app registration\n"
-                            f"$certPath = '/path/to/new-cert.cer'  # Replace with your cert path\n"
-                            f"$certBytes = [System.IO.File]::ReadAllBytes($certPath)\n"
-                            f"Add-MgApplicationKey -ApplicationId \"{app_id}\" "
-                            f"-KeyCredential @{{Key=$certBytes; Usage='Verify'; Type='AsymmetricX509Cert'}}\n"
-                            f"# Remove the expired cert via the portal:\n"
-                            f"# https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/appId/{app_client_id}"
-                        ),
-                    ))
+            certificates = self._due(app.get("keyCredentials", []), now)
+            if certificates:
+                worst = certificates[0]["days_until_expiry"]
+                findings.append(self.make_entra_finding(
+                    finding_type="expired_app_certificate",
+                    title=f"{self._headline(certificates, 'App certificate', 'app certificates')}: {display_name}",
+                    description=(
+                        f"Application '{display_name}' (App ID: {app_client_id}) has "
+                        f"{self._summary(certificates, 'certificate')}: "
+                        + "; ".join(f"{c['cert_type'] or 'certificate'} {c['key_id']} {c['status']}".replace("  ", " ")
+                                    for c in certificates) + "."
+                    ),
+                    object_id=app_id,
+                    object_type="application",
+                    display_name=display_name,
+                    severity=SeverityLevel.CRITICAL if worst < 0 else SeverityLevel.HIGH,
+                    remediation_steps=(
+                        "1. Generate a new certificate (self-signed or from CA)\n"
+                        "2. Upload the new certificate to the app registration\n"
+                        "3. Update dependent services to use the new certificate\n"
+                        "4. Remove the expired certificates listed above from the app registration"
+                    ),
+                    evidence={
+                        "credential_type": "certificate",
+                        "credentials": certificates,
+                        "expiry_date": certificates[0]["expiry_date"],
+                        "days_until_expiry": worst,
+                        "cert_type": certificates[0]["cert_type"],
+                        "key_id": certificates[0]["key_id"],
+                        "app_id": app_client_id,
+                    },
+                    azure_cli_script=(
+                        f"# Upload a new certificate to the app registration\n"
+                        f"# (generate the cert first with openssl or your PKI)\n"
+                        f"az ad app credential reset --id \"{app_client_id}\" "
+                        f"--cert @/path/to/new-cert.pem --append\n"
+                        f"# Then remove the old expired certificate via the portal:\n"
+                        f"# {portal}"
+                    ),
+                    powershell_script=(
+                        f"# Upload a new certificate to the app registration\n"
+                        f"$certPath = '/path/to/new-cert.cer'  # Replace with your cert path\n"
+                        f"$certBytes = [System.IO.File]::ReadAllBytes($certPath)\n"
+                        f"Add-MgApplicationKey -ApplicationId \"{app_id}\" "
+                        f"-KeyCredential @{{Key=$certBytes; Usage='Verify'; Type='AsymmetricX509Cert'}}\n"
+                        f"# Remove the expired cert via the portal:\n"
+                        f"# {portal}"
+                    ),
+                ))
 
         return ScanOutput(
             findings=findings,
             resources_scanned=len(apps),
         )
+
+    def _due(self, credentials: List[Dict], now: datetime) -> List[Dict]:
+        """Credentials already expired or expiring within WARN_DAYS_BEFORE_EXPIRY, soonest first."""
+        due = []
+        for credential in credentials or []:
+            end_dt = credential.get("endDateTime")
+            if not end_dt or str(end_dt) == "None":
+                continue
+            try:
+                expiry = datetime.fromisoformat(str(end_dt).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            days = (expiry - now).days
+            if days > self.WARN_DAYS_BEFORE_EXPIRY:
+                continue
+            due.append({
+                "name": credential.get("displayName") or credential.get("hint") or "",
+                "expiry_date": str(end_dt),
+                "days_until_expiry": days,
+                "status": "EXPIRED" if days < 0 else f"expires in {days} days",
+                "cert_type": credential.get("type") or "",
+                "key_id": str(credential.get("keyId") or ""),
+            })
+        return sorted(due, key=lambda c: c["days_until_expiry"])
+
+    @staticmethod
+    def _headline(due: List[Dict], one: str, many: str) -> str:
+        if len(due) == 1:
+            return f"{one} {due[0]['status']}"
+        expired = sum(1 for c in due if c["days_until_expiry"] < 0)
+        return f"{len(due)} {many} expired or expiring ({expired} expired)"
+
+    @staticmethod
+    def _summary(due: List[Dict], noun: str) -> str:
+        expired = sum(1 for c in due if c["days_until_expiry"] < 0)
+        soon = len(due) - expired
+        parts = ([f"{expired} expired {noun}{'s' if expired != 1 else ''}"] if expired else []) + \
+                ([f"{soon} {noun}{'s' if soon != 1 else ''} expiring soon"] if soon else [])
+        return " and ".join(parts)
 
     async def _get_all_applications(self, context: ScanContext) -> List[Dict]:
         if context.graph_client is None:

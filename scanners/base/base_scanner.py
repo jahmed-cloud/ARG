@@ -224,6 +224,9 @@ class BaseScanner(ABC):
     requires_graph:    bool = False  # Needs Microsoft Graph API access
     requires_cost:     bool = False  # Needs Cost Management API access
     requires_defender: bool = False  # Needs Microsoft Defender data
+    # Reads tenant-level data (Entra ID users, apps, roles): the answer is the same for every subscription of the
+    # tenant, so the Docker worker runs it once per tenant and scan, not once per subscription.
+    tenant_wide: bool = False
     # Every finding type the scanner can emit. When declared, the Docker worker resolves open findings of these
     # types that a clean run no longer reports (and suppresses them when a setting switches the scanner off), so
     # a check that was fixed, filtered or disabled does not linger in the UI.

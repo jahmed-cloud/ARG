@@ -230,7 +230,9 @@ def decide(service: str, resource: Dict[str, Any], ctx: Dict[str, Any], *,
             f"services exception, not through a private endpoint, so the target is default Deny with that exception.")
     else:
         target = "private_endpoint"
-        reasons = [f"{env} data in active use ({usage})" if not idle else f"{env} data ({usage})"]
+        # The usage figure is already in the finding's first sentence; an unknown environment adds nothing.
+        kind = "" if production is None else f"{env} "
+        reasons = [f"{kind}data in active use" if not idle else f"{kind}data, little or no use"]
         if sensitive_rule:
             reasons.append(f"tagged {sensitive_rule} (confidential data)")
         if pe_standard:
@@ -243,8 +245,9 @@ def decide(service: str, resource: Dict[str, Any], ctx: Dict[str, Any], *,
                "public access off - " + "; ".join(reasons) + ".")
         if prereq:
             interim = "service_endpoint" if vnet_callers else "ip_rules"
-            why += (" Before it works the subscription needs " + "; ".join(prereq) + ". Interim step, today: "
-                    + options[interim].title.lower() + " - closes the internet exposure within the hour, free.")
+            # The prerequisites themselves are steps 1-n of the remediation; not repeated here.
+            why += (f" {len(prereq)} prerequisite(s) are missing (see the steps). Until then: "
+                    + options[interim].title.lower() + " - closes the internet exposure today, free.")
 
     pros_cons = {
         "private_endpoint": (

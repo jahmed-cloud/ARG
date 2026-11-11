@@ -7,13 +7,17 @@ Defender for Cloud and Azure Advisor re-report many issues ARG's own scanners al
   the native finding as corroboration (evidence["also_reported_by"]);
 - removes Advisor cost items on resources where a native finding already carries a saving, so no saving is counted
   twice;
-- drops a Defender / Advisor finding that has nothing left.
+- drops a Defender / Advisor finding that has nothing left;
+- folds every other finding on a resource that should be removed (unused, idle, orphaned) into that one finding
+  (evidence["covers"]): tagging or hardening something about to be deleted is wasted work.
 
 Works on finding dicts (local report) and ScannerFinding objects (Docker worker) alike.
 """
 
 import re
 from typing import Any, Dict, Iterable, List, Pattern, Tuple
+
+from scanners.base.base_scanner import ORPHAN_FINDING_TYPES
 
 # native finding type -> Defender recommendations it makes redundant on the same resource
 DEFENDER_DUPLICATES: Dict[str, Pattern] = {k: re.compile(v, re.I) for k, v in {
@@ -88,15 +92,84 @@ def _rebuild_defender(f: Any, remaining: List[Dict[str, Any]]) -> None:
     _set(f, "azure_cli_script", "\n\n".join(scripts) or None)
 
 
-def correlate(findings: Iterable[Any]) -> Tuple[List[Any], Dict[str, int]]:
+# A finding that says "this resource is unused - remove it". Any other finding on the same resource (tags, naming,
+# locks, hardening, right-sizing) is work on something about to be deleted, so it is folded into this one.
+DECOMMISSION_TYPES = frozenset(ORPHAN_FINDING_TYPES) | {"idle_sql_database"}
+# Never folded: imported findings that mix several issues, and Terraform drift (the state still has to be fixed).
+NOT_COVERED_TYPES = frozenset({"defender_recommendations", "advisor_cost_recommendation", "service_retirement",
+                               "terraform_missing_resource", "terraform_unmanaged_resource"})
+_SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
+
+
+def _severity(f: Any) -> str:
+    value = _get(f, "severity")
+    return getattr(value, "value", value) or "info"
+
+
+def _raise_severity(target: Any, other: Any) -> bool:
+    """Give `target` the severity of `other` when that is more severe; keeps the enum / string type of the field."""
+    if _SEVERITY_ORDER.index(_severity(other)) < _SEVERITY_ORDER.index(_severity(target)):
+        _set(target, "severity", _get(other, "severity"))
+        return True
+    return False
+
+
+def fold_into_decommission(findings: List[Any], keep_separate: Iterable[str] = ()) -> Tuple[List[Any], int]:
+    """
+    One finding per resource that should be removed: findings on the same resource, or on a child of it, are
+    dropped and listed on the decommission finding (evidence["covers"]). When a covered finding is more severe
+    (an unused storage account that is also open to anonymous access), the decommission finding takes that
+    severity, so the urgency is not lost.
+
+    `keep_separate`: resource IDs where the decommission finding was dismissed by a person (suppressed / false
+    positive in the Docker UI) - the resource stays, so its other findings stay too.
+    """
+    kept_apart = {str(s).lower() for s in keep_separate}
+    removals: Dict[str, Any] = {}
+    for f in findings:
+        scope = _scope(f)
+        if scope and "/resourcegroups/" in scope and _get(f, "finding_type") in DECOMMISSION_TYPES \
+                and scope not in kept_apart:
+            current = removals.get(scope)
+            if current is None or (_get(f, "estimated_monthly_savings_usd") or 0) > \
+                    (_get(current, "estimated_monthly_savings_usd") or 0):
+                removals[scope] = f
+    if not removals:
+        return findings, 0
+    kept: List[Any] = []
+    covered = 0
+    for f in findings:
+        ftype = _get(f, "finding_type")
+        scope = _scope(f)
+        if ftype in DECOMMISSION_TYPES or ftype in NOT_COVERED_TYPES or not scope:
+            kept.append(f)
+            continue
+        target = removals.get(scope) or next((r for s, r in removals.items() if scope.startswith(s + "/")), None)
+        if target is None:
+            kept.append(f)
+            continue
+        evidence = dict(_get(target, "evidence") or {})
+        covers = list(evidence.get("covers") or [])
+        covers.append({"finding_type": ftype, "title": _get(f, "title"), "severity": _severity(f)})
+        evidence["covers"] = covers
+        if _raise_severity(target, f):
+            evidence["severity_raised_by"] = ftype
+        _set(target, "evidence", evidence)
+        covered += 1
+    return kept, covered
+
+
+def correlate(findings: Iterable[Any], keep_separate: Iterable[str] = ()) -> Tuple[List[Any], Dict[str, int]]:
     """(kept findings, counts of what was merged). The input list is not modified; kept objects may be."""
     findings = list(findings)
+    findings, covered = fold_into_decommission(findings, keep_separate)
     natives: Dict[str, List[Any]] = {}
     for f in findings:
         if _get(f, "finding_type") not in ("defender_recommendations", "advisor_cost_recommendation",
                                            "service_retirement"):
             natives.setdefault(_scope(f), []).append(f)
-    stats = {"defender_recommendations_merged": 0, "advisor_items_merged": 0, "findings_dropped": 0}
+    stats = {"defender_recommendations_merged": 0, "advisor_items_merged": 0, "findings_dropped": 0,
+             "covered_by_decommission": covered}
     kept: List[Any] = []
     for f in findings:
         ftype = _get(f, "finding_type")

@@ -207,7 +207,7 @@ class KeyVaultHardeningScanner(PostureScanner):
                 decision = fix["decision"]
                 findings.append(self.resource_finding(
                     kv, finding_type="key_vault_public_network_open",
-                    title=f"Key Vault open to all networks: {name} - {decision['title'].lower()}",
+                    title=f"Key Vault open to all networks: {name}",
                     description=(f"Key Vault '{name}' accepts requests from all networks and has no private endpoint "
                                  f"({decision['usage']}). {decision['why']}"),
                     severity=fix["severity"], remediation_steps=fix["remediation_steps"],
@@ -283,7 +283,7 @@ class AIServicesHardeningScanner(PostureScanner):
                 decision = fix["decision"]
                 findings.append(self.resource_finding(
                     acc, finding_type="ai_services_public_network_open",
-                    title=f"AI endpoint open to all networks: {name} - {decision['title'].lower()}",
+                    title=f"AI endpoint open to all networks: {name}",
                     description=(f"{acc.get('kind')} account '{name}' accepts requests from any network and has no "
                                  f"private endpoint ({decision['usage']}). {decision['why']}"),
                     resource_type="microsoft.cognitiveservices/accounts", severity=fix["severity"],

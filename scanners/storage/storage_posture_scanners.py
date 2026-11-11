@@ -115,7 +115,7 @@ class StorageAccessHardeningScanner(PostureScanner):
                 decision = fix["decision"]
                 findings.append(self.resource_finding(
                     sa, finding_type="storage_public_network_access",
-                    title=f"Storage open to all networks: {name} - {decision['title'].lower()}",
+                    title=f"Storage open to all networks: {name}",
                     description=(f"Storage account '{name}' allows data-plane traffic from all networks "
                                  f"(firewall defaultAction=Allow) and has no private endpoint "
                                  f"({decision['usage']}). {decision['why']}"),

@@ -226,6 +226,12 @@ def run_scan_job(
         findings_by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         job_warnings: list[str] = []
         unscanned: list[str] = []
+        # Settings, required tags and naming patterns are the same for every scanner and subscription of a job:
+        # read once, not once per scanner (76 scanners x every subscription).
+        scanner_config = _analysis_config(db)
+        # Tenant-wide scanners (Entra ID) give the same answer for every subscription of a tenant: run them once
+        # per tenant and scan, on the first subscription of that tenant.
+        tenant_scanners_done: set = set()
 
         for sub in subs:
             logger.info(f"Scanning subscription: {sub.subscription_id}")
@@ -254,7 +260,7 @@ def run_scan_job(
                 continue
             context.subscription_name = sub.display_name or ""
             from scanners.base.azure_api import cost_basis_from
-            context.cost_basis = cost_basis_from(_analysis_config(db))   # setting amortized_cost (default on)
+            context.cost_basis = cost_basis_from(scanner_config)   # setting amortized_cost (default on)
 
             # Attach imported Terraform state, if any, so TerraformDriftScanner
             # has something to diff against. Without this the scanner always
@@ -286,6 +292,11 @@ def run_scan_job(
                 completed: list = []
                 for scanner_class in scanner_classes:
                     scanner_name = scanner_class.scanner_name
+                    if scanner_class.tenant_wide:
+                        if (sub.tenant_id, scanner_name) in tenant_scanners_done:
+                            continue
+                        tenant_scanners_done.add((sub.tenant_id, scanner_name))
+                    scanner_started = time.time()
                     scan_result = ScanResult(
                         scan_job_id=job_id,
                         scanner_name=scanner_name,
@@ -298,30 +309,9 @@ def run_scan_job(
                     db.commit()
 
                     try:
-                        # Load governance config from DB so scanners use
-                        # admin-configured tags/patterns, not hardcoded defaults.
-                        from backend.models.models import GovernanceConfig
-                        from backend.api.routes.governance_config import (
-                            DEFAULT_REQUIRED_TAGS, DEFAULT_NAMING_PATTERNS, effective_settings
-                        )
-                        gov_cfg_row = db.execute(
-                            select(GovernanceConfig).where(
-                                GovernanceConfig.tenant_id.is_(None)
-                            ).limit(1)
-                        ).scalar_one_or_none()
-                        # Analysis settings (optional checks, blocked providers, ...) - Settings → Governance
-                        scanner_extra_config = effective_settings(
-                            getattr(gov_cfg_row, "scanner_settings", None) if gov_cfg_row else None)
-                        if gov_cfg_row:
-                            if gov_cfg_row.required_tags:
-                                scanner_extra_config["required_tags"] = gov_cfg_row.required_tags
-                            if gov_cfg_row.naming_patterns:
-                                scanner_extra_config["naming_patterns"] = gov_cfg_row.naming_patterns
-                        else:
-                            scanner_extra_config["required_tags"] = DEFAULT_REQUIRED_TAGS
-                            scanner_extra_config["naming_patterns"] = DEFAULT_NAMING_PATTERNS
-
-                        scanner_instance = scanner_class(config=scanner_extra_config)
+                        # Admin-configured tags, naming patterns and analysis settings (Settings - Governance),
+                        # read once per job above; each scanner gets its own copy.
+                        scanner_instance = scanner_class(config=dict(scanner_config))
                         output = await scanner_instance.execute(context)
                         completed.append((scanner_instance, output))
 
@@ -347,10 +337,6 @@ def run_scan_job(
                             )
 
                         nonlocal total_resources, total_findings
-                        total_resources += output.resources_scanned
-                        total_findings += output.finding_count
-                        for sev, count in output.findings_by_severity().items():
-                            findings_by_severity[sev] = findings_by_severity.get(sev, 0) + count
 
                         # A scanner can "succeed" (no exception) while still
                         # reporting warnings — most commonly an Azure Resource
@@ -373,7 +359,7 @@ def run_scan_job(
                             .values(
                                 status=ScanStatus.COMPLETED,
                                 completed_at=datetime.now(timezone.utc),
-                                duration_ms=int((time.time() - start_time) * 1000),
+                                duration_ms=int((time.time() - scanner_started) * 1000),
                                 resources_scanned=output.resources_scanned,
                                 findings_count=output.finding_count,
                                 error_message=warning_text,
@@ -399,7 +385,14 @@ def run_scan_job(
                         )
                         db.commit()
 
-                _persist_correlated(db, completed, sub, job_id)
+                # Resources = what the subscription holds, counted once. Summing every scanner's own count
+                # reported 735 "scanned" for a subscription of 17.
+                total_resources += await _resource_count(context, completed)
+                # Job totals count what was stored: one finding per issue, after duplicates were merged.
+                for stored in _persist_correlated(db, completed, sub, job_id):
+                    total_findings += 1
+                    sev = getattr(stored.severity, "value", stored.severity)
+                    findings_by_severity[sev] = findings_by_severity.get(sev, 0) + 1
                 if settings.ANALYSIS_REPORT_AFTER_SCAN and completed:
                     await _write_analysis_report(db, context, sub, job_id, completed)
 
@@ -623,170 +616,185 @@ def _check_sign_in(context: any) -> None:
         raise RuntimeError(f"cannot sign in to Microsoft Entra ID: {reason}. {hint}.") from exc
 
 
-# Finding types that represent a genuinely orphaned/unused resource —
-# see scanners/base/base_scanner.py ORPHAN_FINDING_TYPES for the full
-# explanation; imported here rather than redefined to avoid two copies
-# silently drifting apart.
 from scanners.base.base_scanner import ORPHAN_FINDING_TYPES
+from scanners.base.fingerprint import finding_fingerprint, is_tenant_wide, normalise_resource_id
+
+# Suppressions the worker sets itself; a finding reported again is re-opened from these, never from a person's.
+AUTOMATIC_SUPPRESSIONS = ("Covered by ", "Check switched off in Settings", "Defender plan-enablement recommendation")
+
+
+async def _resource_count(context: any, completed: list) -> int:
+    """Resources in the subscription (one Resource Graph count); the largest scanner count if that fails."""
+    from scanners.base.azure_api import query_resource_graph
+    try:
+        rows = await query_resource_graph(context, "resources | summarize total = count()")
+        if rows:
+            return int(rows[0].get("total") or 0)
+    except Exception as exc:
+        logger.warning("Resource count for %s failed: %s", context.subscription_id, exc)
+    return max((output.resources_scanned for _, output in completed), default=0)
+
+
+def _automatic_suppression(reason: str | None) -> bool:
+    return bool(reason) and reason.startswith(AUTOMATIC_SUPPRESSIONS)
+
+
+def _tenant_subscriptions(subscription: any):
+    from backend.models.models import Subscription
+    return select(Subscription.id).where(Subscription.tenant_id == subscription.tenant_id)
 
 
 def _persist_finding(db: Session, finding_data: any, subscription: any, scan_job_id: str):
     """
-    Persist a scanner finding to the database.
-
-    Implements upsert logic:
-    - If finding already exists (same type + resource), update last_detected_at
-    - If resolved finding recurs, re-open it
-    - New findings are inserted
-
-    Also upserts the backing ResourceInventory row. Finding.resource_id is a
-    required FK — without it, every Finding API response would show null for
-    resource_name/type/group/location even though the scanner provided that
-    data on finding_data, since Finding itself has no such columns (see
-    backend/api/routes/findings.py _serialize, which joins through .resource).
+    Upsert one finding by its fingerprint (resource ID in any casing, or tenant + Entra object) and return the row.
+    A resolved finding that recurs is re-opened; acknowledged / suppressed / false-positive rows keep their status.
     """
+    from sqlalchemy import func
     from backend.models.models import Finding, FindingStatus, ResourceInventory
 
+    now = datetime.now(timezone.utc)
     resource = None
     if finding_data.resource_id:
         resource = db.execute(
             select(ResourceInventory).where(
-                ResourceInventory.azure_resource_id == finding_data.resource_id,
                 ResourceInventory.subscription_id == subscription.id,
-            )
-        ).scalar_one_or_none()
-
+                func.lower(ResourceInventory.azure_resource_id) == normalise_resource_id(finding_data.resource_id),
+            ).order_by(ResourceInventory.created_at)
+        ).scalars().first()
         if resource:
-            # Keep the inventory snapshot fresh on every scan that touches it
             resource.resource_name = finding_data.resource_name or resource.resource_name
             resource.resource_type = finding_data.resource_type or resource.resource_type
             resource.resource_group = finding_data.resource_group or resource.resource_group
             resource.location = finding_data.location or resource.location
         else:
+            # name / type / group / location are NOT NULL
             resource = ResourceInventory(
                 subscription_id=subscription.id,
                 azure_resource_id=finding_data.resource_id,
-                # name/type/group/location are NOT NULL — fall back to a
-                # placeholder rather than letting an incomplete scanner
-                # finding (e.g. terraform's "missing resource" case, which
-                # has no live Azure data to draw from) violate the schema.
                 resource_name=finding_data.resource_name or "unknown",
                 resource_type=finding_data.resource_type or "unknown",
                 resource_group=finding_data.resource_group or "unknown",
                 location=finding_data.location or "unknown",
             )
             db.add(resource)
-            db.flush()  # assign resource.id before it's referenced below
-
-        # Flag the resource as orphaned if this finding is one of the
-        # known orphan-class types. Deliberately one-directional — a
-        # resource is never un-flagged here even if a *different*
-        # finding type touches it later, since "this resource was once
-        # detected as orphaned/unused" remains true historically; the
-        # resource only stops being orphaned when the orphan Finding
-        # itself is resolved (e.g. the disk gets attached, or deleted
-        # and no longer appears in the next scan).
+            db.flush()
         if finding_data.finding_type in ORPHAN_FINDING_TYPES:
             resource.is_orphaned = True
 
-    # Check for an existing finding tied to this resource
-    existing = None
-    if resource:
-        existing = db.execute(
-            select(Finding).where(
-                Finding.resource_id == resource.id,
-                Finding.finding_type == finding_data.finding_type,
-            )
-        ).scalar_one_or_none()
+    tenant_wide = is_tenant_wide(finding_data)
+    fingerprint = finding_fingerprint(finding_data, subscription_id=subscription.subscription_id,
+                                      tenant_id=str(subscription.tenant_id))
+    owner = (Finding.subscription_id.in_(_tenant_subscriptions(subscription)) if tenant_wide
+             else Finding.subscription_id == subscription.id)
+    matches = db.execute(select(Finding).where(Finding.fingerprint == fingerprint, owner)
+                         .order_by(Finding.first_detected_at)).scalars().all()
+    if not matches and resource is not None:   # rows written before the fingerprint existed
+        matches = db.execute(select(Finding).where(Finding.resource_id == resource.id,
+                                                   Finding.finding_type == finding_data.finding_type)
+                             .order_by(Finding.first_detected_at)).scalars().all()
+    existing = matches[0] if matches else None
+    for extra in matches[1:]:                  # older case-variant copies of the same issue
+        extra.status = FindingStatus.RESOLVED
+        extra.resolved_at = now
+        extra.suppression_reason = "Duplicate of the same finding - merged"
+
+    evidence = dict(finding_data.evidence or {})
+    if finding_data.entra_object_id:           # the only place the Entra object is kept
+        evidence.setdefault("entra_object_id", finding_data.entra_object_id)
+        evidence.setdefault("entra_object_type", finding_data.entra_object_type)
+        evidence.setdefault("entra_display_name", finding_data.entra_display_name)
+    saving = finding_data.estimated_monthly_savings_usd
 
     if existing:
-        # Update existing finding
-        existing.last_detected_at = datetime.now(timezone.utc)
+        existing.fingerprint = fingerprint
+        existing.last_detected_at = now
         existing.scan_job_id = scan_job_id
         existing.title = finding_data.title
         existing.description = finding_data.description
         existing.severity = finding_data.severity.value
-        # Evidence carries what the detail view explains (Defender's own text, cost of the change) - keep it current.
-        existing.evidence = finding_data.evidence
-        existing.estimated_monthly_savings_usd = finding_data.estimated_monthly_savings_usd
-        if finding_data.estimated_monthly_savings_usd:
-            existing.estimated_annual_savings_usd = finding_data.estimated_monthly_savings_usd * 12
-        # Always refresh script content on re-scan — scanners may ship
-        # improved commands, and we want the checklist to reflect that.
+        existing.evidence = evidence
+        existing.estimated_monthly_savings_usd = saving
+        existing.estimated_annual_savings_usd = saving * 12 if saving else None
         existing.azure_cli_script = finding_data.azure_cli_script
         existing.powershell_script = finding_data.powershell_script
         existing.remediation_steps = finding_data.remediation_steps
-        if existing.status in (FindingStatus.RESOLVED,):
-            # Re-open resolved findings that recurred
+        expired = existing.suppressed_until is not None and existing.suppressed_until <= now
+        if existing.status == FindingStatus.RESOLVED or (
+                existing.status == FindingStatus.SUPPRESSED
+                and (expired or _automatic_suppression(existing.suppression_reason))):
             existing.status = FindingStatus.OPEN
             existing.resolved_at = None
+            existing.suppression_reason = None
+            existing.suppressed_until = None
         db.commit()
-        return
-
-    # Create new finding
+        return existing
 
     finding = Finding(
         subscription_id=subscription.id,
         resource_id=resource.id if resource else None,
         scan_job_id=scan_job_id,
+        fingerprint=fingerprint,
         finding_type=finding_data.finding_type,
         category=finding_data.category,
         severity=finding_data.severity.value,
         title=finding_data.title,
         description=finding_data.description,
         remediation_steps=finding_data.remediation_steps,
-        evidence=finding_data.evidence,
-        estimated_monthly_savings_usd=finding_data.estimated_monthly_savings_usd,
-        estimated_annual_savings_usd=(
-            finding_data.estimated_monthly_savings_usd * 12
-            if finding_data.estimated_monthly_savings_usd else None
-        ),
+        evidence=evidence,
+        estimated_monthly_savings_usd=saving,
+        estimated_annual_savings_usd=saving * 12 if saving else None,
         caf_control=finding_data.caf_control,
         nist_control=finding_data.nist_control,
         cis_control=finding_data.cis_control,
-        # These were previously silently dropped on every scan — both the
-        # FindingData class carries them and the Finding model has columns
-        # for them, but _persist_finding never wrote them to the DB, so
-        # the remediation checklist generator had no actual commands to
-        # include and could only output comments.
         azure_cli_script=finding_data.azure_cli_script,
         powershell_script=finding_data.powershell_script,
     )
     db.add(finding)
     db.commit()
+    return finding
 
 
-def _persist_correlated(db: Session, completed: list, subscription: any, scan_job_id: str) -> None:
+def _dismissed_removals(db: Session, subscription: any) -> set:
+    """Resources whose 'remove it' finding a person dismissed: they stay, so their other findings stay too."""
+    from backend.models.models import Finding, FindingStatus, ResourceInventory
+    from scripts.subscription_analysis.correlate import DECOMMISSION_TYPES
+
+    rows = db.execute(
+        select(ResourceInventory.azure_resource_id, Finding.status, Finding.suppression_reason)
+        .join(Finding, Finding.resource_id == ResourceInventory.id)
+        .where(Finding.subscription_id == subscription.id, Finding.finding_type.in_(sorted(DECOMMISSION_TYPES)),
+               Finding.status.in_([FindingStatus.SUPPRESSED, FindingStatus.FALSE_POSITIVE]))).all()
+    return {(rid or "").lower() for rid, status, reason in rows
+            if status == FindingStatus.FALSE_POSITIVE or not _automatic_suppression(reason)}
+
+
+def _persist_correlated(db: Session, completed: list, subscription: any, scan_job_id: str) -> list:
     """
-    Persist every scanner's findings for one subscription after merging Defender / Advisor items that a native
-    finding already covers, then close what each scanner no longer reports. A Defender finding dropped as a
-    duplicate is suppressed with that reason instead of resolved.
+    Store one finding per issue: Defender / Advisor items a native finding covers are merged, and findings on a
+    resource that should be removed are folded into that finding. Returns the stored findings.
     """
     from scripts.subscription_analysis.correlate import _scope, correlate
 
     everything = [f for _, output in completed for f in output.findings]
-    kept, stats = correlate(everything)
+    kept, stats = correlate(everything, keep_separate=_dismissed_removals(db, subscription))
     kept_ids = {id(f) for f in kept}
-    duplicates = {_scope(f) for f in everything if id(f) not in kept_ids}
+    merged = {(_scope(f), f.finding_type) for f in everything if id(f) not in kept_ids}
     for scanner, output in completed:
         for finding_data in output.findings:
             if id(finding_data) in kept_ids:
                 _persist_finding(db, finding_data, subscription, scan_job_id)
-        # Findings this scanner no longer reports (fixed, filtered out, merged, or check switched off)
-        _retire_undetected_findings(db, scanner, output, subscription, scan_job_id, duplicate_scopes=duplicates)
+        _retire_undetected_findings(db, scanner, output, subscription, scan_job_id, duplicate_scopes=merged)
     if any(stats.values()):
         logger.info("Correlation for %s: %s", subscription.subscription_id, stats)
+    return kept
 
 
 def _retire_undetected_findings(db: Session, scanner: any, output: any, subscription: any, scan_job_id: str,
                                 duplicate_scopes: set = frozenset()) -> int:
     """
-    Close open findings of the scanner's finding types (declared, or read from its source) that this run no longer
-    reported.
-
-    Only after a clean run (no warnings) - a scanner that could not read its data must not close anything. A finding
-    that went away because of a setting (the check switched off,
-    or a Defender plan recommendation now excluded) is suppressed with that reason; anything else is resolved.
+    Close open findings of the scanner's types that a clean run (no warnings) no longer reports: suppressed with
+    the reason when a setting or a merge removed them, resolved otherwise. Tenant-wide scanners close across the
+    tenant's subscriptions.
     """
     from backend.models.models import Finding, FindingStatus
 
@@ -796,8 +804,10 @@ def _retire_undetected_findings(db: Session, scanner: any, output: any, subscrip
         return 0
     disabled = (output.metadata or {}).get("disabled_by_setting")
     reason_for = getattr(scanner, "suppression_reason_for", None)
+    owner = (Finding.subscription_id.in_(_tenant_subscriptions(subscription))
+             if getattr(scanner, "tenant_wide", False) else Finding.subscription_id == subscription.id)
     stale = db.execute(select(Finding).where(
-        Finding.subscription_id == subscription.id,
+        owner,
         Finding.finding_type.in_(sorted(types)),
         Finding.status.in_([FindingStatus.OPEN, FindingStatus.ACKNOWLEDGED]),
         or_(Finding.scan_job_id.is_(None), Finding.scan_job_id != scan_job_id),
@@ -809,8 +819,8 @@ def _retire_undetected_findings(db: Session, scanner: any, output: any, subscrip
             resource_id = resource_id.split("/providers/")[0]   # Defender's subscription-level entities
         reason = (f"Check switched off in Settings ({disabled})" if disabled
                   else reason_for(f.evidence or {}) if reason_for else None)
-        if not reason and resource_id and resource_id in duplicate_scopes:
-            reason = "Covered by ARG's own finding on this resource (see 'also reported by' there)"
+        if not reason and resource_id and (resource_id, getattr(f, "finding_type", None)) in duplicate_scopes:
+            reason = "Covered by another ARG finding on this resource (see 'covers' / 'also reported by' there)"
         if reason:
             f.status = FindingStatus.SUPPRESSED
             f.suppression_reason = reason

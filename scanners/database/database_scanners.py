@@ -635,7 +635,7 @@ class CosmosDbScanner(PostureScanner):
                 decision = fix["decision"]
                 findings.append(self.resource_finding(
                     acc, finding_type="cosmos_public_network_access",
-                    title=f"Public Cosmos DB account: {name} - {decision['title'].lower()}",
+                    title=f"Public Cosmos DB account: {name}",
                     description=(f"Cosmos DB account '{name}' accepts traffic from all networks (no IP or VNet rules, "
                                  f"no private endpoint; {decision['usage']}). {decision['why']}"),
                     resource_type="microsoft.documentdb/databaseaccounts", severity=fix["severity"],

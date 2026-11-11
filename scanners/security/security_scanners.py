@@ -184,7 +184,7 @@ class PublicSQLServerScanner(BaseScanner):
             decision = fix["decision"]
             findings.append(self.make_finding(
                 finding_type="public_sql_server",
-                title=f"Public SQL server: {sql['name']} - {decision['title'].lower()}",
+                title=f"Public SQL server: {sql['name']}",
                 description=(
                     f"SQL Server '{sql['name']}' has public network access enabled (FQDN: "
                     f"{sql.get('fqdn', 'Unknown')}): reachable from the internet, limited only by its firewall rules "

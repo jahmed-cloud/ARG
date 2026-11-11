@@ -612,6 +612,10 @@ class Finding(Base):
     resource_id         = Column(UUID(as_uuid=False), ForeignKey("resource_inventory.id", ondelete="CASCADE"), nullable=True)
     scan_job_id         = Column(UUID(as_uuid=False), ForeignKey("scan_jobs.id", ondelete="SET NULL"), nullable=True)
 
+    # Stable identity (scanners/base/fingerprint.py): resource ID in lower case, or tenant + Entra object, plus
+    # the finding type. The worker upserts by it, so a re-scan never adds a second row for the same issue.
+    fingerprint         = Column(String(64), nullable=True, index=True)
+
     # Classification
     finding_type        = Column(String(100), nullable=False, index=True)
     category            = Column(String(50), nullable=False, index=True)  # compute, network, identity, etc.
